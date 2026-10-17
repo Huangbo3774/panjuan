@@ -29,3 +29,4 @@ vendor/
 # ---- 🔴 真实学生作业：未成年人数据，永不入库 ----
 # 验收脚本需要它，但仓库不带。缺样本时 tests/acceptance.py 会明确报缺文件。
 samples/private/
+shots/
