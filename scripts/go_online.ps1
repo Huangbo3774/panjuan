@@ -28,24 +28,39 @@ Write-Host "  已取得授权（令牌只显示长度：$($token.Length) 位，�
 $H = @{ Authorization = "Bearer $token"; Accept = "application/vnd.github+json";
        "X-GitHub-Api-Version" = "2022-11-28"; "User-Agent" = "panjuan-release" }
 
+# ⚠️ PS 5.1 的 Invoke-RestMethod 传字符串 body 时按系统 ANSI（中文机=GBK）编码，
+#    非 ASCII 会被替换成 '?'。GitHub 收到的仓库描述就变成 "?????"。
+#    所有带中文的写操作必须走这个函数：显式转 UTF-8 字节。
+#    注意别再给 Content-Type 加 charset=utf-8 —— 加了 PS 会拒绝 byte[] body。
+function Put-JsonUtf8($uri, $obj, $method = "Post") {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes(($obj | ConvertTo-Json -Depth 6))
+    Invoke-RestMethod -Uri $uri -Headers $H -Method $method -Body $bytes -ContentType "application/json"
+}
+
 # ---- 2. 建仓库 ----
 Head "2/5  创建仓库 $Owner/$Repo"
 try {
     $exist = Invoke-RestMethod -Uri "https://api.github.com/repos/$Owner/$Repo" -Headers $H -Method Get
     Write-Host "  仓库已存在，跳过创建（id=$($exist.id)）"
 } catch {
-    $body = @{ name = $Repo; description = "把老师发的 PDF/图片/Word 作业一键变成标准 A4 试卷：自动清洗、去灰底、省墨、2合1。本地运行不上传，MIT 开源免费。"; private = [bool]$Private } | ConvertTo-Json
-    Invoke-RestMethod -Uri "https://api.github.com/user/repos" -Headers $H -Method Post -Body $body -ContentType "application/json" | Out-Null
+    $body = @{ name = $Repo; description = "把老师发的 PDF/图片/Word 作业一键变成标准 A4 试卷：自动清洗、去灰底、省墨、2合1。本地运行不上传，MIT 开源免费。"; private = [bool]$Private }
+    Put-JsonUtf8 "https://api.github.com/user/repos" $body | Out-Null
     Write-Host "  已创建"
 }
 
 # ---- 3. 推代码 ----
 Head "3/5  推送"
+# ⚠️ 这里不能用 `git ... 2>$null`：在 $ErrorActionPreference='Stop' 下，
+#    git 往 stderr 写的正常提示会被 PowerShell 当成终止错误抛出来，
+#    导致脚本在"远端还不存在"这个最常见的情况下直接崩掉（实测踩过）。
+$ErrorActionPreference = "Continue"
+$has = ((git remote get-url origin 2>&1) | Out-String)
+$ErrorActionPreference = "Stop"
 $url = "https://github.com/$Owner/$Repo.git"
-$has = git remote get-url origin 2>$null
-if ($has) { git remote set-url origin $url } else { git remote add origin $url }
+if ($has -match 'github\.com') { git remote set-url origin $url } else { git remote add origin $url }
 git branch -M main
 git push -u origin main --quiet
+if ($LASTEXITCODE -ne 0) { Write-Host "✗ 推送失败（多半是授权没通过），后面几步已跳过"; exit 1 }
 Write-Host "  推送完成"
 
 # ---- 4. Topics（GitHub 搜索/Explore 的入口） ----
@@ -53,8 +68,7 @@ Head "4/5  设置 Topics"
 # 不用 'paper'：GitHub 上大量指向论文，会把项目埋掉；worksheet 才是家长搜的词
 $topics = @("education","homework","exam","pdf","printing","ocr","selfhosted",
             "local-first","privacy","chinese","k12","teacher","worksheet","fastapi","python")
-Invoke-RestMethod -Uri "https://api.github.com/repos/$Owner/$Repo/topics" -Headers $H `
-    -Method Put -Body (@{ names = $topics } | ConvertTo-Json) -ContentType "application/json" | Out-Null
+Put-JsonUtf8 "https://api.github.com/repos/$Owner/$Repo/topics" @{ names = $topics } "Put" | Out-Null
 Write-Host "  已设 $($topics.Count) 个标签"
 
 # ---- 5. Release + 发行包 ----
@@ -83,9 +97,17 @@ $notes = @"
 "@
 
 $rel = @{ tag_name = "v1.0.0"; name = "V1.0 打印引擎：任意文档 → 一张干净 A4";
-          body = $notes; draft = $false; prerelease = $false } | ConvertTo-Json
-$r = Invoke-RestMethod -Uri "https://api.github.com/repos/$Owner/$Repo/releases" -Headers $H `
-    -Method Post -Body $rel -ContentType "application/json"
+          body = $notes; draft = $false; prerelease = $false }
+$ErrorActionPreference = "Continue"
+try {
+    $r = Put-JsonUtf8 "https://api.github.com/repos/$Owner/$Repo/releases" $rel
+} catch {
+    # 重跑时标签已存在：改查已有 release，别把整个脚本崩在最后一步
+    Write-Host "  创建 Release 报错（可能已存在），改为查找既有 Release"
+    $r = (Invoke-RestMethod -Uri "https://api.github.com/repos/$Owner/$Repo/releases/tags/v1.0.0" -Headers $H)
+}
+$ErrorActionPreference = "Stop"
+if (-not $r) { Write-Host "✗ 拿不到 Release，后续上传跳过"; exit 1 }
 
 # 上传 zip：先取 upload_url，把 {name} 替换掉
 $up = ($r.upload_url -replace '\{\?name,label\}', '') + "?name=panjuan-v1.0.zip"
