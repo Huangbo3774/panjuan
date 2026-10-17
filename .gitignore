@@ -30,3 +30,6 @@ vendor/
 # 验收脚本需要它，但仓库不带。缺样本时 tests/acceptance.py 会明确报缺文件。
 samples/private/
 shots/
+
+# 分发包由 git archive 现生成，绝不入库（曾误把上级目录的 zip 提交进来，导致包里套包）
+*.zip
