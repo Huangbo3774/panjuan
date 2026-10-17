@@ -1,156 +1,98 @@
 # 磐卷 PaperForge
 
-> **老师发什么，磐卷印什么——一张干净 A4。**
-> Any document. One clean A4.
+[English](README.md) · **[中文](README.zh-CN.md)**
 
-把老师发来的 PDF / 图片 / Word 作业，一键变成一张**标准 A4 试卷 PDF**：能直接打印，也能在线做、自动批改、导出带成绩的 PDF 回传老师。
+> **Whatever the teacher sends, print it as one clean A4.**
+> 老师发什么，磐卷印什么——一张干净 A4。
 
-**省纸 · 省墨 · 省腿 · 省心**（省腿 = 不用跑打印店）
+Turn the PDFs, photos and Word files your kid's teacher dumps into the group chat into **one standard A4 exam paper PDF** — ready to print, or to be answered on screen, auto-graded, and sent back to the teacher as a PDF with the score on it.
 
----
+![A phone photo of homework → a clean A4 paper produced by PaperForge](docs/img/compare-photo-to-a4.png)
 
-## 为什么做这个项目
+## Why
 
-**场景 1：周六晚 10 点。** 班主任在家长群发了三张数学卷子照片：*"明天上午 9 点要用。"* 打印店早关门了，家里的打印机上个月墨盒就干了。
+It is 10pm on Saturday. The teacher posts three photos of a maths worksheet: *"needed by 9am tomorrow."* The print shop is closed. Your printer has been out of ink for a month. You are staring at a crooked, grey, unreadable photo.
 
-**场景 2：周日早上 9 点。** 打印店门口排了 7 个家长，人手一份同样的卷子照片。队伍里有人叹气：*"这老师就不能早一天发吗？"*
+Or: it is Sunday morning and there are seven parents queueing at the print shop, each holding a photo of the same worksheet.
 
-**场景 3：周二晚上 8 点。** 老师发了一个 PDF、两张图、一段 Word 说明。你要把它们拼成一份能打印的卷子：图片要裁边、PDF 要调字号、还要琢磨怎么不浪费纸。半小时过去了，卷子还没出来。
-
-**孩子的作业不缺题，缺的是一张干净、标准、随时能打印的 A4 纸。**
-
-![手机拍的作业照片 → 磐卷输出的标准 A4](docs/img/compare-photo-to-a4.png)
+**Kids are not short of exercises. They are short of one clean, standard, printable sheet of A4.**
 
 ## Before / After
 
-| 之前 | 之后 |
+| Before | After |
 |---|---|
-| 周末/深夜打印店关门，没地方打印 | 1–2 秒出一张标准 A4 试卷 PDF，24 小时随时出 |
-| 图片模糊、灰底、看不清 | 自动清洗：去灰底、纠偏、裁边、增强 |
-| PDF + 图片 + Word 三个格式自己拼 | 多文件混合拖进来，合并成一份，零排版操作 |
-| 一年打印费几百块 | 黑白省墨、字号可调、2合1省纸，工具开源免费 |
-| 做完要拍照交作业，老师看不清 | （V1.1）在线做 → 自动判分 → 导出带成绩 PDF |
+| Print shop closed at night and on weekends | A standard A4 paper in 1–2 seconds, any hour |
+| Blurry, grey, crooked photos | Automatic clean-up: grey background removed, deskewed, cropped, enhanced |
+| One PDF + two photos + a Word doc, stitched by hand | Drop them all in together, merged into one paper, zero layout work |
+| Hundreds of dollars a year on printing and ink | Grayscale-first, ink-saver mode, adjustable font size, 2-up duplex |
+| Re-do the homework photo loop to hand it in | (V1.1) answer on screen → auto-grade → export a graded PDF |
 
-## 快速开始
+## Quick start
 
 ```powershell
-# Windows：右键用 PowerShell 运行，会自动找 Python 3.11+、建虚拟环境、装依赖、开浏览器
+# Windows — right-click, Run with PowerShell.
+# Finds Python 3.11+, creates a venv, installs deps, opens your browser.
 .\scripts\setup.ps1
 ```
 
-手动方式：
-
 ```bash
-py -3.11 -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
-.venv\Scripts\python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
-# 浏览器打开 http://127.0.0.1:8000/
+# Any platform
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+# open http://127.0.0.1:8000/
 ```
 
-⚠️ **必须用 Python 3.11+**。Windows 上默认 `python` 常常是旧版本（开发机上是 3.6.8，装不了本项目任何依赖），`setup.ps1` 会显式挑 3.11+ 而不是依赖 PATH 顺序。
+Requires **Python 3.11+**. `setup.ps1` searches for 3.11+ explicitly rather than trusting whatever `python` resolves to on PATH.
 
-### 发给不太懂电脑的人
+## Privacy-first, and I mean it
 
-不用讲命令行——把 `paper-forge-v1.0.zip` 发过去，让对方照着
-**[docs/安装说明.md](docs/安装说明.md)** 做：解压 → 右键运行一个文件 → 拖作业进去。
-那份说明里也写清了「现在还不能做什么」，免得对方白等。
+Children's homework is minors' data. This tool:
 
-### 推到自己的 GitHub
+- runs entirely on your own machine — no uploads, no accounts, no telemetry
+- makes **zero external network requests**, including no CDN on the frontend
+- keeps task data in memory only; restart clears everything
+- ships its real-world test fixtures out of the repo (`samples/private/` is gitignored)
 
-仓库已经是干净的 git 仓库（只含可分发内容，真实作业已被 `.gitignore` 排除）。
-在 github.com 建一个空仓库后：
+The code is MIT-licensed and auditable. That is the whole privacy policy.
 
-```bash
-git remote add origin https://github.com/<你的用户名>/<仓库名>.git
-git branch -M main
-git push -u origin main
-```
+## What it does today (measured, not promised)
 
-只想发文件不想建仓库，也可以直接用 `git archive` 出的包：
-
-```bash
-git archive --format=zip -o ../paper-forge-v1.0.zip HEAD
-```
-
-## 三种用法
-
-| 模式 | 流程 | 状态 |
-|---|---|---|
-| **A · 纯净打印版** | 一键出 A4 → 打印 → 纸上作答 | ✅ V1.0 已实现 |
-| **B · 在线作答版** | 屏上直接做 → 提交 | 🚧 V1.1 计划 |
-| **C · 批改回传版** | 自动判分 → 导出带成绩 PDF | 🚧 V1.1 计划 |
-
-## 它做了什么（用真实材料实测）
-
-11 份真实老师作业（5 个 PDF + 3 张图 + 1 个 Word + 2 个合成样本）全部跑通：
-
-| 能力 | 实测 |
+| | Status |
 |---|---|
-| 文字版 PDF 重排 | 题号完整、乱码 0、字号归一成 3 档 |
-| 扫描版 PDF | 8 页全部按 300DPI 渲染 → 清洗 → 内嵌 A4 |
-| 手机拍照 | 1.1 秒出卷（限 10 秒） |
-| 混合格式合并 | 5 个文件 → 一份 7 页 A4 |
-| 损坏文件 | 标红报原因，不中断其余文件出卷 |
-| 100 页压力 | 1.1 秒，内容一行不丢，服务内存 176MB |
-| 省墨模式 | 内嵌图白度 7.8% → 85.5% |
-| 2 合 1 | 3 页 → 2 页 √2 缩印 |
+| A · clean printable A4 paper | ✅ shipped (V1.0) |
+| B · answer on screen | 🚧 V1.1 |
+| C · auto-grade and send back | 🚧 V1.1 |
 
-跑 `scripts\check.bat` 复现以上全部数字。
-
-## 设计原则
-
-1. **10 秒出卷**——任何文档进来，一张标准 A4 出去，零排版操作
-2. **24 小时可用**——凌晨 3 点老师发卷也能打
-3. **看得清**——按**清晰度**而非像素数决定要不要清洗（实测屏摄图清晰度是手机拍照的 52 倍，对它做"增强"反而是投毒）
-4. **省墨省纸**——黑白优先、省墨模式、字号缩放、2合1 页面
-5. **不收集、不收费、无广告**——全程本机处理，无外部网络请求，开源可审计
-6. **永远免费**
-
-## 隐私
-
-孩子的作业是未成年人数据。本工具：
-
-- 全部处理在你自己的电脑上完成，服务只监听本机/局域网
-- 不上传、不埋点、不请求任何外部地址（含 CDN）
-- 不建账号、不留存（任务数据在内存，重启即清空）
-- 真实作业样本放在 `samples/private/`，已写进 `.gitignore`，永不入库
-
-## 已知边界（不是"以后会好"，是当前不做）
-
-- **`.doc`（2003 及更早）不支持**，请另存为 `.docx`
-- **手写作业批改不在范围内**。识别孩子手写的答案是开源黑洞（去手写痕迹、还原空白卷全行业没有开源实现，全是有道/百度/腾讯/合合的商业 API）。V1 的路线是让孩子**在屏幕上作答**，从根上绕开手写识别。
-- **数学公式不做可视化排版**，公式按文本或图片块处理
-- **图文混排的插图**：扫描卷整页保留为图片；文字版 PDF 里的插图位置暂按文档流顺序放置
-- 在线作答与自动批改（模式 B/C）属 V1.1，尚未实现
-
-## 技术栈
-
-FastAPI + uvicorn · PyMuPDF（PDF 解析）· Pillow + OpenCV（图像清洗）· ReportLab（A4 出卷，嵌入系统中文字体子集）· RapidOCR（V1.1 题型识别）· 原生 HTML/JS（零构建、全本地）
-
-## 目录
+Verified against real teaching material with `py -3.11 tests/acceptance.py` — **11/11 acceptance cases pass**, and they pass both with real samples and with only the synthetic ones that ship in the repo (so a stranger who clones this gets the same result):
 
 ```
-app/
- ├─ main.py        FastAPI 入口 + 8 条 API
- ├─ parsers/       pdf / docx / image → 统一中间结构
- ├─ cleaners/      8 步清洗管线 + 按清晰度自动分档
- ├─ layout/        分栏归位 + A4 块级流式排版 + 选项
- ├─ papers/        ReportLab 出卷
- └─ api/           任务表 + 流水线
-web/               上传页 / 预览页（原生 HTML/JS）
-tests/             单测 + 真实材料体检 + PRD 验收 F01–F10
-docs/              可行性实测记录（踩过的坑都写在这里）
-scripts/           setup.ps1 一键安装 · check.bat 一键自检
+F01 phone photo → A4 in 1.1s (limit 10s)      F07 header row toggles on/off
+F02 mixed formats merged into one paper        F08 corrupt file reported, others unaffected
+F03 text PDF reflowed, 0 garbled chars         F09 100 pages, 0 lines lost, 59MB RAM
+F04 scanned PDF cleaned and embedded           F10 preview renders
+F05 ink-saver: page whiteness 7.8% → 85.5%     F11 footer attribution can be turned off
+F06 2-up: 3 pages → 2
 ```
 
-## 给想改代码的人
+## Known limits (stated up front, so you don't wait for them)
 
-先读 `docs/`。里面记的不是设计愿景，是**实测被证伪的假设**和**坏掉的尺子**——比如为什么不能先合并行再检测分栏、为什么不能拿 OCR 字数当清洗判据、为什么 `cv2.imread` 在中文路径下会静默返回 None。跳过这些会重新踩一遍。
+- **No `.doc`** (Word 2003 and earlier). Save as `.docx`.
+- **No handwriting recognition.** "Photograph the completed worksheet and auto-grade it" is a paid commercial API category, not an open-source one. The path this project takes instead: let the kid **answer on screen**, which removes handwriting from the problem entirely.
+- **No pretty maths typesetting.** Formulas are handled as text or image blocks.
+
+## Stack
+
+FastAPI + uvicorn · PyMuPDF (PDF parsing) · Pillow + OpenCV (image clean-up) · ReportLab (A4 output, embeds a subset of the system CJK font) · RapidOCR (planned for V1.1) · plain HTML/CSS/JS frontend, zero build step, zero CDN
+
+## For developers
+
+Read `docs/` before changing layout code. It records **hypotheses that measurement disproved**, not design wishes — for example why column detection must run on raw fragments rather than merged text lines, why image clean-up must be keyed on sharpness rather than pixel count, and why you cannot use OCR accuracy as the acceptance test for print quality. Skipping those will cost you a day each.
+
+Run everything: `scripts/check.bat` (Windows) or the individual `py -3.11 tests/*.py`.
 
 ## License
 
-MIT
+MIT — free forever, no ads, no paid tier.
 
----
-
-*磐卷 PaperForge · 从一张乱糟糟的图片，到一张干净 A4。*
+> If your kid also prints homework every week, a ⭐ helps this reach the next parent.

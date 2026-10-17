@@ -1,4 +1,4 @@
-# 磐卷 PaperForge · 一键安装并启动
+﻿# 磐卷 PaperForge · 一键安装并启动
 # 用法：右键"用 PowerShell 运行"，或在 PowerShell 里执行  .\scripts\setup.ps1
 #
 # 为什么需要这个脚本：本机可能同时装着多个 Python，且默认 `python` 可能是 3.6

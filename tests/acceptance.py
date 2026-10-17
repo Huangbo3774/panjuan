@@ -300,6 +300,20 @@ def main():
             return with_h and without, f"开=有姓名栏 {with_h}，关=无 {without}"
         case("F07 表头开关", f07)
 
+        # F11 页脚出处署名可关（口碑传播要有效，但不能是用户关不掉的广告）
+        def f11():
+            _, r = upload([("L2中期评估模拟卷.pdf", read(sp("L2中期评估模拟卷.pdf")))])
+            s = wait(r["task_id"]); p, _ = download(s["task_id"], "on")
+            txt_on = pymupdf.open(p)[0].get_text("text")
+            shown = "磐卷" in txt_on and "开源免费" in txt_on
+            s1 = set_options(s["task_id"], {"branding": False}); p1, _ = download(s1["task_id"], "off")
+            txt_off = pymupdf.open(p1)[0].get_text("text")
+            gone = "磐卷" not in txt_off
+            # 反例：关掉署名不能顺手把页码也弄没
+            paged = "第 1 页" in txt_off
+            return shown and gone and paged, f"开=有署名 {shown}，关=无 {gone}，页码仍在 {paged}"
+        case("F11 页脚署名可关", f11)
+
         # F08 损坏文件 + 正常文件混合：损坏标红不中断
         def f08():
             bad = b"%PDF-1.7\nthis is not a real pdf body\n%%EOF\n"

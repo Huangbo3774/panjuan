@@ -41,6 +41,7 @@
       <div class="sect">省纸省墨</div>
       <label class="opt"><span>显示班级/姓名栏</span><input type="checkbox" id="o_show_header"></label>
       <label class="opt"><span>2 合 1（两页一纸）</span><input type="checkbox" id="o_two_up"></label>
+      <label class="opt"><span>页脚留出处署名</span><input type="checkbox" id="o_branding"></label>
       <div class="row" style="margin-top:16px">
         <button id="apply">应用并重排</button>
         <button class="ghost" id="dl">下载试卷 PDF</button>
@@ -58,7 +59,7 @@ const task=new URLSearchParams(location.search).get('task');
 let opt={}, busy=false;
 
 const FIELDS={o_title:'title',o_font_size:'font_size',o_font_scale:'font_scale',
-  o_line_spacing:'line_spacing',o_show_header:'show_header',o_two_up:'two_up'};
+  o_line_spacing:'line_spacing',o_show_header:'show_header',o_two_up:'two_up',o_branding:'branding'};
 
 function fill(o){
   opt=o;
@@ -67,6 +68,7 @@ function fill(o){
   $('#o_line_spacing').value=o.line_spacing;
   $('#o_mt').value=Math.round(o.margin_top/MM); $('#o_ml').value=Math.round(o.margin_left/MM);
   $('#o_show_header').checked=!!o.show_header; $('#o_two_up').checked=!!o.two_up;
+  $('#o_branding').checked=o.branding!==false;
 }
 function collect(){
   const d={};

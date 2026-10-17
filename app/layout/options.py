@@ -21,6 +21,7 @@ class LayoutOptions:
     ink_saver: bool = False              # 省墨模式：强制二值化 + 白底
     two_up: bool = False                 # 2 合 1
     show_header: bool = True             # 班级/姓名/得分 栏
+    branding: bool = True                # 页脚出处署名（可关；默认开是为了让 PDF 自己会说话）
     title: str = ""
     image_gap: float = 8.0
 

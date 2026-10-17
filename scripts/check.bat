@@ -8,16 +8,20 @@ echo [1/4] 布局算法单测
 py -3.11 tests\test_layout.py || goto :fail
 
 echo.
-echo [2/4] 前端 JS 语法与渲染检查
+echo [2/5] 前端 JS 语法与渲染检查
 py -3.11 tests\check_web_js.py || goto :fail
 
 echo.
-echo [3/4] 真实材料解析体检
-py -3.11 tests\run_parsers.py >nul || goto :fail
-echo   11 份材料解析完成（明细 tests\parsers-report.json）
+echo [3/5] PowerShell 脚本可被中文 Windows 正确解析（UTF-8 BOM）
+py -3.11 scripts\fix_ps1_bom.py --check || goto :fail
 
 echo.
-echo [4/4] PRD 验收 F01-F10
+echo [4/5] 真实材料解析体检
+py -3.11 tests\run_parsers.py >nul || goto :fail
+echo   解析完成（明细 tests\parsers-report.json）
+
+echo.
+echo [5/5] 验收 F01-F11
 py -3.11 tests\acceptance.py || goto :fail
 
 echo.

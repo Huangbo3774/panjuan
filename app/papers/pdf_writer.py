@@ -113,9 +113,12 @@ def _draw_header(c: rl_canvas.Canvas, opt: LayoutOptions, title: str) -> None:
 def _draw_footer(c: rl_canvas.Canvas, opt: LayoutOptions, no: int, total: int) -> None:
     c.setFont(_state["family"], 9)
     c.setFillColor(HexColor("#555555"))
-    txt = f"第 {no} 页 / 共 {total} 页"
-    c.drawCentredString(A4_W / 2, opt.margin_bottom - 12, txt)
-    c.drawRightString(A4_W - opt.margin_right, opt.margin_bottom - 12, "磐卷 PaperForge")
+    c.drawCentredString(A4_W / 2, opt.margin_bottom - 12, f"第 {no} 页 / 共 {total} 页")
+    # 出处署名：默认开，但用户能关。不写 URL（打印出来没人手输），
+    # 只留项目名 + "开源免费"，家长搜得到、也不构成无法去除的广告。
+    if getattr(opt, "branding", True):
+        c.drawRightString(A4_W - opt.margin_right, opt.margin_bottom - 12,
+                          "磐卷 PaperForge · 开源免费")
     c.setFillColor(black)
 
 
