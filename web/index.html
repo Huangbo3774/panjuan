@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>磐卷 PaperForge · 老师发什么，磐卷印什么</title>
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<header>
+  <h1>磐卷 PaperForge</h1>
+  <div class="tag">老师发什么，磐卷印什么——一张干净 A4 &nbsp;·&nbsp; Any document. One clean A4.
+    &nbsp;<span class="badge">全程本机处理，不上传</span></div>
+</header>
+<main>
+  <div class="card">
+    <div class="drop" id="drop">
+      <b>把老师发的作业拖进来</b>
+      <small>支持 PDF（文字版 / 扫描版）、图片、Word(.docx)；可混合格式，最多 50 个文件 ·
+        <a href="#" id="pick" style="color:#2f6f4f">或点击选择</a></small>
+      <input type="file" id="fin" multiple accept=".pdf,.docx,.jpg,.jpeg,.png,.webp,.bmp" hidden>
+    </div>
+    <ul class="files" id="list"></ul>
+    <div class="row" style="margin-top:14px">
+      <button id="go" disabled>开始出卷</button>
+      <button class="ghost" id="clr" disabled>清空</button>
+      <span class="hint" id="hint">上传顺序 = 试卷页顺序，可上下调整</span>
+    </div>
+  </div>
+
+  <div class="card" id="prog" hidden>
+    <div class="row" style="justify-content:space-between">
+      <b id="stage">排队中</b><span class="hint" id="pct">0%</span>
+    </div>
+    <div class="bar"><i id="bar"></i></div>
+    <pre class="log" id="log"></pre>
+  </div>
+</main>
+<script>
+const $=s=>document.querySelector(s);
+const fmtLogs=v=>(v||[]).map(x=>typeof x==='string'?x:`[${x.t}s] ${x.msg}`).join(' | ');
+let files=[];   // {file, name, size}
+
+function render(){
+  const ul=$('#list'); ul.innerHTML='';
+  files.forEach((f,i)=>{
+    const li=document.createElement('li');
+    li.innerHTML=`<span class="nm">${f.name}</span><span class="sz">${(f.size/1024).toFixed(0)} KB</span>
+      <span class="mv"><button data-a="up" data-i="${i}">↑</button><button data-a="dn" data-i="${i}">↓</button>
+      <button data-a="rm" data-i="${i}">✗</button></span>`;
+    ul.appendChild(li);
+  });
+  $('#go').disabled = files.length===0;
+  $('#clr').disabled = files.length===0;
+  $('#hint').textContent = files.length? `${files.length} 个文件 · 上传顺序 = 页序` : '上传顺序 = 试卷页顺序，可上下调整';
+}
+function add(list){
+  for(const f of list){
+    if(files.some(x=>x.name===f.name && x.size===f.size)) continue;
+    files.push({file:f, name:f.name, size:f.size});
+  }
+  render();
+}
+$('#pick').onclick=e=>{e.preventDefault(); $('#fin').click();};
+$('#drop').onclick=()=>$('#fin').click();
+$('#fin').onchange=e=>add(e.target.files);
+$('#clr').onclick=()=>{files=[]; render();};
+$('#list').onclick=e=>{
+  const a=e.target.dataset.a, i=+e.target.dataset.i;
+  if(!a) return;
+  if(a==='rm') files.splice(i,1);
+  if(a==='up'&&i>0) [files[i-1],files[i]]=[files[i],files[i-1]];
+  if(a==='dn'&&i<files.length-1) [files[i+1],files[i]]=[files[i],files[i+1]];
+  render();
+};
+['dragenter','dragover'].forEach(ev=>$('#drop').addEventListener(ev,e=>{e.preventDefault();$('#drop').classList.add('on');}));
+['dragleave','drop'].forEach(ev=>$('#drop').addEventListener(ev,e=>{e.preventDefault();$('#drop').classList.remove('on');}));
+$('#drop').addEventListener('drop',e=>add(e.dataTransfer.files));
+
+$('#go').onclick=async()=>{
+  const fd=new FormData();
+  files.forEach(f=>fd.append('files', f.file, f.name));
+  $('#prog').hidden=false; $('#go').disabled=true;
+  $('#stage').textContent='上传中…'; $('#log').textContent='';
+  let r;
+  try{ r=await (await fetch('/api/tasks',{method:'POST',body:fd})).json(); }
+  catch(e){ $('#stage').textContent='上传失败：'+e.message; $('#go').disabled=false; return; }
+  (r.rejected||[]).forEach(x=>$('#log').textContent+=`✗ ${x.name}：${x.error}\n`);
+  if(!r.task_id){ $('#stage').textContent='没有可用文件'; $('#go').disabled=false; return; }
+  const timer=setInterval(async()=>{
+    let s; try{ s=await (await fetch('/api/tasks/'+r.task_id)).json(); }catch(e){ return; }
+    $('#stage').textContent=s.stage; $('#pct').textContent=Math.round(s.progress*100)+'%';
+    $('#bar').style.width=(s.progress*100)+'%';
+    $('#log').textContent=fmtLogs(s.logs);
+    $('#log').scrollTop=$('#log').scrollHeight;
+    if(s.status==='done'||s.status==='partial'||s.status==='failed'){
+      clearInterval(timer); $('#go').disabled=false;
+      if(s.export_ready) location.href='/preview.html?task='+r.task_id;
+      else { $('#stage').textContent='失败：'+(s.error||'没有可排版的内容'); }
+    }
+  },900);
+};
+</script>
+</body>
+</html>

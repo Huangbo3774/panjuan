@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>预览与打印选项 · 磐卷 PaperForge</title>
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<header>
+  <h1>预览与打印选项</h1>
+  <div class="tag"><a href="/" style="color:#2f6f4f">← 重新上传</a>
+    &nbsp;<span id="meta" class="hint"></span></div>
+</header>
+<main>
+  <div class="grid">
+    <div class="thumbs" id="thumbs"></div>
+
+    <div class="stage">
+      <div class="cmp">
+        <button id="cmpOff" class="ghost">只看排版结果</button>
+      </div>
+      <img id="big" alt="试卷预览">
+      <div class="hint" id="note" style="padding:8px 0 2px"></div>
+    </div>
+
+    <div class="card" style="margin:0">
+      <b>选项</b>
+      <label class="opt"><span>试卷标题</span><input type="text" id="o_title" style="width:130px"></label>
+      <div class="sect">版面</div>
+      <label class="opt"><span>字号 <small class="hint">pt</small></span>
+        <input type="range" id="o_font_size" min="10" max="16" step="0.5"></label>
+      <label class="opt"><span>整体缩放</span>
+        <input type="range" id="o_font_scale" min="0.8" max="1.5" step="0.05"></label>
+      <label class="opt"><span>行距</span>
+        <input type="range" id="o_line_spacing" min="1.1" max="2.2" step="0.1"></label>
+      <label class="opt"><span>上边距 <small class="hint">mm</small></span>
+        <input type="number" id="o_mt" min="10" max="40" step="1"></label>
+      <label class="opt"><span>左右边距 <small class="hint">mm</small></span>
+        <input type="number" id="o_ml" min="10" max="40" step="1"></label>
+      <div class="sect">省纸省墨</div>
+      <label class="opt"><span>显示班级/姓名栏</span><input type="checkbox" id="o_show_header"></label>
+      <label class="opt"><span>2 合 1（两页一纸）</span><input type="checkbox" id="o_two_up"></label>
+      <div class="row" style="margin-top:16px">
+        <button id="apply">应用并重排</button>
+        <button class="ghost" id="dl">下载试卷 PDF</button>
+      </div>
+      <div class="hint" id="st" style="margin-top:10px"></div>
+      <pre class="log" id="log" style="max-height:150px"></pre>
+    </div>
+  </div>
+</main>
+<script>
+const $=s=>document.querySelector(s);
+const fmtLogs=v=>(v||[]).map(x=>typeof x==='string'?x:`[${x.t}s] ${x.msg}`).join(' | ');
+const MM=72/25.4;
+const task=new URLSearchParams(location.search).get('task');
+let opt={}, busy=false;
+
+const FIELDS={o_title:'title',o_font_size:'font_size',o_font_scale:'font_scale',
+  o_line_spacing:'line_spacing',o_show_header:'show_header',o_two_up:'two_up'};
+
+function fill(o){
+  opt=o;
+  $('#o_title').value=o.title||'';
+  $('#o_font_size').value=o.font_size; $('#o_font_scale').value=o.font_scale;
+  $('#o_line_spacing').value=o.line_spacing;
+  $('#o_mt').value=Math.round(o.margin_top/MM); $('#o_ml').value=Math.round(o.margin_left/MM);
+  $('#o_show_header').checked=!!o.show_header; $('#o_two_up').checked=!!o.two_up;
+}
+function collect(){
+  const d={};
+  for(const id in FIELDS){
+    const el=$('#'+id), k=FIELDS[id];
+    d[k]= el.type==='checkbox'? el.checked : (el.type==='range'? parseFloat(el.value): el.value);
+  }
+  d.margin_top=parseFloat($('#o_mt').value)*MM; d.margin_bottom=d.margin_top;
+  d.margin_left=parseFloat($('#o_ml').value)*MM; d.margin_right=d.margin_left;
+  d.color_mode=opt.color_mode||'gray'; d.ink_saver=!!opt.ink_saver;
+  return d;
+}
+function showPreviews(list){
+  const box=$('#thumbs'); box.innerHTML='';
+  list.forEach((p,i)=>{
+    const im=document.createElement('img'); im.src=p.image_url; im.loading='lazy';
+    im.onclick=()=>{$('#big').src=p.image_url; $('#note').textContent='第 '+p.page_no+' 页';
+      box.querySelectorAll('img').forEach(x=>x.classList.remove('sel')); im.classList.add('sel');};
+    if(i===0){ im.classList.add('sel'); $('#big').src=p.image_url; $('#note').textContent='第 1 页'; }
+    box.appendChild(im);
+  });
+  $('#meta').textContent=`共 ${list.length} 页 · 排版结果为最终 PDF 的真实样子`;
+}
+async function poll(){
+  if(busy) return; busy=true; $('#st').textContent='重排中…';
+  let s;
+  for(let i=0;i<60;i++){
+    await new Promise(r=>setTimeout(r,900));
+    s=await (await fetch('/api/tasks/'+task)).json();
+    if(s.stage!=='排版中'&&s.stage!=='生成 PDF') break;
+  }
+  busy=false;
+  $('#log').textContent=fmtLogs(s.logs);
+  showPreviews(s.previews||[]);
+  $('#st').textContent = s.export_ready? '已生成，可下载' : ('未生成：'+(s.error||s.stage));
+  $('#dl').disabled=!s.export_ready;
+}
+$('#apply').onclick=async()=>{
+  await fetch('/api/tasks/'+task+'/options',{method:'PUT',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(collect())});
+  poll();
+};
+$('#dl').onclick=async()=>{
+  const s=await (await fetch('/api/tasks/'+task)).json();
+  location.href='/api/tasks/'+task+'/export?mode=print';
+};
+$('#cmpOff').onclick=()=>{ $('#note').textContent='提示：清洗前原图请在处理日志中核对；此处显示的是最终 PDF 排版结果。'; };
+
+(async()=>{
+  if(!task){ $('#st').textContent='缺少任务参数，请先上传'; return; }
+  const s=await (await fetch('/api/tasks/'+task)).json();
+  fill(s.options||{});
+  showPreviews(s.previews||[]);
+  $('#log').textContent=fmtLogs(s.logs);
+  $('#dl').disabled=!s.export_ready;
+  $('#st').textContent=s.export_ready?'已生成，可下载':'处理中…';
+})();
+</script>
+</body>
+</html>
