@@ -37,6 +37,29 @@ py -3.11 -m venv .venv
 
 ⚠️ **必须用 Python 3.11+**。Windows 上默认 `python` 常常是旧版本（开发机上是 3.6.8，装不了本项目任何依赖），`setup.ps1` 会显式挑 3.11+ 而不是依赖 PATH 顺序。
 
+### 发给不太懂电脑的人
+
+不用讲命令行——把 `paper-forge-v1.0.zip` 发过去，让对方照着
+**[docs/安装说明.md](docs/安装说明.md)** 做：解压 → 右键运行一个文件 → 拖作业进去。
+那份说明里也写清了「现在还不能做什么」，免得对方白等。
+
+### 推到自己的 GitHub
+
+仓库已经是干净的 git 仓库（只含可分发内容，真实作业已被 `.gitignore` 排除）。
+在 github.com 建一个空仓库后：
+
+```bash
+git remote add origin https://github.com/<你的用户名>/<仓库名>.git
+git branch -M main
+git push -u origin main
+```
+
+只想发文件不想建仓库，也可以直接用 `git archive` 出的包：
+
+```bash
+git archive --format=zip -o ../paper-forge-v1.0.zip HEAD
+```
+
 ## 三种用法
 
 | 模式 | 流程 | 状态 |
