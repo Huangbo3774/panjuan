@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import re
+import uuid
 from typing import Any
 
 import pymupdf
@@ -140,15 +141,33 @@ def annotated_lines_from_pdf(path: str, work_dir: str | None = None, dpi: int = 
                 pix = page.get_pixmap(dpi=dpi)
                 tmp = work_dir or os.path.join(os.path.dirname(os.path.abspath(path)), "_ocr")
                 os.makedirs(tmp, exist_ok=True)
-                fp = os.path.join(tmp, f"lines_p{page_no}.png")
-                pix.save(fp)
+                # ⚠️ 文件名必须【每次都不一样】，而且不能用 MuPDF 的 pix.save()。
+                #   真实故障（2026-10-19，用户在网页上点"开始出卷"→ HTTP 500）：
+                #   同一份卷先走出卷、再走识别题型，两次都用同一个 work_dir 和同一个
+                #   `lines_p2.png`；OCR 那边偶尔还压着句柄没放，收尾的 os.remove 又
+                #   把 OSError 咽了 → 文件留在那儿。下一次 pix.save() 会先删再写，
+                #   Windows 上删不掉锁着的文件 → FzErrorSystem: Permission denied → 整份卷 500。
+                #   所以：唯一名（撞不上）+ 用 Python 直接覆盖写（不先删）。
+                fp = os.path.join(tmp, f"lines_p{page_no}_{os.getpid()}_{uuid.uuid4().hex[:8]}.png")
+                try:
+                    with open(fp, "wb") as fh:
+                        fh.write(pix.tobytes("png"))
+                except OSError as e:
+                    errors.append(f"第 {page_no} 页渲染落盘失败：{type(e).__name__}: {e}")
+                    pages.append({"page": page_no, "route": "ocr-write-failed", "lines": 0,
+                                  "width_pt": width_pt, "height_pt": page.rect.height})
+                    continue
                 try:
                     raw = O.ocr_image(fp)
+                except Exception as e:
+                    # 一页 OCR 坏了不能拖垮整份卷：这一页按"没读到行"继续，错误照报
+                    errors.append(f"第 {page_no} 页 OCR 失败：{type(e).__name__}: {e}")
+                    raw = []
                 finally:
                     try:
                         os.remove(fp)
                     except OSError:
-                        pass
+                        pass        # 唯一名，留下也不会有第二次来撞
                 # px → pt：渲染时是 dpi/72 倍放大，所以 1pt = dpi/72 px。
                 sc = 72.0 / dpi
                 items = [{**it, "x": it["x"] * sc, "y": it["y"] * sc,

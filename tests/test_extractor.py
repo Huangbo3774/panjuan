@@ -627,6 +627,57 @@ def subquestion_paren_markers_merge_into_their_question():
 t("小问（1）（2）不许切成两道重号题（含反例）", subquestion_paren_markers_merge_into_their_question)
 
 t("卷首信息行不许吃掉带题号的第一题", header_guard_skips_numbered_lines)
+def ocr_temp_files_must_not_collide_across_runs():
+    """同一份扫描卷连跑两遍（先出卷、再识别题型），OCR 的临时图不许撞名。
+
+    真实故障（2026-10-19 用户在网页上点"开始出卷"→ 识别题型失败：HTTP 500）：
+    固定名 `lines_p2.png` + MuPDF 的 `pix.save()` 会【先删再写】；上一遍收尾的
+    `os.remove` 因为 OCR 还压着句柄而失败（异常被咽掉），文件留在那儿，
+    第二遍删不掉 → FzErrorSystem: Permission denied → 整份卷 500。
+    修法：临时名带 pid+随机后缀（撞不上）+ 用 Python 直接覆盖写（不先删）。
+    """
+    import shutil
+    import pymupdf
+    from app.extractor import lines as L
+    from app.extractor import ocr as O
+
+    out = os.path.join(ROOT, "var", "_ocr_collide")
+    shutil.rmtree(out, ignore_errors=True)
+    os.makedirs(out, exist_ok=True)
+    src = os.path.join(out, "纯扫描页.pdf")
+    d = pymupdf.open()
+    pg = d.new_page(width=595, height=200)
+    pix = pymupdf.Pixmap(pymupdf.csGRAY, pg.get_pixmap(dpi=72))   # 只有像素、没有文字层
+    pg.insert_image(pgm := pymupdf.Rect(0, 0, 595, 200), pixmap=pix)
+    d.save(src)
+    d.close()
+
+    seen: list[str] = []
+    held: list = []
+
+    def fake_ocr(path: str):
+        seen.append(os.path.basename(path))
+        held.append(open(path, "rb"))        # 模拟 OCR 那边句柄还没放
+        return [{"text": "1. 一、选择题", "x": 40, "y": 40, "w": 140, "h": 14, "conf": 0.9}]
+
+    old = O.ocr_image
+    try:
+        O.ocr_image = fake_ocr
+        r1 = L.annotated_lines_from_pdf(src, work_dir=os.path.join(out, "w1"), dpi=100)
+        r2 = L.annotated_lines_from_pdf(src, work_dir=os.path.join(out, "w1"), dpi=100)
+    finally:
+        O.ocr_image = old
+        for f in held:
+            f.close()
+        shutil.rmtree(out, ignore_errors=True)
+    assert len(seen) == 2, f"两遍应该各渲染一次临时图：{seen}"
+    assert len(set(seen)) == len(seen), f"临时图撞名（下一次就会去删一个被占用的文件）：{seen}"
+    assert r2["lines"], "第二遍一行都没读到（说明这一页被静默跳过了）"
+    assert not any(p["route"] in ("ocr-write-failed", "ocr-missing") for p in r2["pages"]), r2["pages"]
+
+
+t("OCR 临时图唯一名：同一份卷跑两遍不许 500", ocr_temp_files_must_not_collide_across_runs)
+
 t("装订栏过滤真的接在读页链路上", wiring_margin_filter_actually_runs_on_a_page)
 t("补括号真的接在成题链路上", wiring_bracket_repair_actually_runs_in_extract)
 

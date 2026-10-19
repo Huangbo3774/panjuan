@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import threading
+import uuid
 from typing import Any
 
 _engine = None
@@ -76,8 +77,11 @@ def ocr_pdf(path: str, work_dir: str | None = None, dpi: int = 300,
             if progress:
                 progress(i + 1, doc.page_count)
             pix = page.get_pixmap(dpi=dpi)
-            fp = os.path.join(tmp, f"ocr_p{i+1}.png")
-            pix.save(fp)
+            # 同 lines.py：唯一名 + 用 Python 覆盖写。固定名撞上"上一次还留着的文件"时，
+            # MuPDF 的 save 会先删再写，Windows 删不掉被占用的文件 → 整份卷报错。
+            fp = os.path.join(tmp, f"ocr_p{i + 1}_{os.getpid()}_{uuid.uuid4().hex[:8]}.png")
+            with open(fp, "wb") as fh:
+                fh.write(pix.tobytes("png"))
             items = ocr_image(fp)
             pages.append({
                 "page_no": i + 1,
