@@ -14,7 +14,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.colors import black, HexColor
 from reportlab.pdfgen import canvas as rl_canvas
 
-from ..layout.options import LayoutOptions, A4_W, A4_H
+from ..layout.options import LayoutOptions, MM, A4_W, A4_H
 
 _FONT_CANDIDATES = [
     ("PaperForge-Reg", "C:/Windows/Fonts/msyh.ttc"),
@@ -95,29 +95,68 @@ def bind_metrics() -> None:
     engine.set_metrics(_measure)
 
 
-def _draw_header(c: rl_canvas.Canvas, opt: LayoutOptions, title: str) -> None:
+def _draw_header(c: rl_canvas.Canvas, opt: LayoutOptions, title: str,
+                 x0: float = 0.0, w: float | None = None) -> None:
     if not opt.show_header:
         return
+    w = w or A4_W
     top = A4_H - opt.margin_top
     c.setFont(_state["family"], 16)
-    c.drawString(opt.margin_left, top - 14, (title or "")[:40])
+    c.drawString(opt.margin_left + x0, top - 14, (title or "")[:40])
     c.setFont(_state["family"], opt.effective_font)
     line_y = top - 36
     label = "班级 ____________    姓名 ____________    得分 ____________"
-    c.drawString(opt.margin_left, line_y, label)
+    c.drawString(opt.margin_left + x0, line_y, label)
     c.setStrokeColor(HexColor("#888888"))
     c.setLineWidth(0.6)
-    c.line(opt.margin_left, line_y - 7, A4_W - opt.margin_right, line_y - 7)
+    c.line(opt.margin_left + x0, line_y - 7, x0 + w - opt.margin_right, line_y - 7)
 
 
-def _draw_footer(c: rl_canvas.Canvas, opt: LayoutOptions, no: int, total: int) -> None:
+def _draw_seam(c: rl_canvas.Canvas, opt: LayoutOptions) -> None:
+    """A3 对开的中线装订缝 + 左侧竖排密封线（标准试卷样式）。
+
+    ⚠️ 密封线整条必须落在【页边距以内】：默认左边距 20mm，所以竖线画在 14mm、
+       文字画在 5–11mm。第一版画到 21mm 去了，虚线直接从题干上穿过去（渲染出来看才发现）。
+    """
+    if not opt.is_spread:
+        return
+    c.saveState()
+    c.setStrokeColor(HexColor("#bbbbbb"))
+    c.setLineWidth(0.5)
+    c.setDash(3, 3)
+    c.line(A4_W, 12, A4_W, A4_H - 12)          # 对折/装订中线
+    c.setDash()
+    if opt.seal_line:
+        line_x = 14 * MM
+        text_x = 5 * MM
+        c.setStrokeColor(HexColor("#999999"))
+        c.setDash(2, 2)
+        c.line(line_x, 40, line_x, A4_H - 40)
+        c.setDash()
+        c.setFont(_state["family"], 9)
+        c.setFillColor(HexColor("#444444"))
+        y = A4_H - 70
+        for ch in "学校班级姓名学号":
+            c.drawString(text_x, y, ch)
+            y -= 14
+            if y < 60:
+                break
+        c.setFillColor(black)
+    c.restoreState()
+
+
+def _draw_footer(c: rl_canvas.Canvas, opt: LayoutOptions, no: int, total: int,
+                 x0: float = 0.0, w: float | None = None, half_no: int | None = None) -> None:
     c.setFont(_state["family"], 9)
     c.setFillColor(HexColor("#555555"))
-    c.drawCentredString(A4_W / 2, opt.margin_bottom - 12, f"第 {no} 页 / 共 {total} 页")
+    w = w or A4_W
+    # 对开时每一半都要有自己的页码：家长撕开或只看不折的时候，页码不能只有一处
+    label = f"第 {half_no if half_no is not None else no} 页 / 共 {total} 页"
+    c.drawCentredString(x0 + w / 2, opt.margin_bottom - 12, label)
     # 出处署名：默认开，但用户能关。不写 URL（打印出来没人手输），
     # 只留项目名 + "开源免费"，家长搜得到、也不构成无法去除的广告。
     if getattr(opt, "branding", True):
-        c.drawRightString(A4_W - opt.margin_right, opt.margin_bottom - 12,
+        c.drawRightString(x0 + w - opt.margin_right, opt.margin_bottom - 12,
                           "磐卷 PaperForge · 开源免费")
     c.setFillColor(black)
 
@@ -153,14 +192,21 @@ def render_pdf(model: dict[str, Any], opt: LayoutOptions, out_path: str,
     # 先写 .tmp 再原子改名：否则「改选项 → 后台重排」期间客户端能读到半截 PDF
     # （验收 F05/F06 实测报 IncompleteRead: 0 bytes read, 510465 more expected）
     tmp = out_path + ".tmp.pdf"
-    c = rl_canvas.Canvas(tmp, pagesize=(A4_W, A4_H))
+    c = rl_canvas.Canvas(tmp, pagesize=(opt.page_w, opt.page_h))
     c.setTitle(title or opt.title or "磐卷试卷")
     c.setAuthor("磐卷 PaperForge")
     total = len(model["pages"])
+    # 对开时"页"和"物理纸"不是一回事：一张 A3 上是第1、2页。
+    # 页码要按 A4 面数，否则家长对折装订后看到"第1页/共3页"却缺第2页。
+    a4_pages = total * 2 if opt.is_spread else total
 
     for pg in model["pages"]:
-        base_y = A4_H - opt.margin_top - (52.0 if opt.show_header else 0.0)
-        _draw_header(c, opt, title or opt.title)
+        base_y = opt.page_h - opt.margin_top - (52.0 if opt.show_header else 0.0)
+        if opt.is_spread:
+            _draw_header(c, opt, title or opt.title, 0.0, A4_W)
+            _draw_header(c, opt, title or opt.title, A4_W, A4_W)
+        else:
+            _draw_header(c, opt, title or opt.title)
         for b in pg["blocks"]:
             if b["type"] == "image":
                 try:
@@ -188,7 +234,12 @@ def render_pdf(model: dict[str, Any], opt: LayoutOptions, out_path: str,
             for ln in b["lines"]:
                 c.drawString(opt.margin_left + b["x"], yy, ln)
                 yy -= leading
-        _draw_footer(c, opt, pg["no"], total)
+        if opt.is_spread:
+            _draw_seam(c, opt)
+            _draw_footer(c, opt, pg["no"], a4_pages, 0.0, A4_W, half_no=pg["no"] * 2 - 1)
+            _draw_footer(c, opt, pg["no"], a4_pages, A4_W, A4_W, half_no=pg["no"] * 2)
+        else:
+            _draw_footer(c, opt, pg["no"], a4_pages)
         c.showPage()
     c.save()
     os.replace(tmp, out_path)          # 原子替换，读者只会看到完整文件

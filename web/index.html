@@ -4,55 +4,155 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>磐卷 PaperForge · 老师发什么，磐卷印什么</title>
-<link rel="stylesheet" href="/css/app.css">
+<!-- 相对路径：绝对路径 /css/app.css 在 file:// 下会去磁盘根找，样式全丢 -->
+<link rel="stylesheet" href="css/app.css">
+<!-- 服务门闸：本机服务没起来时给一个「启动服务」按钮。
+     浏览器不能自己启动本地进程，所以这个按钮走 panjuan:// 协议让 Windows 去拉起服务。-->
+<script src="js/gate.js"></script>
 </head>
 <body>
-<header>
-  <h1>磐卷 PaperForge</h1>
-  <div class="tag">老师发什么，磐卷印什么——一张干净 A4 &nbsp;·&nbsp; Any document. One clean A4.
-    &nbsp;<span class="badge">全程本机处理，不上传</span></div>
-</header>
+<nav class="nav">
+  <div class="wrap nav__in">
+    <a class="logo" href="index.html">
+      <span class="logo__mark">卷</span>
+      <span>磐卷 PaperForge<small>把老师发的任何材料，变成一张能做的卷子</small></span>
+    </a>
+    <div class="nav__links">
+      <a href="#how">怎么用</a><a href="#modes">三种模式</a><a href="#privacy">隐私</a>
+    </div>
+    <div class="nav__right">
+      <span class="pill">✓ 全程本机运行</span>
+    </div>
+  </div>
+</nav>
+
 <main>
-  <div class="card">
-    <div class="drop" id="drop">
-      <b>把老师发的作业拖进来</b>
-      <small>支持 PDF（文字版 / 扫描版）、图片、Word(.docx)；可混合格式，最多 50 个文件 ·
-        <a href="#" id="pick" style="color:#2f6f4f">或点击选择</a></small>
+  <section class="wrap">
+
+    <div class="head">
+      <span class="eyebrow">PDF · 图片 · Word → 标准试卷</span>
+      <h1>把老师发的作业拖进来<small>自动清洗、去灰底、重排、识别题型，1–2 秒出一张能直接做的卷子</small></h1>
+    </div>
+
+    <div class="dropzone" id="drop">
+      <div class="dropzone__ico">⬆</div>
+      <h2>选择文件，或拖到这里</h2>
+      <p>支持手机拍的作业照片、扫描版 PDF、文字版 PDF、Word（.docx）；<br>
+        可以一次混着丢进来，最多 50 个文件，顺序就是页序。</p>
+      <button class="btn btn--lg btn--white" id="pickBtn" type="button">＋ 选择文件</button>
+      <small>不上传、不注册、不收费 · 处理完的 PDF 直接下载或打印</small>
       <input type="file" id="fin" multiple accept=".pdf,.docx,.jpg,.jpeg,.png,.webp,.bmp" hidden>
     </div>
-    <ul class="files" id="list"></ul>
-    <div class="row" style="margin-top:14px">
-      <button id="go" disabled>开始出卷</button>
-      <button class="ghost" id="clr" disabled>清空</button>
-      <span class="hint" id="hint">上传顺序 = 试卷页顺序，可上下调整</span>
-    </div>
-  </div>
 
-  <div class="card" id="prog" hidden>
-    <div class="row" style="justify-content:space-between">
-      <b id="stage">排队中</b><span class="hint" id="pct">0%</span>
+    <div class="trust">
+      <div><span class="tick">✓</span> 灰底斜拍自动矫正增强</div>
+      <div><span class="tick">✓</span> 标准 A4 / A3 对开试卷版式</div>
+      <div><span class="tick">✓</span> 可在线作答并自动批改</div>
     </div>
-    <div class="bar"><i id="bar"></i></div>
-    <pre class="log" id="log"></pre>
-  </div>
+
+    <div id="picked" hidden style="margin-top:var(--s7)">
+      <div class="card">
+        <div class="card__head">
+          <h2>要出卷的文件</h2>
+          <span class="spacer"></span>
+          <span class="hint" id="hint">上传顺序 = 试卷页顺序</span>
+        </div>
+        <ul class="files" id="list"></ul>
+        <div class="btn-row" style="margin-top:var(--s5)">
+          <button class="btn btn--lg" id="go" disabled>开始出卷</button>
+          <button class="btn btn--lg btn--ghost" id="clr" disabled>清空</button>
+          <span class="hint">图片大的话多等几秒，扫描版会走增强</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="prog" hidden style="margin-top:var(--s6)">
+      <div class="card__head"><h2 id="stage">排队中</h2>
+        <span class="spacer"></span><span class="badge badge--muted" id="pct">0%</span></div>
+      <div class="bar"><i id="bar"></i></div>
+      <pre class="log" id="log"></pre>
+    </div>
+  </section>
+
+  <section class="wrap" id="modes" style="margin-top:var(--s9)">
+    <div class="head head--left"><span class="eyebrow">最后一步打印出来的三种东西</span>
+      <h2 style="font-size:var(--f-2xl)">同一张卷子：空白 / 带孩子的答案 / 带批改结果</h2></div>
+    <div class="grid3">
+      <div class="feature">
+        <div class="feature__ico">🖨</div>
+        <h3>空白卷</h3>
+        <p>没做题就能直接打，标准 A4 或 A3 横版对开（两张 A4 左右 1:1 拼、带密封线，对折就是 A4 本子）。
+          灰底、斜拍、模糊都会先矫正增强，题目里的配图原样带上。</p>
+        <span class="badge badge--ok">可跳过做题</span>
+      </div>
+      <div class="feature">
+        <div class="feature__ico">✎</div>
+        <h3>我的答案</h3>
+        <p>孩子在第 3 步做完提交，打印出来就是带他作答的那一张：
+          选择题点、填空题打字、问答题写过程，草稿存本机。</p>
+        <span class="badge badge--ok">已上线</span>
+      </div>
+      <div class="feature">
+        <div class="feature__ico">✓</div>
+        <h3>答案 + 自动批改</h3>
+        <p>家长先"自己做一遍 → 另存为标准答案"，孩子做同一张就自动判分，
+          打印出来带 ✓/✗/△ 和得分，直接发老师。</p>
+        <span class="badge badge--ok">已上线</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap" id="how" style="margin-top:var(--s8)">
+    <div class="head head--left"><span class="eyebrow">流程</span>
+      <h2 style="font-size:var(--f-2xl)">四步，做题之前先校对</h2></div>
+    <div class="flow">
+      <div><b><i>1</i>上传</b><p>拖进来就行，格式混着来也可以。</p></div>
+      <div><b><i>2</i>校对题目</b><p>改 / 增 / 删，最后点「发布」收尾。</p></div>
+      <div><b><i>3</i>在线做题</b><p>这一步可以整个跳过，直接去打印空白卷。</p></div>
+      <div><b><i>4</i>打印成 PDF</b><p>做了就带答案，开了批改就带结果，没做就是空白卷。</p></div>
+    </div>
+  </section>
+
+  <section class="wrap" id="privacy" style="margin-top:var(--s8)">
+    <div class="alert alert--info">
+      <span class="alert__i">i</span>
+      <div><b>孩子的作业不出这台电脑。</b>
+        解析、清洗、OCR、批改、存储全部在本机；试卷和作答放在 <code>data/</code>，
+        临时文件放在 <code>var/</code>（服务启动即清空）。真实作业样本被写进
+        <code>.gitignore</code>，永远不会进仓库。项目 MIT 开源，代码可以直接审。</div>
+    </div>
+  </section>
 </main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span>磐卷 PaperForge · MIT 开源 · 永久免费 · 无广告无会员</span>
+    <span class="spacer"></span>
+    <span class="hint">如果你家娃也在天天打印作业，点个 ⭐ 能让下一个家长找到它</span>
+  </div>
+</footer>
+
 <script>
 const $=s=>document.querySelector(s);
-const fmtLogs=v=>(v||[]).map(x=>typeof x==='string'?x:`[${x.t}s] ${x.msg}`).join(' | ');
-let files=[];   // {file, name, size}
+const fmtLogs=v=>(v||[]).map(x=>typeof x==='string'?x:`[${x.t}s] ${x.msg}`).join('\n');
+let files=[];
 
 function render(){
   const ul=$('#list'); ul.innerHTML='';
   files.forEach((f,i)=>{
+    const ext=(f.name.split('.').pop()||'').toUpperCase().slice(0,4);
     const li=document.createElement('li');
-    li.innerHTML=`<span class="nm">${f.name}</span><span class="sz">${(f.size/1024).toFixed(0)} KB</span>
-      <span class="mv"><button data-a="up" data-i="${i}">↑</button><button data-a="dn" data-i="${i}">↓</button>
-      <button data-a="rm" data-i="${i}">✗</button></span>`;
+    li.innerHTML=`<span class="ic">${ext}</span>
+      <span class="nm">${f.name}</span><span class="sz">${(f.size/1024).toFixed(0)} KB</span>
+      <span class="mv"><button data-a="up" data-i="${i}" title="上移">↑</button>
+        <button data-a="dn" data-i="${i}" title="下移">↓</button>
+        <button data-a="rm" data-i="${i}" title="移除">✗</button></span>`;
     ul.appendChild(li);
   });
   $('#go').disabled = files.length===0;
   $('#clr').disabled = files.length===0;
-  $('#hint').textContent = files.length? `${files.length} 个文件 · 上传顺序 = 页序` : '上传顺序 = 试卷页顺序，可上下调整';
+  $('#picked').hidden = files.length===0;
+  $('#hint').textContent = files.length? `${files.length} 个文件 · 顺序 = 页序` : '上传顺序 = 试卷页顺序';
 }
 function add(list){
   for(const f of list){
@@ -61,8 +161,8 @@ function add(list){
   }
   render();
 }
-$('#pick').onclick=e=>{e.preventDefault(); $('#fin').click();};
-$('#drop').onclick=()=>$('#fin').click();
+$('#pickBtn').onclick=e=>{e.preventDefault(); if(location.protocol!=='file:') $('#fin').click();};
+$('#drop').onclick=()=>{ if(location.protocol!=='file:') $('#fin').click(); };
 $('#fin').onchange=e=>add(e.target.files);
 $('#clr').onclick=()=>{files=[]; render();};
 $('#list').onclick=e=>{
@@ -75,7 +175,28 @@ $('#list').onclick=e=>{
 };
 ['dragenter','dragover'].forEach(ev=>$('#drop').addEventListener(ev,e=>{e.preventDefault();$('#drop').classList.add('on');}));
 ['dragleave','drop'].forEach(ev=>$('#drop').addEventListener(ev,e=>{e.preventDefault();$('#drop').classList.remove('on');}));
-$('#drop').addEventListener('drop',e=>add(e.dataTransfer.files));
+$('#drop').addEventListener('drop',e=>{ if(location.protocol!=='file:') add(e.dataTransfer.files); });
+
+/* 出完版直接进第 2 步「校对题目」：识别题型要跑 OCR，扫描卷十几秒，
+   所以这一步要有明确反馈，不能让页面停在"完成"上什么都不发生。 */
+async function toProofread(tid){
+  $('#stage').textContent='识别题型与配图…（扫描卷要跑 OCR，可能要十几秒）';
+  $('#pct').textContent=''; $('#bar').style.width='100%';
+  try{
+    const res=await fetch('api/papers/'+tid+'/parse',{method:'POST'});
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(j.detail||('HTTP '+res.status));
+    location.href='proofread.html?paper='+j.paper_id;
+  }catch(e){
+    $('#stage').textContent='识别题型失败：'+e.message;
+    $('#go').disabled=false;
+    const p=document.createElement('p'); p.className='hint'; p.style.marginTop='10px';
+    p.textContent='这份材料出得了版但认不出题目（常见于纯扫描又缺 OCR 引擎）。';
+    const a=document.createElement('a'); a.href='print.html?task='+tid; a.textContent='先去第 4 步打一张整页版 →';
+    p.appendChild(a);
+    $('#prog').appendChild(p);
+  }
+}
 
 $('#go').onclick=async()=>{
   const fd=new FormData();
@@ -83,20 +204,20 @@ $('#go').onclick=async()=>{
   $('#prog').hidden=false; $('#go').disabled=true;
   $('#stage').textContent='上传中…'; $('#log').textContent='';
   let r;
-  try{ r=await (await fetch('/api/tasks',{method:'POST',body:fd})).json(); }
+  try{ r=await (await fetch('api/tasks',{method:'POST',body:fd})).json(); }
   catch(e){ $('#stage').textContent='上传失败：'+e.message; $('#go').disabled=false; return; }
   (r.rejected||[]).forEach(x=>$('#log').textContent+=`✗ ${x.name}：${x.error}\n`);
   if(!r.task_id){ $('#stage').textContent='没有可用文件'; $('#go').disabled=false; return; }
   const timer=setInterval(async()=>{
-    let s; try{ s=await (await fetch('/api/tasks/'+r.task_id)).json(); }catch(e){ return; }
+    let s; try{ s=await (await fetch('api/tasks/'+r.task_id)).json(); }catch(e){ return; }
     $('#stage').textContent=s.stage; $('#pct').textContent=Math.round(s.progress*100)+'%';
     $('#bar').style.width=(s.progress*100)+'%';
     $('#log').textContent=fmtLogs(s.logs);
     $('#log').scrollTop=$('#log').scrollHeight;
     if(s.status==='done'||s.status==='partial'||s.status==='failed'){
       clearInterval(timer); $('#go').disabled=false;
-      if(s.export_ready) location.href='/preview.html?task='+r.task_id;
-      else { $('#stage').textContent='失败：'+(s.error||'没有可排版的内容'); }
+      if(s.export_ready) toProofread(r.task_id);
+      else $('#stage').textContent='失败：'+(s.error||'没有可排版的内容');
     }
   },900);
 };

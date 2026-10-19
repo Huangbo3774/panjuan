@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>校对题目 · 磐卷 PaperForge</title>
+<link rel="stylesheet" href="css/app.css">
+<!-- 服务门闸：本机服务没起来时给一个「启动服务」按钮。
+     浏览器不能自己启动本地进程，所以这个按钮走 panjuan:// 协议让 Windows 去拉起服务。-->
+<script src="js/gate.js"></script>
+<!-- 步骤条顺序只有 js/app.js 那一份定义，页面只声明 data-step -->
+<script src="js/app.js"></script>
+</head>
+<body data-step="proofread">
+<nav class="nav"><div class="wrap nav__in">
+  <a class="logo" href="index.html"><span class="logo__mark">卷</span>
+    <span>磐卷 PaperForge<small>校对题目 · 发布前最后一步</small></span></a>
+  <nav class="steps" id="steps" style="margin-left:auto"></nav>
+</div></nav>
+
+<main class="wrap">
+
+  <div class="page-head">
+    <h1 id="ttl">校对题目</h1>
+    <p id="sub">识别结果在这里改完、补齐、发布，之后孩子做题时不会再出现任何编辑入口。</p>
+  </div>
+
+  <div id="banner"></div>
+
+  <div class="cols">
+    <div>
+      <div class="card card--flat" style="padding:0;border:0;background:none">
+        <div id="qs"><div class="empty">正在识别题型…扫描卷要跑 OCR，可能要十几秒</div></div>
+      </div>
+    </div>
+
+    <div class="side">
+      <div class="card">
+        <h2>校对进度</h2>
+        <div class="kv"><span>题目总数</span><span id="n_total">—</span></div>
+        <div class="kv"><span>识别待确认</span><span id="n_rev">—</span></div>
+        <div class="kv"><span>带配图</span><span id="n_fig">—</span></div>
+        <div class="kv"><span>未保存改动</span><span id="n_dirty">0</span></div>
+        <div class="bar"><i id="prog"></i></div>
+        <p class="hint" id="savedat">还没保存过</p>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2>发布</h2>
+        <label class="field"><span>试卷标题</span>
+          <input type="text" id="title" placeholder="留空则用识别到的卷名"></label>
+        <p class="hint">发布 = 校对完成。发布后做题页才能进入。
+          <b>版式（A3 对开、字号、边距、班级姓名栏）不在这里改</b>——那些归第 4 步，
+          那里改一项预览立刻跟着变；这一页放了也没地方给你看效果。</p>
+        <div class="btn-row" style="margin-top:16px">
+          <button class="btn btn--block" id="publish">发布这张卷子</button>
+        </div>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn btn--ghost btn--sm" id="dlProof">先打一张空白卷</button>
+          <button class="btn btn--ghost btn--sm" id="toPrint">跳过做题，去打印 →</button>
+        </div>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn btn--ghost btn--sm" id="unpub">撤回校对（重新编辑）</button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2>加题</h2>
+        <p class="hint">识别漏了题、或者想自己补一道，用这个。新题会插在「当前选中的题」后面。</p>
+        <div class="btn-row" style="margin-top:12px">
+          <button class="btn btn--ghost btn--sm" id="addEnd">在末尾加一道题</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const $=s=>document.querySelector(s);
+const $$=s=>[...document.querySelectorAll(s)];
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const TYPES={choice:'选择题',fill:'填空题',judge:'判断题',essay:'问答题',unknown:'未分类'};
+const q0=new URLSearchParams(location.search).get('paper');
+const task0=new URLSearchParams(location.search).get('task');
+let PID=null, QS=[], STATUS='draft', dirty=new Set();
+
+// 步骤条由 js/app.js 统一渲染（顺序只有一份）；这里只负责"在拿到试卷号之后再渲染一次"
+function steps(){ if(window.PJSteps) PJSteps.render('proofread', PID); }
+function banner(){
+  const pub=STATUS==='published';
+  $('#banner').innerHTML=pub
+    ? `<div class="alert alert--ok" style="margin-bottom:16px">✓ 已发布，做题页可以进入。要再改就点右侧「撤回校对」。</div>`
+    : `<div class="alert alert--warn" style="margin-bottom:16px">▲ 这份卷子还没发布，做题页暂时进不去——先改完再点右侧「发布」。</div>`;
+  $('#publish').disabled=pub;
+  $('#unpub').style.display=pub?'':'none';
+}
+function stats(){
+  $('#n_total').textContent=QS.length;
+  $('#n_rev').textContent=QS.filter(q=>q.needs_review).length;
+  $('#n_fig').textContent=QS.filter(q=>(q.images||[]).length).length;
+  $('#n_dirty').textContent=dirty.size;
+  const done=QS.length-dirty.size;
+  $('#prog').style.width=(QS.length?done/QS.length*100:0)+'%';
+}
+
+function qcard(q,i){
+  const figs=(q.images||[]).map((im,j)=>`
+    <figure><img src="api/papers/${PID}/figures/${encodeURIComponent(im.name)}" alt="第${i+1}题配图">
+      <figcaption><span>源第 ${im.page||'?'} 页 · ${Math.round(im.w_pt||0)}×${Math.round(im.h_pt||0)}pt</span>
+        <button class="btn btn--ghost btn--sm" data-rmfig="${i}|${j}">移除</button></figcaption>
+    </figure>`).join('');
+  const opts=(q.options||[]).map((o,j)=>`
+    <div class="opt-line"><span class="opt-key">${'ABCD'[j]||j+1}</span>
+      <span class="txt"><input type="text" data-opt="${i}|${j}" value="${esc(o)}"></span>
+      <button class="btn btn--ghost btn--sm" data-delopt="${i}|${j}">删</button></div>`).join('');
+  return `<div class="qcard${q.needs_review?' qcard--warn':''}" data-i="${i}">
+    <div class="qcard__head">
+      <div class="qcard__no">${q.q_no!=null?esc(q.q_no):(i+1)}</div>
+      <div style="flex:1;min-width:0">
+        <textarea data-f="text" rows="2" style="width:100%">${esc(q.text)}</textarea>
+        <div class="tags">
+          <span class="badge${q.needs_review?' badge--warn':' badge--ok'}">${q.needs_review?'▲ 识别待确认':'✓ 置信 '+Math.round((q.confidence||0)*100)+'%'}</span>
+          <span class="badge badge--muted">源行 ${(q.source_lines||[]).length} 段</span>
+          ${(q.images||[]).length?`<span class="badge badge--muted">配图 ${q.images.length} 张</span>`:''}
+        </div>
+      </div>
+    </div>
+    <div class="field-grid">
+      <label class="field"><span>题型</span><select data-f="qtype">
+        ${Object.keys(TYPES).map(k=>`<option value="${k}"${q.qtype===k?' selected':''}>${TYPES[k]}</option>`).join('')}
+      </select></label>
+      <label class="field"><span>分值</span><input type="number" step="0.5" min="0" data-f="score" value="${esc(q.score)}"></label>
+      <label class="field"><span>题号</span><input type="number" data-f="q_no" value="${q.q_no==null?'':esc(q.q_no)}"></label>
+    </div>
+    <label class="field"><span>所属大题</span><input type="text" data-f="section" value="${esc(q.section)}"></label>
+    ${q.qtype==='choice'?`<div class="sect" style="margin-top:8px">选项</div>
+      <div class="opts">${opts||'<p class="hint">这道题没识别到选项，可以下面补。</p>'}</div>
+      <button class="btn btn--ghost btn--sm" data-addopt="${i}" style="margin-top:8px">加一个选项</button>`:''}
+    ${(q.images||[]).length?`<div class="sect" style="margin-top:8px">配图</div><div class="figures">${figs}</div>`:''}
+    <div class="qcard__tools">
+      <button class="btn btn--sm" data-save="${i}">保存这题</button>
+      <button class="btn btn--ghost btn--sm" data-addafter="${i}">在这题后加一题</button>
+      <span class="spacer"></span>
+      <button class="btn btn--danger btn--sm" data-del="${i}">删除这题</button>
+    </div>
+  </div>`;
+}
+function render(){
+  $('#qs').innerHTML=QS.length?QS.map(qcard).join('')
+    :'<div class="empty">一道题都没识别出来。可以手动加题，或回上传页换一份材料。</div>';
+  $$('#qs [data-f]').forEach(el=>el.addEventListener('input',()=>{
+    dirty.add(Number(el.closest('.qcard').dataset.i)); stats(); }));
+  $$('#qs [data-save]').forEach(b=>b.onclick=()=>save(Number(b.dataset.save)));
+  $$('#qs [data-del]').forEach(b=>b.onclick=()=>del(Number(b.dataset.del)));
+  $$('#qs [data-addafter]').forEach(b=>b.onclick=()=>add(Number(b.dataset.addafter)));
+  $$('#qs [data-addopt]').forEach(b=>b.onclick=()=>{
+    const i=Number(b.dataset.addopt); QS[i].options=(QS[i].options||[]).concat(['新选项']);
+    dirty.add(i); render(); });
+  $$('#qs [data-delopt]').forEach(b=>b.onclick=()=>{
+    const [i,j]=b.dataset.delopt.split('|').map(Number); QS[i].options.splice(j,1); dirty.add(i); render(); });
+  $$('#qs [data-opt]').forEach(el=>el.addEventListener('input',()=>{
+    const [i,j]=el.dataset.opt.split('|').map(Number); QS[i].options[j]=el.value; dirty.add(i); stats(); }));
+  $$('#qs [data-rmfig]').forEach(b=>b.onclick=()=>{
+    const [i,j]=b.dataset.rmfig.split('|').map(Number); QS[i].images.splice(j,1); dirty.add(i); render(); });
+  stats();
+}
+function collect(i){
+  const card=$(`.qcard[data-i="${i}"]`), q={...QS[i]};
+  card.querySelectorAll('[data-f]').forEach(el=>{
+    const k=el.dataset.f; let v=el.value;
+    if(k==='score'||k==='q_no'){ v=v===''?null:Number(v); }
+    q[k]=v;
+  });
+  q.blanks=(q.text.match(/_{2,}|[＿]{2,}|（\s{0,6}）|\(\s{0,6}\)/g)||[]).length;
+  return q;
+}
+async function api(path,opt){
+  const r=await fetch(path,opt); const j=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(j.detail||('HTTP '+r.status));
+  return j;
+}
+async function save(i,silent){
+  try{
+    const q=collect(i);
+    const j=await api(`api/papers/${PID}/questions`,{method:'PUT',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})});
+    QS=j.questions; dirty.delete(i);
+    if(!q.needs_review){}
+    $('#savedat').textContent='已保存 第'+(i+1)+' 题 · '+new Date().toLocaleTimeString();
+    render();
+  }catch(e){ alert('保存失败：'+e.message); }
+}
+async function del(i){
+  const q=QS[i];
+  if(!confirm(`删除第 ${i+1} 题？\n${(q.text||'').slice(0,40)}`)) return;
+  try{
+    const j=await api(`api/papers/${PID}/questions/${q.uid}`,{method:'DELETE'});
+    QS=j.questions; dirty=new Set(); render(); stats();
+  }catch(e){ alert('删除失败：'+e.message); }
+}
+async function add(after){
+  const sec=after==null?(QS[QS.length-1]||{}).section||'' :(QS[after]||{}).section||'';
+  try{
+    const j=await api(`api/papers/${PID}/questions`,{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({question:{section:sec,qtype:'fill',text:'',score:1,blanks:1,options:[]},
+        after_uid:after==null?null:QS[after].uid})});
+    QS=j.questions; render();
+    const idx=j.questions.findIndex(x=>x.uid===j.question.uid);
+    dirty.add(idx); render();
+    const card=$(`.qcard[data-i="${idx}"] textarea`); if(card) card.focus();
+  }catch(e){ alert('加题失败：'+e.message); }
+}
+$('#addEnd').onclick=()=>add(null);
+$('#publish').onclick=async()=>{
+  for(const i of [...dirty]) await save(i,true);
+  const empties=QS.filter(q=>!(q.text||'').trim()&&!(q.images||[]).length).length;
+  if(empties && !confirm(`还有 ${empties} 道题没有题干也没有配图，确定发布？`)) return;
+  try{
+    const j=await api(`api/papers/${PID}/publish`,{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({title:$('#title').value})});
+    STATUS=j.status; dirty=new Set(); banner(); stats();
+    $('#banner').innerHTML=`<div class="alert alert--ok" style="margin-bottom:16px">✓ 已发布 ${j.questions} 道题。
+      <a href="paper.html?paper=${PID}">第 3 步：在线做题 →</a>&nbsp;·&nbsp;
+      <a href="print.html?paper=${PID}">跳过做题，直接去第 4 步打印 →</a></div>`;
+  }catch(e){
+    $('#banner').innerHTML=`<div class="alert alert--err" style="margin-bottom:16px">✗ 发布被拦下：${esc(e.message)}</div>`;
+  }
+};
+$('#unpub').onclick=async()=>{
+  try{ const j=await api(`api/papers/${PID}/unpublish`,{method:'POST'});
+    STATUS=j.status; banner(); }catch(e){ alert(e.message); }
+};
+$('#dlProof').onclick=()=>{ location.href=`api/papers/${PID}/export?mode=blank`; };
+$('#toPrint').onclick=()=>{ location.href=`print.html?paper=${PID}`; };
+
+(async function boot(){
+  steps();
+  let id=q0||task0;
+  if(!id){ $('#qs').innerHTML='<div class="empty">缺少参数：请从上传页进来。</div>'; return; }
+  if(!String(id).match(/^\d+$/)){
+    try{ const j=await api(`api/papers/${encodeURIComponent(id)}/parse`,{method:'POST'});
+      PID=j.paper_id; QS=j.questions; STATUS=j.status;
+      $('#ttl').textContent=j.title||'校对题目';
+      $('#sub').textContent=`识别到 ${QS.length} 道题、${j.sections.length} 个大题${j.figures_note}；`
+        +`过滤扫描水印 ${j.dropped_noise} 行。OCR 置信度 ${j.ocr.conf}。`;
+    }catch(e){ $('#qs').innerHTML=`<div class="empty">识别失败：${esc(e.message)}</div>`; return; }
+  }else{
+    PID=Number(id);
+    const j=await api(`api/papers/${PID}/questions`);
+    QS=j.questions; STATUS=j.status; $('#ttl').textContent=j.title||'校对题目';
+  }
+  steps();                     // 拿到试卷号了：步骤条上的链接要能跳到本卷的第 3/4 步
+  $('#title').value=(await api(`api/papers/${PID}/questions`)).title||'';
+  banner(); render();
+})();
+</script>
+</body>
+</html>

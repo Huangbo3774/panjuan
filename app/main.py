@@ -19,25 +19,33 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.pipeline import run_task                     # 任务流水线
 from app.api.store import STORE                           # 任务表
+from app.api.papers import router as papers_router        # V1.1 在线作答
+from app.storage import db                                # V1.1 SQLite
+from app.paths import WEB, VAR, BUILD_STAMP, FROZEN, HOME_NOTE, APP_HOME
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WEB = os.path.join(ROOT, "web")
-VAR = os.path.join(ROOT, "var")
+# 路径不再在这里算：main.py / store.py / db.py 原来各写了一遍「往上三层找仓库根」，
+# 打包成 exe 后 __file__ 指向只读的解包目录，那三处会一起算错（孩子的作答库
+# 会跑到 %TEMP% 里）。统一收在 app/paths.py，见那个文件的注释。
+ROOT = APP_HOME       # 旧名字留着：main.py 里多处用 ROOT
 
 MAX_FILES = 50
 MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_TOTAL_BYTES = 200 * 1024 * 1024
 ALLOWED = {".pdf", ".docx", ".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
-app = FastAPI(title="磐卷 PaperForge", version="1.0.0")
+app = FastAPI(title="磐卷 PaperForge", version="1.1.0")
+app.include_router(papers_router)
 
 
 @app.on_event("startup")
 def _cleanup_stale() -> None:
-    """服务启动清空临时目录（PRD §4.7）。"""
+    """服务启动清空临时目录（PRD §4.7），但建好 V1.1 的数据库。
+    ⚠️ 清理只碰 var/：试卷、题目、标准答案、作答记录在 data/papers.db，
+       跟着 var/ 一起删等于每次重启把孩子的作业删掉。"""
     if os.path.isdir(VAR):
         shutil.rmtree(VAR, ignore_errors=True)
     os.makedirs(VAR, exist_ok=True)
+    db.init()
 
 
 def sanitize(name: str) -> str:
@@ -53,8 +61,14 @@ def sanitize(name: str) -> str:
 def health() -> dict[str, Any]:
     from app.papers.pdf_writer import ensure_fonts
     st = ensure_fonts()
+    # pid + 代码指纹：验收脚本必须确认"回答我的是我刚起的那个服务"。
+    # 实测踩过：上一轮测试的服务没被杀掉、还占着端口，新起的 uvicorn 静默绑定失败，
+    # 于是"新代码的验收"其实跑在旧代码上，全绿也是假绿。
     return {"ok": True, "service": "paper-forge", "font": st.get("note"),
-            "tasks": len(STORE)}
+            "tasks": len(STORE), "pid": os.getpid(),
+            "frozen": FROZEN, "home": APP_HOME, "home_note": HOME_NOTE,
+            # 冻结态源码不在盘上，取 exe 的 mtime 才是"这份程序什么时候构建的"
+            "build": int(BUILD_STAMP)}
 
 
 @app.post("/api/tasks")

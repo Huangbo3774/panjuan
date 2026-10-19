@@ -13,9 +13,6 @@ from ..layout.options import LayoutOptions
 from ..layout.engine import build_layout
 from ..papers.pdf_writer import render_pdf, ensure_fonts, bind_metrics
 
-VAR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__)))), "var")
-
 
 def _parse(path: str, work: str) -> dict:
     ext = os.path.splitext(path)[1].lower()
@@ -57,7 +54,7 @@ def run_task(store, tid: str) -> None:
     t = store.get(tid)
     if not t:
         return
-    work = os.path.join(VAR, tid)
+    work = t.work
     os.makedirs(os.path.join(work, "clean"), exist_ok=True)
     os.makedirs(os.path.join(work, "preview"), exist_ok=True)
     t.status, t.stage = "running", "解析中"
@@ -73,6 +70,9 @@ def run_task(store, tid: str) -> None:
             try:
                 parsed = _parse(f["path"], work)
                 parsed = _clean_scans(parsed, work, bool(t.options.get("ink_saver")))
+                # 把解析结果挂回文件条目：在线作答（/api/papers/*/parse）要按文件取文本，
+                # 只靠 t.parsed 的追加顺序对齐文件，一旦有解析失败就会错位。
+                f["parsed"] = parsed
                 t.parsed.append(parsed)
                 t.log(f"{f['name']} → {parsed['page_count']} 页，"
                       f"扫描 {parsed['scan_pages']} 页，标题「{parsed['title']}」")
@@ -98,7 +98,7 @@ def relayout(t, work: str | None = None) -> None:
     状态必须置回 running：否则客户端 PUT 选项后立刻轮询会拿到上一轮的 done
     就去下载，撞上正在重写的文件。
     """
-    work = work or os.path.join(VAR, t.id)
+    work = work or t.work
     t.status, t.progress = "running", 0.9
     if not t.parsed:
         t.status, t.stage = "failed", "没有可排版的内容"

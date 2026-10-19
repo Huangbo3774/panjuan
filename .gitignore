@@ -4,10 +4,17 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+.venv-build/
 *.egg-info/
+
+# ---- 打包产物（PyInstaller 生成，体积几百 MB，绝不入库）----
+dist/
+build/
 
 # ---- 运行产物（本机生成，不入库）----
 var/
+# V1.1 的试卷库：题目、标准答案、学生姓名班级得分 —— 未成年人数据，绝不入库
+data/
 *.log
 .DS_Store
 Thumbs.db
@@ -21,6 +28,11 @@ tests/parsers-report.json
 tests/e2e-report.json
 tests/triage-real.json
 tests/cleaners-report.json
+# 这三份是【真实材料的 OCR 全文摘录】，体积大且属于未成年人材料内容。
+# 数字结论已经抄进 docs/V1.1-进度与实测.md，报告本身留在本机。
+tests/extractor-report.json
+tests/ocr-extract-report.json
+tests/f11-report.json
 
 # ---- 前端依赖 / 本地化库（旧 JS 版遗留）----
 node_modules/

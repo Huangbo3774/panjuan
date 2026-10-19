@@ -162,9 +162,16 @@ def detect_columns(items: list[dict], page_w: float, min_gap_ratio: float = 0.03
     return bands
 
 
-def structure_page(items: list[dict], page_w: float, y_tol: float = 10.0) -> dict[str, Any]:
-    """原始条目 → 分栏 → 栏内合并行 → 阅读顺序。P3a 主入口，顺序不可调换。"""
-    bands = detect_columns(items, page_w)
+def structure_page(items: list[dict], page_w: float, y_tol: float = 10.0,
+                   bands: list[dict] | None = None) -> dict[str, Any]:
+    """原始条目 → 分栏 → 栏内合并行 → 阅读顺序。P3a 主入口，顺序不可调换。
+
+    bands 可以外部传入：真实卷上"文字框投影稀疏"的地方常常其实是【图形】，
+    只看文本框会把一页切成 4 栏（综合实践单元第 1 页实测），所以调用方
+    可以用页面墨迹复核栏界后把可信的栏带传进来。不给就自己检测（老行为）。
+    """
+    if bands is None:
+        bands = detect_columns(items, page_w)
 
     def assign(it):
         mid = it["x"] + max(it.get("w", 1), 1) / 2

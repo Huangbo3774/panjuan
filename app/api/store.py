@@ -9,6 +9,11 @@ from typing import Any
 
 from ..layout.options import LayoutOptions
 
+# 任务工作目录根：pipeline / papers 路由 / 存储都从这里取，
+# 免得三处各自拼一遍「上三层 + var」——打包成 exe 时那种拼法会一起算错。
+# 唯一来源是 app/paths.py。
+from ..paths import APP_HOME as ROOT, VAR
+
 
 class Task:
     def __init__(self, tid: str, files: list[dict]):
@@ -25,6 +30,10 @@ class Task:
         self.options = LayoutOptions().to_dict()
         self.logs: list[dict] = []
         self.lock = threading.Lock()
+
+    @property
+    def work(self) -> str:
+        return os.path.join(VAR, self.id)
 
     def log(self, msg: str) -> None:
         with self.lock:
@@ -77,8 +86,7 @@ class Store:
         with self._lock:
             t = self._d.pop(tid, None)
         if t:
-            shutil.rmtree(os.path.join(os.path.dirname(os.path.dirname(
-                os.path.dirname(os.path.abspath(__file__)))), "var", tid), ignore_errors=True)
+            shutil.rmtree(os.path.join(VAR, tid), ignore_errors=True)
 
     def __len__(self) -> int:
         return len(self._d)

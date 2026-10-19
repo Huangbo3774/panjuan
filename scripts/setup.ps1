@@ -18,9 +18,9 @@ try {
     $listed = py --list-paths 2>$null
     if ($listed) {
         foreach ($line in $listed) {
-            if ($line -match '^\s*-V:(\d)\.(\d+)[^\s]*\s+(.+\.exe)') {
+            if ($line -match '^\s*-V:(\d)\.(\d+)\S*\s+\*?\s*(\S.*?\.exe)\s*$') {
                 $maj = [int]$Matches[1]; $min = [int]$Matches[2]
-                if ($maj -gt 3 -or ($maj -eq 3 -and $min -ge 11)) { $cands += $Matches[3] }
+                if ($maj -gt 3 -or ($maj -eq 3 -and $min -ge 11)) { if (Test-Path $Matches[3]) { $cands += $Matches[3] } }
             }
         }
     }

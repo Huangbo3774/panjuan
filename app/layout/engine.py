@@ -198,14 +198,40 @@ def build_layout(parsed_pages: list[dict], opt: LayoutOptions, title: str = "") 
 
     if opt.two_up:
         pages = _merge_two_up(pages, opt)
+    elif opt.is_spread:
+        pages = _merge_a3_spread(pages, opt)
 
     return {
         "pages": pages,
         "header": {"title": opt.title, "show": opt.show_header},
         "footer": {"total": len(pages)},
         "stats": {"source_pages": len(parsed_pages), "flow_items": len(flow),
-                  "out_pages": len(pages), "two_up": opt.two_up},
+                  "out_pages": len(pages), "two_up": opt.two_up,
+                  "page_format": opt.page_format},
     }
+
+
+def _merge_a3_spread(pages: list[dict], opt: LayoutOptions) -> list[dict]:
+    """A3 横版对开 = 两个 A4 竖版【1:1 左右并排】，标准试卷样式。
+
+    和 2 合 1 的区别：2 合 1 是把两页各缩到 √2 塞进一张 A4（字会变小），
+    对开不缩放——A3 的长边正好是两个 A4 宽，所以字号、行距、图都和单页一模一样，
+    沿中线对折就是一本 A4 卷子。这也是学校印卷子的做法。
+    """
+    merged: list[dict] = []
+    for i in range(0, len(pages), 2):
+        pair = pages[i:i + 2]
+        blocks: list[dict] = []
+        for slot, pg in enumerate(pair):
+            ox = slot * A4_W
+            for b in pg["blocks"]:
+                nb = dict(b)
+                nb["x"] = ox + b["x"]
+                nb["half"] = slot
+                blocks.append(nb)
+        merged.append({"no": len(merged) + 1, "blocks": blocks,
+                       "spread": True, "halves": len(pair)})
+    return merged
 
 
 def _merge_two_up(pages: list[dict], opt: LayoutOptions) -> list[dict]:

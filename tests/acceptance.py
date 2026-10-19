@@ -23,8 +23,10 @@ except Exception:
 import urllib.request                                            # noqa: E402
 import pymupdf                                                   # noqa: E402
 
-BASE = "http://127.0.0.1:8777"
-PORT = 8777
+PORT = int(os.environ.get("PJ_PORT", "8777"))
+# PJ_BASE 设了就【不自起服务】，改测那个地址（打包出来的 exe 只能用这种方式验）。
+EXTERNAL = (os.environ.get("PJ_BASE") or "").strip().rstrip("/")
+BASE = EXTERNAL or f"http://127.0.0.1:{PORT}"
 
 # 真实作业在 samples/private/（已 gitignore，不入库）。别人 clone 下来没有它，
 # 所以缺料时自动改用 scripts/make_public_samples.py 生成的公开样本。
@@ -178,21 +180,31 @@ def case(cid, fn):
 
 
 def main():
-    proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app",
-                             "--host", "127.0.0.1", "--port", str(PORT), "--log-level", "warning"],
-                            cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    proc = None
+    if not EXTERNAL:
+        proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app",
+                                 "--host", "127.0.0.1", "--port", str(PORT), "--log-level", "warning"],
+                                cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    SRV_PID = None
     try:
         for _ in range(40):
             try:
                 st, h = req("GET", "/api/health")
                 if st == 200:
-                    print(f"服务就绪 · {h.get('font')} · 样本集={SAMPLE_SET}\n")
+                    if proc is not None and h.get("pid") != proc.pid:
+                        print(f"端口 {PORT} 上是上一轮没杀掉的服务（pid {h.get('pid')} ≠ "
+                              f"{proc.pid}），这一轮测的是旧代码，先杀掉占用进程再跑")
+                        return 1
+                    SRV_PID = h.get("pid")
+                    tag = "源码" if proc is not None else "外部服务（可能是打包产物）"
+                    print(f"服务就绪 · {h.get('font')} · 样本集={SAMPLE_SET} · 被测={tag} "
+                          f"pid={SRV_PID} frozen={h.get('frozen')} · 数据={h.get('home')}\n")
                     break
             except Exception:
                 pass
             time.sleep(0.6)
         else:
-            print("服务起不来"); return 1
+            print(f"服务起不来（{BASE}）"); return 1
 
         # F01 手机拍作业照片 → 10 秒内出 A4，不模糊不歪
         def f01():
@@ -360,7 +372,7 @@ def main():
             txt = "".join(pg.get_text("text") or "" for pg in d)
             d.close()
             missing = [i for i in range(1, 101) if f"第{i}页" not in txt.replace(" ", "")]
-            mem = proc_memory_mb(proc.pid)
+            mem = proc_memory_mb(SRV_PID)     # 外部模式下量的是 exe 那个进程，正是要看的数
             ok = not missing and mem >= 0 and mem < 1024
             return ok, (f"100 页 → {f['pages']} 页 {ms}ms，内容缺失 {len(missing)} 行，"
                         f"服务内存 {mem:.0f}MB（限 1024）")
@@ -376,11 +388,12 @@ def main():
         case("F10 预览可显示", f10)
 
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=8)
-        except Exception:
-            proc.kill()
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=8)
+            except Exception:
+                proc.kill()
 
     print("\n" + "=" * 64)
     passed = sum(1 for _, ok, _ in RESULTS if ok)

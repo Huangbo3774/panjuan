@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import glob
 import os
 import sys
 
@@ -20,11 +21,29 @@ except Exception:
 args = sys.argv[1:]
 check_only = "--check" in args
 args = [a for a in args if not a.startswith("--")]
-# ⚠️ 只在【没给参数】时用默认清单。上一版写成 `sys.argv[1:] or [...]`，
+
+
+def all_ps1():
+    """扫盘得到全部 .ps1，不写死清单。
+
+    上一版是 DEFAULT_PS1 = [setup, go_online] 两个手写的名字：新加的
+    start.ps1 / stop.ps1 / install_startup.ps1 不在本脚本的处理范围里，
+    于是 BOM 得靠 tests/check_script_encoding.py 报错后再手动补一遍
+    （install_startup.ps1 就是这样中招的）。扫描范围应当自动覆盖新增文件。
+    """
+    out = []
+    for pat in ("scripts/*.ps1", "*.ps1"):
+        for p in sorted(glob.glob(os.path.join(ROOT, pat))):
+            rel = os.path.relpath(p, ROOT).replace("\\", "/")
+            if rel not in out:
+                out.append(rel)
+    return out
+
+
+# ⚠️ 只在【没给参数】时用扫盘结果。上一版写成 `sys.argv[1:] or [...]`，
 #    于是 `--check` 本身被当成文件列表、过滤后变成空表，
 #    闸门扫了 0 个文件却报"0 个缺 BOM"——假绿（计数 0 有两种含义：全过 / 尺坏了）。
-DEFAULT_PS1 = ["scripts/setup.ps1", "scripts/go_online.ps1"]
-targets = args or [p for p in DEFAULT_PS1 if os.path.exists(os.path.join(ROOT, p))]
+targets = args or all_ps1()
 if not targets:
     print("✗ 没有任何 .ps1 可检查，闸门拒绝以'通过'收场")
     sys.exit(1)

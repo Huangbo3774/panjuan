@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>在线做题 · 磐卷 PaperForge</title>
+<link rel="stylesheet" href="css/app.css">
+<!-- 服务门闸：本机服务没起来时给一个「启动服务」按钮。
+     浏览器不能自己启动本地进程，所以这个按钮走 panjuan:// 协议让 Windows 去拉起服务。-->
+<script src="js/gate.js"></script>
+<!-- 步骤条顺序只有 js/app.js 那一份定义，页面只声明 data-step -->
+<script src="js/app.js"></script>
+</head>
+<body data-step="answer">
+<nav class="nav"><div class="wrap nav__in">
+  <a class="logo" href="index.html"><span class="logo__mark">卷</span>
+    <span>磐卷 PaperForge<small>模式 B/C · 在线作答与批改</small></span></a>
+  <nav class="steps" id="steps" style="margin-left:auto"></nav>
+</div></nav>
+
+<main class="wrap">
+
+  <div class="page-head">
+    <h1 id="ttl">在线做题</h1>
+    <p id="sub">这一页只用来做题：题目编辑在「校对题目」页完成，发布后才能进来。</p>
+  </div>
+
+  <div id="banner"></div>
+
+  <div class="cols">
+    <div>
+      <div id="summary"></div>
+      <div id="qs"><div class="empty">正在读取题目…</div></div>
+    </div>
+
+    <div class="side">
+      <div class="card">
+        <h2>作答</h2>
+        <div class="field-grid">
+          <label class="field"><span>班级</span><input type="text" id="cls" autocomplete="off"></label>
+          <label class="field"><span>姓名</span><input type="text" id="stu" autocomplete="off"></label>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn--block" id="submit">提交作答并批改</button>
+        </div>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn btn--ghost btn--sm" id="saveKey">另存为标准答案</button>
+          <button class="btn btn--ghost btn--sm" id="clearDraft">清空草稿</button>
+        </div>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn btn--ghost btn--sm" id="dlB">打印：带我的答案 →</button>
+          <button class="btn btn--ghost btn--sm" id="dlC">打印：带批改结果 →</button>
+        </div>
+        <p class="hint" id="draft" style="margin-top:12px"></p>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2>这份卷子</h2>
+        <div class="kv"><span>题目</span><span id="s_total">—</span></div>
+        <div class="kv"><span>满分</span><span id="s_max">—</span></div>
+        <div class="kv"><span>已作答</span><span id="s_done">—</span></div>
+        <div class="sect">判分说明</div>
+        <p class="hint">选择、判断按标准答案精确匹配；填空做了全半角、大小写、分数与小数等价容错；
+          问答题不自动判分，只标「△ 待确认」由人看。</p>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const $=s=>document.querySelector(s);
+const $$=s=>[...document.querySelectorAll(s)];
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const TYPES={choice:'选择题',fill:'填空题',judge:'判断题',essay:'问答题',unknown:'未分类'};
+const paper0=new URLSearchParams(location.search).get('paper');
+const task0=new URLSearchParams(location.search).get('task');
+let PID=null, QS=[], SUBID=null;
+const key=()=>'panjuan:draft:'+(PID||paper0||task0);
+const nblanks=q=>Math.max(parseInt(q.blanks||0,10)||0,1);
+
+// 步骤条由 js/app.js 统一渲染（顺序只有一份）
+function steps(){ if(window.PJSteps) PJSteps.render('answer', PID); }
+
+function figs(q){
+  return (q.images||[]).map(im=>`<figure>
+    <img src="api/papers/${PID}/figures/${encodeURIComponent(im.name)}" alt="题目配图" loading="lazy">
+    <figcaption>题目配图（来自源材料第 ${im.page||'?'} 页）</figcaption></figure>`).join('');
+}
+
+function render(){
+  let lastSec=null, html='';
+  QS.forEach((q,i)=>{
+    if(q.section && q.section!==lastSec){ html+=`<div class="sect" style="margin-top:24px">${esc(q.section)}</div>`; lastSec=q.section; }
+    const no=q.q_no!=null?q.q_no:(i+1);
+    let body='';
+    if(q.qtype==='choice' && (q.options||[]).length){
+      body=`<div class="opts">${q.options.map(o=>`<label class="opt-line">
+        <input type="radio" name="q_${q.uid}" value="${esc(o)}"><span class="txt">${esc(o)}</span></label>`).join('')}</div>`;
+    }else if(q.qtype==='judge'){
+      body=`<div class="opts">
+        <label class="opt-line"><input type="radio" name="q_${q.uid}" value="√"><span class="txt">对（√）</span></label>
+        <label class="opt-line"><input type="radio" name="q_${q.uid}" value="×"><span class="txt">错（×）</span></label></div>`;
+    }else if(q.qtype==='fill'){
+      body=`<div class="blanks">${Array.from({length:nblanks(q)},(_,k)=>
+        `<label class="blank-item"><span>第${k+1}空</span><input type="text" data-b="${i}|${k}"></label>`).join('')}</div>`;
+    }else{
+      body=`<textarea data-t="${i}" placeholder="写出过程和答案"></textarea>`;
+    }
+    const fg=figs(q);
+    html+=`<div class="qcard" data-i="${i}">
+      <div class="qcard__head">
+        <div class="qcard__no">${esc(no)}</div>
+        <div style="flex:1;min-width:0">
+          <div class="qcard__title">${esc(q.text)||'<span class="hint">（题干见下方配图）</span>'}</div>
+          <div class="tags"><span class="badge badge--muted">${TYPES[q.qtype]||'题目'}</span>
+            <span class="badge badge--muted">${esc(q.score)} 分</span>
+            <span class="verdict" id="v_${q.uid}"></span></div>
+        </div>
+      </div>
+      ${fg?`<div class="figures">${fg}</div>`:''}
+      ${body}
+    </div>`;
+  });
+  $('#qs').innerHTML=html||'<div class="empty">这份卷子还没有题目。</div>';
+  QS.forEach((q,i)=>{ q.__blanks=$$(`.qcard[data-i="${i}"] input[data-b]`); q.__ta=$(`.qcard[data-i="${i}"] textarea`); });
+  $('#qs').addEventListener('input',()=>{ saveDraft(); tally(); });
+  $('#qs').addEventListener('change',()=>{ saveDraft(); tally(); });
+  $('#s_total').textContent=QS.length+' 道';
+  $('#s_max').textContent=QS.reduce((a,q)=>a+(Number(q.score)||0),0)+' 分';
+  tally();
+}
+
+function collect(){
+  const a={};
+  QS.forEach(q=>{
+    if(q.qtype==='choice'||q.qtype==='judge'){
+      const r=document.querySelector(`input[name="q_${q.uid}"]:checked`); if(r) a[q.uid]=r.value;
+    }else if(q.qtype==='fill'){
+      const v=(q.__blanks||[]).map(x=>x.value.trim()).filter(Boolean); if(v.length) a[q.uid]=v;
+    }else{
+      const v=((q.__ta&&q.__ta.value)||'').trim(); if(v) a[q.uid]=v;
+    }
+  });
+  return a;
+}
+function tally(){
+  const a=collect();
+  $('#s_done').textContent=Object.keys(a).length+' / '+QS.length;
+}
+function flag(t){ $('#draft').textContent=t||''; }
+function saveDraft(){
+  if(PID===null) return;
+  const d={cls:$('#cls').value, stu:$('#stu').value, a:collect()};
+  try{ localStorage.setItem(key(),JSON.stringify(d));
+    flag('草稿已存本机 '+new Date().toLocaleTimeString()+'（只在这台电脑，不上传）'); }
+  catch(e){ flag('草稿存不下：'+e.message); }
+}
+function loadDraft(){
+  let d=null; try{ d=JSON.parse(localStorage.getItem(key())||'null'); }catch(e){ d=null; }
+  if(!d) return;
+  $('#cls').value=d.cls||''; $('#stu').value=d.stu||'';
+  QS.forEach(q=>{
+    const v=(d.a||{})[q.uid]; if(v==null) return;
+    if(q.qtype==='choice'||q.qtype==='judge'){
+      const el=[...(document.querySelectorAll(`input[name="q_${q.uid}"]`)||[])].find(x=>x.value===String(v));
+      if(el) el.checked=true;
+    }else if(q.qtype==='fill'){
+      (Array.isArray(v)?v:[v]).forEach((x,k)=>{ if(q.__blanks&&q.__blanks[k]) q.__blanks[k].value=x; });
+    }else if(q.__ta){ q.__ta.value=v; }
+  });
+  flag('已恢复上次草稿'); tally();
+}
+
+const MARK={correct:['✓ 对','verdict--correct'],wrong:['✗ 错','verdict--wrong'],pending:['△ 待确认','verdict--pending']};
+function showGrade(g){
+  const by={}; (g.results||[]).forEach(r=>by[r.uid]=r);
+  $('#summary').innerHTML=`<div class="summary">
+    <b>得分 ${g.score} / ${g.total}</b>
+    <div class="summary__row">
+      <span>✓ 对 ${g.counts.correct}</span><span>✗ 错 ${g.counts.wrong}</span>
+      <span>△ 待确认 ${g.counts.pending}${g.pending_max?`（${g.pending_max} 分）`:''}</span>
+    </div>
+    <p class="hint" style="margin-top:8px">△ 是系统不替你下结论的题（问答题、写法没把握、缺标准答案），
+      需要人工看一眼；点题号旁的标记可改判。</p>
+  </div>`;
+  (g.results||[]).forEach(r=>{
+    const el=$('#v_'+r.uid); if(!el) return;
+    const m=MARK[r.verdict]||['',''];
+    el.className='verdict '+m[1]; el.textContent=m[0]; el.title=r.reason||'';
+    el.style.cursor='pointer';
+    el.onclick=async()=>{
+      const next=r.verdict==='correct'?'wrong':(r.verdict==='wrong'?'pending':'correct');
+      if(!confirm(`把这道题人工改判为「${MARK[next][0]}」？`)) return;
+      const body={answers:{...collect(),_manual:{[r.uid]:next}},
+                  class_name:$('#cls').value, student_name:$('#stu').value};
+      const res=await fetch(`api/papers/${PID}/submissions`,
+        {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const j=await res.json();
+      if(res.ok){ SUBID=j.submission_id; showGrade(j); } else alert('改判失败：'+(j.detail||res.status));
+    };
+  });
+}
+
+async function api(path,opt){
+  const r=await fetch(path,opt); const j=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(j.detail||('HTTP '+r.status));
+  return j;
+}
+$('#submit').onclick=async()=>{
+  try{
+    const j=await api(`api/papers/${PID}/submissions`,{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({answers:collect(),class_name:$('#cls').value,student_name:$('#stu').value})});
+    SUBID=j.submission_id; showGrade(j); saveDraft();
+  }catch(e){
+    $('#summary').innerHTML=`<div class="alert alert--err">${esc(e.message)}</div>`;
+  }
+};
+$('#saveKey').onclick=async()=>{
+  if(!confirm('把当前屏幕上的作答存成【标准答案】？已录的答案会被这条覆盖。')) return;
+  try{
+    const body=SUBID?{submission_id:SUBID}:{answers:collect()};
+    const j=await api(`api/papers/${PID}/key`,{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    $('#summary').innerHTML=`<div class="alert alert--ok">✓ 已存为标准答案（第 ${j.key_id} 版）。孩子再做这张卷子就自动批改。</div>`;
+  }catch(e){ $('#summary').innerHTML=`<div class="alert alert--err">${esc(e.message)}</div>`; }
+};
+// 第 3 步不直接出文件：都到第 4 步去，那里能选内容、调版式、看预览
+$('#dlB').onclick=()=>{ location.href=`print.html?paper=${PID}&mode=answered`; };
+$('#dlC').onclick=()=>{ location.href=`print.html?paper=${PID}&mode=graded`; };
+$('#clearDraft').onclick=()=>{ if(confirm('清空本机草稿？')){ localStorage.removeItem(key()); location.reload(); } };
+['cls','stu'].forEach(id=>$('#'+id).addEventListener('input',saveDraft));
+
+(async function boot(){
+  if(!paper0 && !task0){ $('#qs').innerHTML='<div class="empty">缺少参数：请从校对页或上传页进来。</div>'; return; }
+  let id=paper0||task0;
+  if(!String(id).match(/^\d+$/)){
+    try{ const j=await api(`api/papers/${encodeURIComponent(id)}/parse`,{method:'POST'});
+      await api(`api/papers/${j.paper_id}/publish`,{method:'POST',body:'{}',
+        headers:{'Content-Type':'application/json'}});
+      id=j.paper_id;
+    }catch(e){ $('#qs').innerHTML=`<div class="empty">准备试卷失败：${esc(e.message)}</div>`; return; }
+  }
+  PID=id; steps();
+  let j;
+  try{ j=await api(`api/papers/${PID}/questions`); }
+  catch(e){ $('#qs').innerHTML=`<div class="empty">${esc(e.message)}</div>`; return; }
+  PID=j.paper_id; QS=j.questions;
+  $('#ttl').textContent=j.title||'在线做题';
+  steps();
+  if(j.status!=='published'){
+    $('#banner').innerHTML=`<div class="alert alert--warn">这份卷子还没发布（校对没完成）。
+      <a href="proofread.html?paper=${PID}">去校对并发布 →</a></div>`;
+    $('#submit').disabled=true;
+  }else{
+    $('#banner').innerHTML=`<div class="alert alert--ok">✓ 已发布 · ${QS.length} 道题 ·
+      满分 ${QS.reduce((a,q)=>a+(Number(q.score)||0),0)} 分</div>`;
+  }
+  render(); loadDraft();
+})();
+</script>
+</body>
+</html>
