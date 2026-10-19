@@ -12,59 +12,59 @@ REM Exit codes: 0 = pass, 1 = fail, 2 = missing local material (skip, not a fail
 cd /d "%~dp0.."
 
 echo.
-echo [ 1/17] layout algorithm unit tests
+echo [ 1/18] layout algorithm unit tests
 py -3.11 tests\test_layout.py || goto :fail
 
 echo.
-echo [ 2/17] extractor unit tests (positive + counter-examples)
+echo [ 2/18] extractor unit tests (positive + counter-examples)
 py -3.11 tests\test_extractor.py || goto :fail
 
 echo.
-echo [ 3/17] grading engine unit tests (PRD F14)
+echo [ 3/18] grading engine unit tests (PRD F14)
 py -3.11 tests\test_grading.py || goto :fail
 
 echo.
-echo [ 4/17] SQLite storage round-trip (papers / questions / key / submissions)
+echo [ 4/18] SQLite storage round-trip (papers / questions / key / submissions)
 py -3.11 tests\test_storage.py || goto :fail
 
 echo.
-echo [ 5/17] print formats: A3 spread + question figures + proofread CRUD
+echo [ 5/18] print formats: A3 spread + question figures + proofread CRUD
 py -3.11 tests\test_print_formats.py || goto :fail
 
 echo.
-echo [ 6/17] figure cropping regression (two-column / section wall / PDF embed)
+echo [ 6/18] figure cropping regression (two-column / section wall / PDF embed)
 py -3.11 tests\test_figures.py || goto :fail
 
 echo.
-echo [ 7/17] gate self-check: revert figure rules to old behaviour, tests must go red
+echo [ 7/18] gate self-check: revert figure rules to old behaviour, tests must go red
 py -3.11 tests\break_figures.py || goto :fail
 
 echo.
-echo [ 8/17] gate self-check: re-inject fixed extractor defects, tests must go red
+echo [ 8/18] gate self-check: re-inject fixed extractor defects, tests must go red
 py -3.11 tests\break_extractor.py || goto :fail
 
 echo.
-echo [ 9/17] gate self-check: re-inject fixed grading defects, tests must go red
+echo [ 9/18] gate self-check: re-inject fixed grading defects, tests must go red
 py -3.11 tests\break_grading.py || goto :fail
 
 echo.
-echo [ 10/17] frontend JS syntax + render check
+echo [ 10/18] frontend JS syntax + render check
 py -3.11 tests\check_web_js.py || goto :fail
 
 echo.
-echo [ 11/17] script encoding (ps1 needs UTF-8 BOM, bat must stay ASCII)
+echo [ 11/18] script encoding (ps1 needs UTF-8 BOM, bat must stay ASCII)
 py -3.11 tests\check_script_encoding.py || goto :fail
 
 echo.
-echo [12/17] gate self-check: break the web/launcher gates on purpose, they must go red
+echo [12/18] gate self-check: break the web/launcher gates on purpose, they must go red
 py -3.11 tests\break_webgate.py || goto :fail
 
 echo.
-echo [13/17] real-sample parsing health check
+echo [13/18] real-sample parsing health check
 py -3.11 tests\run_parsers.py >nul || goto :fail
 
 echo.
-echo [14/17] PRD F11 segmentation accuracy (needs local private samples)
+echo [14/18] PRD F11 segmentation accuracy (needs local private samples)
 py -3.11 tests\run_f11.py
 if errorlevel 1 (
   if errorlevel 2 (
@@ -76,16 +76,20 @@ if errorlevel 1 (
 )
 
 echo.
-echo [15/17] mode B/C export renders real marks (offline PDF readback)
+echo [15/18] mode B/C export renders real marks (offline PDF readback)
 py -3.11 tests\test_answer_export.py || goto :fail
 
 echo.
-echo [16/17] acceptance F01-F11 over real HTTP
+echo [16/18] acceptance F01-F11 over real HTTP
 py -3.11 tests\acceptance.py || goto :fail
 
 echo.
-echo [17/17] acceptance F12-F18 (proofread / answer / key / grade / print modes)
+echo [17/18] acceptance F12-F18 (proofread / answer / key / grade / print modes)
 py -3.11 tests\acceptance_v11.py || goto :fail
+
+echo.
+echo [18/18] release names: README must promise a name GitHub can actually serve
+py -3.11 tests\check_release_names.py || goto :fail
 
 echo.
 echo ===== ALL CHECKS PASSED =====
