@@ -77,9 +77,15 @@ def _resolve_home() -> tuple[str, str]:
 
 APP_HOME, HOME_NOTE = _resolve_home()
 
+# 数据根可以单独挪走（只挪 var/ 与 data/，web/ 仍然跟着代码走）。
+# 为什么要有它：验收测试以前直接写进用户的真库 data/papers.db，
+# 每跑一次就多留几份假卷（实测库里 57 份、其中 46 份是测试垃圾，首页被挤满）。
+# 测试跑之前设 PJ_DATA_HOME=一个临时目录即可，产品行为不受任何影响。
+DATA_HOME = os.environ.get("PJ_DATA_HOME") or APP_HOME
+
 WEB = os.path.join(BUNDLE, "web") if FROZEN else os.path.join(APP_HOME, "web")
-VAR = os.path.join(APP_HOME, "var")          # 临时工作目录：服务启动即清空
-DATA = os.path.join(APP_HOME, "data")        # 试卷库 / 题目配图：跟着版本走，绝不清空
+VAR = os.path.join(DATA_HOME, "var")          # 临时工作目录：服务启动即清空
+DATA = os.path.join(DATA_HOME, "data")        # 试卷库 / 题目配图：跟着版本走，绝不清空
 DB_PATH = os.path.join(DATA, "papers.db")
 
 # 代码指纹：/api/health 会报，用来确认"答我的是哪一版代码"。

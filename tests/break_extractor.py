@@ -183,6 +183,13 @@ M = [
              r'                lead = re.compile(r"^\s*%s\s*[.、．]?" % re.escape(str(q["q_no"])))',
              r'                lead = re.compile(r"^\s*\d{1,3}\s*[.、．]?")',
              "题号粘在题干行首时，区间起点要落在这一行"),
+    Mutation("关·教辅栏目横幅不当家具（栏目名被裁成配图）", RULES,
+             "    return _is_stage(s)", "    return False",
+             "教辅栏目横幅是家具不是配图"),
+    Mutation("过·横幅判据不看题号（带【能力提升】的题干被抹成家具）", RULES,
+             "    return len(s) <= 16 and not Q_NUM_RE.match(s) and any(k in s for k in STAGE_KW)",
+             "    return len(s) <= 24 and any(k in s for k in STAGE_KW)",
+             "教辅栏目横幅是家具不是配图"),
 ]
 
 if __name__ == "__main__":

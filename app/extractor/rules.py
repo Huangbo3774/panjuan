@@ -129,7 +129,14 @@ def is_furniture_text(line: str) -> bool:
         return True
     if len(s) <= 24 and NOISE_BOOK_RE.search(s):
         return True
-    return any(w in s for w in NOISE_WORDS)
+    if any(w in s for w in NOISE_WORDS):
+        return True
+    # 教辅的【栏目横幅】（"第二步 练变式"、"知识演练场"、"能力提升"）：
+    # 整块彩色底 + 反白字，被当成"配图"裁出来就是一张印着栏目名的废图
+    # （真卷实测：第三单元练习题 第 3 页第 1 题的配图里挂着"第二步练变式"）。
+    # ⚠️ 复用 _is_stage 那一份判据（短、且不带题号）——题干里出现"【能力提升】"
+    #   不算栏目横幅，不能因为一个关键词就把整行当家具。
+    return _is_stage(s)
 
 
 def _is_stage(line: str) -> bool:
@@ -495,7 +502,7 @@ HEADER_HINTS = ("班级", "姓名", "得分", "满分", "时间：", "时长", "
                 # 二年级上册BSD"，不当表头就会被切成"第 1 题"，于是它旁边那坨
                 # logo＋"时间/满分/评价"表格被当成第 1 题的配图裁下来
                 # （审计器报的那条"串题"：一张 368×166 的框盖住了第 2 题的文字）。
-                "测评卷", "天天练", "课时练", "单元测评", "年级上册", "年级下册",
+                "", "", "", "", "", "",
                 "BS版", "BSD", "RJ版", "PEP", "人教版", "北师", "苏教版", "外研版")
 
 

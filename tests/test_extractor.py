@@ -798,5 +798,23 @@ t("题号粘在题干行首时，区间起点要落在这一行（含反例）",
   span_locates_the_number_glued_stem_row)
 
 
+def stage_banner_is_furniture_not_a_figure():
+    """教辅的【栏目横幅】（"第二步 练变式"）是页面家具，不许被当成配图裁下来。
+
+    真卷实测（第三单元练习题 第 3 页第 1 题）：整块橙底反白的"第二步练变式"
+    被裁成一张"配图"挂在题目下面，卷子上就是一张和题目无关的栏目名。
+    """
+    from app.extractor.rules import is_furniture_text
+    assert is_furniture_text("第二步练变式"), "栏目横幅没当家具（会被裁成配图）"
+    assert is_furniture_text("第三步 提思维")
+    assert is_furniture_text("知识演练场")
+    # 反例：题干里出现同一个关键词，不算横幅
+    assert not is_furniture_text("3.【能力提升】看图列式，图中的圆点有几个？"), \
+        "带题号的题干被当横幅抹掉了"
+    assert not is_furniture_text("第一步，请把 3 个 4 改写成乘法算式，并读出算式。"), \
+        "长句子被当横幅抹掉了"
+t("教辅栏目横幅是家具不是配图（含反例）", stage_banner_is_furniture_not_a_figure)
+
+
 print(f"\n{ok_n} passed, {bad_n} failed")
 sys.exit(1 if bad_n else 0)

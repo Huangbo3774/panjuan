@@ -1,6 +1,6 @@
 ﻿# 磐卷 PaperForge · 一键打成「免安装包」
 #
-# 产物：dist\PaperForge\（exe + _internal）与 dist\磐卷-Windows-免安装.zip
+# 产物：dist\PaperForge\（exe + _internal）与 dist\panjuan-v<版本>-windows.zip
 # 家长侧的使用方式：下载 zip → 解压 → 双击 PaperForge.exe → 浏览器自动打开。
 # 不需要 Python、不需要 PowerShell、不需要命令行。
 #
@@ -17,7 +17,8 @@
 param(
     [switch]$SkipVenv,
     [switch]$NoZip,
-    [switch]$Clean
+    [switch]$Clean,
+    [string]$Version = "1.2.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,7 +29,7 @@ $venv = Join-Path $root ".venv-build"
 $VPY = Join-Path $venv "Scripts\python.exe"
 $dist = Join-Path $root "dist"
 $appdir = Join-Path $dist "PaperForge"
-$zipname = "磐卷-Windows-免安装.zip"
+$zipname = "panjuan-v$Version-windows.zip"   # GitHub 的资产名不吃中文，中文只能放 label
 $zip = Join-Path $dist $zipname
 
 function Say($m) { Write-Host "  $m" }

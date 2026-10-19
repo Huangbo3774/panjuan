@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -179,9 +180,13 @@ def answers_by_uid(qs: list[dict], table: dict) -> dict:
 def main() -> int:
     proc = None
     if not EXTERNAL:
+        # 数据根指到临时目录：验收造的假卷不许进用户那个真库（见 paths.PJ_DATA_HOME）
+        acc_home = tempfile.mkdtemp(prefix="pj_acc_f12_")
+        print(f"验收用临时数据根：{acc_home}")
         proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app",
                                  "--host", "127.0.0.1", "--port", str(PORT), "--log-level", "warning"],
-                                cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+                                cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                                env={**os.environ, "PJ_DATA_HOME": acc_home})
     CTX.clear()
     try:
         for _ in range(40):

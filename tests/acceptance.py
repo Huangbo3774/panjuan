@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -182,9 +183,14 @@ def case(cid, fn):
 def main():
     proc = None
     if not EXTERNAL:
+        # 数据根单独指到临时目录：不然每跑一次验收就往用户真库里留几份假卷
+        # （实测 data/papers.db 里 46 份"第三单元 过关练习/v11样本卷"就是这么来的）
+        acc_home = tempfile.mkdtemp(prefix="pj_acc_f01_")
+        print(f"验收用临时数据根：{acc_home}")
         proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app",
                                  "--host", "127.0.0.1", "--port", str(PORT), "--log-level", "warning"],
-                                cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+                                cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                                env={**os.environ, "PJ_DATA_HOME": acc_home})
     SRV_PID = None
     try:
         for _ in range(40):
