@@ -239,6 +239,14 @@ def _paint(c: rl_canvas.Canvas, questions: list[dict], opt: LayoutOptions, title
         no = q.get("q_no") if q.get("q_no") is not None else q.get("auto_no")
         prefix = f"{no}. " if no is not None else ""
         stem = (q.get("text") or "").strip()
+        subs = q.get("subqs") or []
+        if len(subs) >= 2:
+            # 小问各起一行。三问挤成一段时，孩子看不出哪一空答哪一问（用户原话
+            # "非得挤在一个框子里，怎么分别作答呢？"）。wrap_text 把换行符当硬换行，
+            # 所以这里只管重排题干，填空/答案回填那条路照旧按空位顺序走。
+            head = str(subs[0].get("lead") or "").strip()
+            body = "\n".join(f"（{s.get('no')}）{s.get('text')}" for s in subs)
+            stem = f"{head}\n{body}" if head else body
         raw = answers.get(uid)
         alist = raw if isinstance(raw, (list, tuple)) else ([raw] if raw not in (None, "") else [])
         alist = [str(a) for a in alist]
@@ -287,6 +295,17 @@ def _paint(c: rl_canvas.Canvas, questions: list[dict], opt: LayoutOptions, title
                     c.line(opt.margin_left + indent + 6, fl.y - fs,
                            A4_W - opt.margin_right, fl.y - fs)
                     fl.y -= fl.opt.leading + 6
+
+        syms = [str(s).strip() for s in (q.get("symbols") or []) if str(s).strip()]
+        if syms:
+            # 卷面上【画出来】的图形符号（★＋★＝20 这种）OCR 只认字，题干会读成
+            # "=20 39" 的残渣。这几行是系统按轮廓还原的算式，印在题干下面，
+            # 并且【标明是还原的】——家长和孩子要分得清哪是卷面原文。
+            fl.text("（下面两行按卷面图形还原，非卷面原文）" if len(syms) > 1
+                    else "（此行按卷面图形还原，非卷面原文）", fs - 2,
+                    indent=indent + 8, gap_after=0)
+            for s in syms:
+                fl.text(s, fs - 1, indent=indent + 8, gap_after=0)
 
         _draw_figures(c, q, opt, fl, indent, fig_dir=fig_dir, stats=stats)
         if graded and not alist:

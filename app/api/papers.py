@@ -98,6 +98,27 @@ def api_parse(id_str: str) -> dict:
             if 0 <= qi < len(qs):
                 qs[qi]["images"] = imgs
         fig_note = f"，裁出配图 {sum(len(v) for v in got.values())} 张"
+        # ── 卷面上【画出来】的图形符号（★＋★＝20 这种）：OCR 只认字，整行会读成
+        #    "=20 39" 的残渣。这里按轮廓把算式还原出来，单独存 symbols 一列 ——
+        #    不并进题干：家长必须能分清哪半句是卷面上读到的、哪半句是系统还原的。
+        n_sym = 0
+        try:
+            import numpy as np2
+            import cv2 as cv2m
+            from ..extractor import symbols as SY
+            for s in spans:
+                qi = int(s.get("q_index", -1))
+                src = sources.get(int(s["page"]))
+                if not (0 <= qi < len(qs)) or not src:
+                    continue
+                g = SY.scan_span(src, s, np2, cv2m)
+                if g.get("lines"):
+                    qs[qi]["symbols"] = g["lines"]
+                    n_sym += len(g["lines"])
+            if n_sym:
+                fig_note += f"，还原图形算式 {n_sym} 行"
+        except Exception as e:                             # 认符号失败同样不许拖垮识别
+            fig_note += f"，图形算式还原失败（{type(e).__name__}: {e}）"
     except Exception as e:                                 # 配图失败不能拖垮整卷识别
         fig_note = f"，配图裁剪失败（{type(e).__name__}: {e}）"
 

@@ -192,6 +192,28 @@ def check_gate(html_path: str, raw: str) -> list[str]:
     return bad
 
 
+def check_shared_js(raw: str) -> list[str]:
+    """页面用了共享判据（PJSubs.），就必须挂上它所在的 js —— 漏挂＝整页白屏。
+
+    这是 gate.js 注释事故的同一家族：浏览器对 ReferenceError 只显示空白区，
+    不给你任何线索，而闸门只要不查"引用了却没挂"就一路绿灯。
+    判据本身也只许有那一份实现，页面里再抄一遍迟早和打印版口径漂开。
+    """
+    bad = []
+    for ns, fname in (("PJSubs.", "js/subqs.js"),):
+        if ns not in raw:
+            continue
+        tag = f'src="{fname}"'
+        if tag not in raw:
+            bad.append(f"页面用了 {ns.rstrip('.')} 却没挂 {fname}（浏览器会 ReferenceError，题目区一片空白）")
+            continue
+        if in_comment(comment_ranges(raw), raw.find(tag)):
+            bad.append(f"{fname} 的 script 标签在未闭合的注释里，浏览器不会加载它")
+        if not os.path.exists(os.path.join(WEB, fname)):
+            bad.append(f"{fname} 文件不存在，但页面引用了 {ns.rstrip('.')}")
+    return bad
+
+
 def check_external_js() -> tuple[int, int]:
     """外链 JS 文件也要过 node --check，并且不许用 innerHTML 拼页面数据。
 
@@ -240,6 +262,9 @@ def main() -> int:
             print(f"  FAIL {name} {msg}")
             bad += 1
         for msg in check_gate(p, raw):
+            print(f"  FAIL {name} {msg}")
+            bad += 1
+        for msg in check_shared_js(raw):
             print(f"  FAIL {name} {msg}")
             bad += 1
         # 结构检查：JS 源码里不该出现「真实换行夹在引号中间」的坏字面量

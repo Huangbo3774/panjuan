@@ -45,8 +45,14 @@ BARE_NUM_RE = re.compile(r"^(\d{1,2})\s*[.、．]?$")
 SUBQ_RE = re.compile(r"^[（(](\d{1,2})[）)][、.．]?\s*")
 # 选项 A. B、 C． A)
 OPT_RE = re.compile(r"^([A-H])\s*[.、．)]\s*(.*)$")
-# 空位：下划线 / 全角空括号 / 多个全角空格
-BLANK_RE = re.compile(r"(_{2,}|[＿]{2,}|（\s{0,4}）|\(\s{1,4}\))")
+# 空位：下划线 / 括号里一整串空白（空位就是"括号 + 一段留白"）
+# ⚠️ 空白【不限长度】。旧版卡 1–4 个空格，而扫描件上的一道空位常被 OCR 读成
+# 6–8 个空格（实测 E:\数学卷子\第三单元练习题.pdf 第 1 页：卷面 33 个空位，
+# 卡 4 个空格时只数到 3 个）→ 做题页每道题只给一个输入框，
+# 孩子没法按空位分别作答。括号里只要全是空白，就是空位，没有第二种解释。
+# ⚠️ 括号【左右各允许半角或全角】：OCR 经常读成"（    )"这种混配的一对
+#   （同一份卷实测有 5 个，只认成对写法就少算 5 个空位：28 ≠ 卷面 33）。
+BLANK_RE = re.compile(r"(_{2,}|[＿]{2,}|[（(]\s*[）)])")
 # 判断句特征
 JUDGE_HINT = ("对的打", "正确的打", "错的打", "判断", "√", "×", "对的画", "正确的画")
 # 英文大题（真实英文样本里 Section A 完全没被认出来，只会认中文序号）
@@ -195,6 +201,55 @@ def _parse_question_no(line: str, circled_as_no: bool = False) -> tuple[int | No
             return ord(m.group(1)) - ord("①") + 1, m.group(2)
     return None, s
 
+
+# 一道大题里的"（1）（2）（3）"小问。它们【不是独立的题】（题号、分值、批改都跟着大题走），
+# 但必须【各占一行、各答各的空】—— 否则卷面上三问挤成一段，孩子不知道哪一空答哪一问
+# （用户原话："一个题目里面有三个小题，非得挤在一个框子里，怎么分别作答呢？"）。
+SUBQ_MARK_RE = re.compile(r"[（(]\s*(\d{1,2})\s*[）)]")
+
+
+def split_subqs(text: str) -> list[dict[str, Any]]:
+    """题干 → [{no, text, blanks}]；不够两个小问就返回 []（当普通题排）。
+
+    ⚠️ 三条判据，每条挡一类误伤：
+      · 标记必须是**括号里正好一个数字**——填空的空位写作"（   ）"，没有数字，
+        所以 `（ ）` 永远不会被当成小问号（这条是最容易踩的，卷子上空位比小问多得多）；
+      · 编号必须从 1 开始**严格递增**——"3×4=（12）"这种已经填了数的空、
+        或者只出现一次"(2)"的杂散文本，都不会被拆；
+      · 至少 2 段且每段非空——只有一问的题不配叫"小问"。
+    """
+    t = (text or "").strip()
+    if not t:
+        return []
+    marks = [m for m in SUBQ_MARK_RE.finditer(t)]
+    if len(marks) < 2:
+        return []
+    # 只保留"从 1 开始、每次 +1"的那串标记（后面的杂散括号一律不当小问号）
+    keep: list = []
+    want = 1
+    for m in marks:
+        try:
+            n = int(m.group(1))
+        except ValueError:
+            continue
+        if n == want:
+            keep.append((n, m.start(), m.end()))
+            want += 1
+    if len(keep) < 2:
+        return []
+    out: list[dict[str, Any]] = []
+    for i, (n, st, e) in enumerate(keep):
+        end = keep[i + 1][1] if i + 1 < len(keep) else len(t)
+        seg = t[e:end].strip()
+        if not seg:
+            return []
+        item: dict[str, Any] = {"no": n, "text": seg, "blanks": len(BLANK_RE.findall(seg))}
+        if i == 0 and st > 0:
+            # 第一个小问之前还有正文（"看图填一填。（1）…"）→ 那是【引导语】，
+            # 不是小问，也不能丢：单独放 lead，由排版先印它一行。
+            item["lead"] = t[:st].strip()
+        out.append(item)
+    return out
 
 def _bare_number_starts_question(line: str, last_no: int | None,
                                  cur_q: dict | None, numbered_in_sec: int) -> int | None:

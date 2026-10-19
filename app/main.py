@@ -64,7 +64,13 @@ def health() -> dict[str, Any]:
     # pid + 代码指纹：验收脚本必须确认"回答我的是我刚起的那个服务"。
     # 实测踩过：上一轮测试的服务没被杀掉、还占着端口，新起的 uvicorn 静默绑定失败，
     # 于是"新代码的验收"其实跑在旧代码上，全绿也是假绿。
+    # OCR 引擎状态也报出去：网页上"识别题型失败"那句提示必须能分清
+    # "这台机器没装 OCR"和"服务端自己出错了"，不能一律怪引擎（实测就误判过一次：
+    # 真因是临时图撞名导致 500，提示却写"常见于纯扫描又缺 OCR 引擎"）。
+    from app.extractor import ocr as _O
+    ocr_ok, ocr_why = _O.available()
     return {"ok": True, "service": "paper-forge", "font": st.get("note"),
+            "ocr": {"ok": bool(ocr_ok), "why": ocr_why},
             "tasks": len(STORE), "pid": os.getpid(),
             "frozen": FROZEN, "home": APP_HOME, "home_note": HOME_NOTE,
             # 冻结态源码不在盘上，取 exe 的 mtime 才是"这份程序什么时候构建的"

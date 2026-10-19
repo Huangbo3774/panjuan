@@ -127,6 +127,52 @@ def clipped_sides(src, rect, page_boxes, pad_pt=6.0, min_px=45, min_run=18,
     return out
 
 
+def row_leaks(src, rect, page_boxes, other_crops=(), reach_pt=70.0,
+              min_px=45, min_run=3):
+    """图框【左右两侧的同一行上】还剩多少非文字墨 —— 中间隔着空白也算漏。
+
+    和 `clipped_sides` 的分工：那条尺只看框外 6px 的【贴边】墨，
+    看不见"式子被从中间截断"这种 —— 真实卷（第三单元练习题 第 1 页第 4 题
+    「★＋★＋★＋★＝20」）裁框停在 x=407.6，式子末尾的"（   ）"在 x=434，
+    中间隔着 26pt 空白 → 切边报 0，可孩子看到的算式少了括号和得数。
+
+    三条护栏，一条都不能少（少一条就是把邻题的图报成自己的漏块）：
+      · 只看【同一行】：横条带就是裁框自己的 y 区间，不往上往下扩；
+      · 挖掉 OCR 文字行：那一行本来就是字，不是被切掉的图；
+      · 挖掉【别的题已经裁走的图】：邻题的图不该算在这道题头上。
+    ⚠️ 门槛是量出来的，不是猜的：被切掉的那半个括号，条带里实测 48px 墨。
+      所以 min_px 只能取 45（第一版照抄切边尺的 60px → 对它要治的那个缺陷【完全瞎】，
+      把修复关掉也报不出第 4 题；min_run 也只能到 3px，竖弧没有长横画）。
+    """
+    x0, y0, x1, y1 = [v * K for v in rect]
+    reach = reach_pt * K
+    H, W = src.gray.shape
+    out = []
+    for side, (bx0, bx1) in (("左", (max(0, int(x0 - reach)), int(x0) - 1)),
+                             ("右", (int(x1) + 1, min(W, int(x1 + reach))))):
+        by0, by1 = max(0, int(y0)), min(H, int(y1))
+        if bx1 - bx0 < 3 or by1 - by0 < 3:
+            continue
+        ink = src.gray[by0:by1, bx0:bx1] < src.ink_thr
+        if not ink.any():
+            continue
+        for (tx0, ty0, tx1, ty1, _t) in page_boxes:
+            a, b = max(int(tx0 * K) - bx0, 0), min(int(tx1 * K) - bx0, ink.shape[1])
+            c, d = max(int(ty0 * K) - by0, 0), min(int(ty1 * K) - by0, ink.shape[0])
+            if b > a and d > c:
+                ink[c:d, a:b] = False
+        for (ox0, oy0, ox1, oy1) in other_crops:
+            a, b = max(int(ox0 * K) - bx0, 0), min(int(ox1 * K) - bx0, ink.shape[1])
+            c, d = max(int(oy0 * K) - by0, 0), min(int(oy1 * K) - by0, ink.shape[0])
+            if b > a and d > c:
+                ink[c:d, a:b] = False
+        n = int(ink.sum())
+        if n < min_px or max((_run_len(row) for row in ink), default=0) < min_run:
+            continue
+        out.append((side, n))
+    return out
+
+
 def overlap(a, b) -> float:
     ix = min(a[2], b[2]) - max(a[0], b[0])
     iy = min(a[3], b[3]) - max(a[1], b[1])
@@ -262,6 +308,22 @@ def selftest() -> list[str]:
         fails.append("切边尺：框外明明有墨却没报（这条尺坏了，报 0 不算通过）")
     if clipped_sides(src, mine, [], other_crops=[(20.0, 141.0, 120.0, 150.0)]):
         fails.append("切边尺：邻题的图被算成了这道题的「切边」（误报）")
+
+    # 漏块尺：同一行、但【隔着 30pt 空白】的那块墨，切边尺看不见（它只看贴边 6px），
+    # 真实卷上这就是"★＋★＝20 被裁成 ★＋★＝"。这条尺必须自己会响。
+    g2 = np.full((int(200 * K), int(200 * K)), 255, dtype=np.uint8)
+    g2[int(100 * K):int(140 * K), int(20 * K):int(120 * K)] = 40     # 裁下来的图
+    g2[int(110 * K):int(130 * K), int(150 * K):int(170 * K)] = 40    # 式子末尾的括号
+    src2 = PageSource(1, 200.0, 200.0, g2, lambda rect, out: None)
+    if not row_leaks(src2, mine, []):
+        fails.append("漏块尺：同一行框外 30pt 的墨没报（这条尺坏了，报 0 不算通过）")
+    if clipped_sides(src2, mine, []):
+        fails.append("漏块尺的反证失败：贴边 6px 内本来就没墨，切边尺不该跟着响")
+    box_cover = [(150.0, 110.0, 170.0, 130.0, "（   ）")]
+    if row_leaks(src2, mine, box_cover):
+        fails.append("漏块尺：OCR 已经读到、本来就当文字挖掉的行被算成漏块（误报）")
+    if row_leaks(src2, mine, [], other_crops=[(150.0, 110.0, 170.0, 130.0)]):
+        fails.append("漏块尺：邻题已经裁走的图被算成这道题的漏块（误报）")
     return fails
 
 
@@ -290,7 +352,7 @@ def audit(path: str, render=True) -> dict:
                   for a in items] for pg, items in by_page.items()}
     span_by_q = {int(s["q_index"]): s for s in spans}
 
-    clip, bleed, stem_in = [], [], []
+    clip, bleed, stem_in, leak = [], [], [], []
     crops_by_page: dict[int, list] = {}
     for q in qs:
         for im in q.get("images") or []:
@@ -306,6 +368,9 @@ def audit(path: str, render=True) -> dict:
                               other_crops=others)
             if c:
                 clip.append((qi + 1, [f"{s}+{n}px" for s, n in c], [round(v) for v in rect]))
+            lk = row_leaks(r["sources"][page], rect, boxes.get(page, []), other_crops=others)
+            if lk:
+                leak.append((qi + 1, [f"{s}+{n}px" for s, n in lk], [round(v) for v in rect]))
             for qj, sj in span_by_q.items():
                 if qj == qi or int(sj.get("page", -1)) != page:
                     continue
@@ -343,7 +408,7 @@ def audit(path: str, render=True) -> dict:
     from collections import Counter
     print(f"\n【{name}】源{r['n_pages']}页 · 题{len(qs)} · 配图{n_img}张（带图题{len(got)}）"
           f"· 出卷{pages_out}页 · 待校对{sum(1 for q in qs if q.get('needs_review'))}")
-    print(f"  做不了 {len(bad)}　·　做得别扭：切边 {len(clip)} · 串题 {len(bleed)} "
+    print(f"  做不了 {len(bad)}　·　做得别扭：切边 {len(clip)} · 漏块 {len(leak)} · 串题 {len(bleed)} "
           f"· 含题干 {len(stem_in)} · 重号 {len(dup)}")
     for kind, no, why in bad:
         print(f"    ✗ {kind:6} 第 {no} 题 {why}")
@@ -351,13 +416,15 @@ def audit(path: str, render=True) -> dict:
         print(f"    · 重号   大题「{sec[:14]}」第 {no} 题出现 {n} 次（其中一道多半是乱码假题）")
     for t, c, rr in clip:
         print(f"    · 切边   第 {t} 题 {c} 框{rr}")
+    for t, c, rr in leak:
+        print(f"    · 漏块   第 {t} 题 同一行框外还有墨 {c} 框{rr}（式子被从中间截断）")
     for t, o, s in bleed:
         print(f"    · 串题   第 {t} 题的图盖住第 {o} 题「{s}」")
     for t, s, w in stem_in:
         print(f"    · 含题干 第 {t} 题的图框住「{s}」  {w}")
     print(f"    砍掉的候选：{dict(Counter(d['why'] for d in cut))}")
-    return {"name": name, "bad": bad, "clip": clip, "bleed": bleed, "stem": stem_in,
-            "dup": dup,
+    return {"name": name, "bad": bad, "clip": clip, "leak": leak, "bleed": bleed,
+            "stem": stem_in, "dup": dup,
             "pages": pages_out, "questions": len(qs)}
 
 
@@ -385,9 +452,11 @@ def main() -> int:
         for m in bad_ruler:
             print("   ", m)
         return 2
-    print("✓ 审计尺自检通过（11 条正/反对照）")
+    # 括号里的条数只是【标签】，判决只看 selftest() 返回的 fails ——
+    # 加检查时忘了改这个数字，不会让一把坏尺装成好的。
+    print("✓ 审计尺自检通过（15 条正/反对照）")
     files = collect(args) or collect([os.path.join(ROOT, "samples", "private")])
-    tot = {"bad": 0, "clip": 0, "bleed": 0, "stem": 0, "dup": 0}
+    tot = {"bad": 0, "clip": 0, "leak": 0, "bleed": 0, "stem": 0, "dup": 0}
     for f in files:
         try:
             a = audit(f, render=render)
@@ -400,10 +469,10 @@ def main() -> int:
         if not a:
             continue
         tot["bad"] += len(a["bad"])
-        for k in ("clip", "bleed", "stem", "dup"):
+        for k in ("clip", "leak", "bleed", "stem", "dup"):
             tot[k] += len(a[k])
-    print(f"\n===== 合计：做不了 {tot['bad']} · 切边 {tot['clip']} · 串题 {tot['bleed']} "
-          f"· 含题干 {tot['stem']} · 重号 {tot['dup']} =====")
+    print(f"\n===== 合计：做不了 {tot['bad']} · 切边 {tot['clip']} · 漏块 {tot['leak']} "
+          f"· 串题 {tot['bleed']} · 含题干 {tot['stem']} · 重号 {tot['dup']} =====")
     print(f"逐页成品图在 {OUT}")
     return 1 if tot["bad"] else 0
 

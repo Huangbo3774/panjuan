@@ -10,6 +10,8 @@
 <script src="js/gate.js"></script>
 <!-- 步骤条顺序只有 js/app.js 那一份定义，页面只声明 data-step -->
 <script src="js/app.js"></script>
+<!-- 空位数、小问分行的口径住在 js/subqs.js，和打印版/做题页同一份 -->
+<script src="js/subqs.js"></script>
 </head>
 <body data-step="proofread">
 <nav class="nav"><div class="wrap nav__in">
@@ -75,6 +77,11 @@
   </div>
 </main>
 
+<!-- 数学符号面板：点题干输入框就浮出来（固定在屏幕下方，跟着滚动不挡字）。
+     键盘打不出 × ÷ ≤ ★ 这类符号，家长想改题干只能干瞪眼 —— 这一条是他直接提的：
+     "你这个框子里面要支持编辑格式 数学符号啊"。 -->
+<div id="symbar" class="symbar" hidden></div>
+
 <script>
 const $=s=>document.querySelector(s);
 const $$=s=>[...document.querySelectorAll(s)];
@@ -118,10 +125,15 @@ function qcard(q,i){
       <div class="qcard__no">${q.q_no!=null?esc(q.q_no):(i+1)}</div>
       <div style="flex:1;min-width:0">
         <textarea data-f="text" rows="2" style="width:100%">${esc(q.text)}</textarea>
+        ${(q.symbols||[]).length?`<div class="symlines">
+          <div class="symlines__tip">按卷面图形还原的算式（★●□△ 这类是画出来的，OCR 读不出字）——有出入请直接改题干：</div>
+          ${(q.symbols||[]).map(s=>`<div class="symlines__eq">${esc(s)}</div>`).join('')}</div>`:''}
         <div class="tags">
           <span class="badge${q.needs_review?' badge--warn':' badge--ok'}">${q.needs_review?'▲ 识别待确认':'✓ 置信 '+Math.round((q.confidence||0)*100)+'%'}</span>
           <span class="badge badge--muted">源行 ${(q.source_lines||[]).length} 段</span>
           ${(q.images||[]).length?`<span class="badge badge--muted">配图 ${q.images.length} 张</span>`:''}
+          ${(q.symbols||[]).length?`<span class="badge badge--muted" title="卷面上画出来的图形符号，系统按轮廓还原成算式">图形算式 ${q.symbols.length} 行</span>`:''}
+          ${(q.subqs||[]).length>1?`<span class="badge badge--muted" title="打印与作答时按（1）（2）（3）各占一行、各标各的空">小问 ${q.subqs.length} 项</span>`:''}
         </div>
       </div>
     </div>
@@ -171,7 +183,8 @@ function collect(i){
     if(k==='score'||k==='q_no'){ v=v===''?null:Number(v); }
     q[k]=v;
   });
-  q.blanks=(q.text.match(/_{2,}|[＿]{2,}|（\s{0,6}）|\(\s{0,6}\)/g)||[]).length;
+  // 空位数由题干决定，口径和后端 BLANK_RE 同一份实现（js/subqs.js）
+  q.blanks=PJSubs.countBlanks(q.text);
   return q;
 }
 async function api(path,opt){
@@ -255,6 +268,57 @@ $('#toPrint').onclick=()=>{ location.href=`print.html?paper=${PID}`; };
   $('#title').value=(await api(`api/papers/${PID}/questions`)).title||'';
   banner(); render();
 })();
+
+/* ── 数学符号面板 ────────────────────────────────────────────────
+ * 键盘上打不出 × ÷ ≤ ★ □，家长想手工修题干就只能干瞪眼（用户原话：
+ * "你这个框子里面要支持编辑格式 数学符号啊"）。
+ * 光标在哪就插在哪；【有选区就替换选区】——选中"×"点"÷"必须变成"÷"，
+ * 变成"×÷"就等于改不动。插入逻辑本身住在 js/subqs.js（pasteSymbol），
+ * 那里能被 node 直接跑测试；页面只管浮出面板、记住目标框、把活干完。 */
+const SYMBAR=$('#symbar');
+let symTarget=null;
+
+function symbarBuild(){
+  if(SYMBAR.childElementCount) return;
+  SYMBAR.innerHTML=PJSubs.SYMBOL_GROUPS.map(g=>
+    `<div class="symbar__grp"><span>${esc(g.name)}</span>`+
+    g.items.map(s=>`<button type="button" class="symbar__k" data-sym="${esc(s)}">${esc(s)}</button>`).join('')+
+    `</div>`).join('')+
+    '<button type="button" class="symbar__close" id="symbarClose" title="收起">×</button>';
+  $('#symbarClose').onclick=()=>{ SYMBAR.hidden=true; };
+  SYMBAR.querySelectorAll('[data-sym]').forEach(b=>{
+    // mousedown 里就动手：等 click 的话，textarea 已经失焦、选区位置就丢了
+    b.addEventListener('mousedown',ev=>{ ev.preventDefault(); symInsert(b.dataset.sym); });
+  });
+}
+
+function symInsert(tok){
+  const ta=symTarget; if(!ta||!tok) return;
+  const r=PJSubs.pasteSymbol(ta.value, ta.selectionStart, ta.selectionEnd, tok);
+  let nativeOk=false;
+  try{ ta.focus(); nativeOk=document.execCommand('insertText', false, tok); }
+  catch(_e){ nativeOk=false; }
+  if(!nativeOk){                       // 浏览器不让用原生插入就直接改值，并补发 input
+    ta.value=r.value;
+    ta.dispatchEvent(new Event('input',{bubbles:true}));
+  }
+  ta.selectionStart=ta.selectionEnd=r.caret;
+  ta.focus();
+}
+
+document.addEventListener('focusin',e=>{
+  const t=e.target;
+  if(t && t.matches && (t.matches('textarea[data-f="text"]')||t.matches('[data-opt]'))){
+    symTarget=t; symbarBuild(); SYMBAR.hidden=false;
+  }
+});
+document.addEventListener('focusout',e=>{
+  const t=e.target;
+  if(t && t.matches && (t.matches('textarea[data-f="text"]')||t.matches('[data-opt]'))){
+    // 焦点跑到面板上时不能收（点了符号按钮会让 textarea 短暂失焦）
+    setTimeout(()=>{ if(!SYMBAR.contains(document.activeElement)) SYMBAR.hidden=true; },0);
+  }
+});
 </script>
 </body>
 </html>

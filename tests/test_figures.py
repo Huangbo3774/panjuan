@@ -629,7 +629,11 @@ def cap_keeps_the_biggest_not_the_topmost():
     _base(page)
     _txt(page, 40, 90, "1. 看图列式。")
     for i in range(3):                                # 三个小图，靠上
-        _compass(page, 90 + i * 120, 165, 30)
+        # 间隔 170pt：实测钟面墨宽约 74pt，缝隙约 96pt > 横向缝合的 80pt 上限，
+        # 三张才会保持分开。间距一旦收到 80pt 以内，横向缝合会把它们并成一张
+        # 374×74 的长条 —— 限量那条判据就没有"多个候选抢上限"的场景可测了
+        # （第一版就是 120pt 间距被并了，导致"按 y 截断"的破坏测不出来）。
+        _compass(page, 90 + i * 170, 165, 30)
     _grid(page, 60, 260, 510, 370)                    # 一张大图，靠下
     _txt(page, 40, 430, "2. 第二题的题干文字。")
     doc.save(path)
@@ -1032,7 +1036,124 @@ def short_mark_extension_skips_wordy_boxes():
     assert got[2] >= 44, f"真的括号也没圈进来（算式会少半个括号）：{got}"
 
 
+def row_peers_join_the_crop():
+    """同一行被"太小"闸门砍掉的括号/运算符，要并回这张图。
+
+    真实卷（第三单元练习题.pdf 第 1 页第 4 题「★＋★＋★＋★＝20」）：
+    星星加号连成 366×107pt 的图，式子末尾的"（   ）"只有 11×22pt，
+    被单独砍掉 → 裁图右边缘正好切在"＝（"上，孩子看不见括号里要填什么。
+    审计器的"切边"看不见这一类：它只看框外 6px 的贴边墨，这里中间还隔着 26pt 空白。
+    """
+    import app.extractor.figures as FG
+    rect = (41.6, 686.0, 407.6, 792.8)                 # 真的那张图
+    box = (0.0, 664.8, 595.2, 907.0)                   # 本题的栏区间
+    paren = (434.2, 765.4, 445.0, 787.0)               # 被 small 砍掉的那半个括号
+    got = FG._absorb_row_peers(rect, [paren], box)
+    assert got[2] >= 445.0, f"同行的小括号没并进来，算式仍被截断：{got}"
+    assert got[0] == rect[0] and got[1] == rect[1] and got[3] == rect[3], \
+        f"只许横向长，别乱动别的边：{got}"
+
+    # 反例①：只压到图框【下沿 8pt】的一条小块（下一行的东西，而且更宽）
+    #   —— 竖直重叠 7.8/15 = 52% < 60% → 不算同行。
+    #   ⚠️ 这块必须【比图框宽】：放在框内的话，"重叠阈值调到 0.05"这种破坏
+    #      并进来也不会改变坐标，测试照样绿（第一版就是这么假绿过去的）。
+    below = (41.6, 785.0, 460.0, 800.0)
+    assert FG._absorb_row_peers(rect, [below], box) == rect, "把下一行的东西并进来了"
+    # 反例②：同一行但隔得太远（那是栏里另一道式子）
+    far = (520.0, 765.4, 530.0, 787.0)
+    assert FG._absorb_row_peers(rect, [far], box) == rect, "把 100pt 外的另一道式子并来了"
+    # 反例③：不许越过本题的栏区间（越栏＝把邻题的图截过来，用户骂过的老 bug）
+    over = (600.0, 765.4, 640.0, 787.0)
+    g3 = FG._absorb_row_peers((41.6, 686.0, 560.0, 792.8), [over], box)
+    assert g3[2] <= box[2] + 3.0, f"裁框越过栏区间：{g3}"
+    # 反例④：同行、但【往上探出 36pt】的小块 —— 竖直重叠够格（80/80），
+    # 也只许把 x 拉宽，不许把上沿顶回 650（那是规则 L 刚裁掉的题干首行）
+    above = (10.0, 660.0, 50.0, 780.0)
+    g4 = FG._absorb_row_peers(rect, [above], box)
+    assert g4[1] == rect[1], f"上沿被同行小块顶回去了（题干首行会重新框进图）：{g4}"
+    assert g4[0] == 10.0, f"这条本该横向并进来却没并：{g4}"
+
+
+def side_by_side_pieces_join_one_figure():
+    """同一道题、同一行、被【文字行挖断】的几块，其实是一张图。
+
+    真实卷（第三单元练习题.pdf 第 2 页第 1 题）：
+        3 × 21 读作：（ ）        ← 一张"乘数 × 乘数 = 积"的标注图
+    OCR 的行框正好横穿这张图，把中间那行字挖掉之后，图被切成
+    174×125 ＋ 59×47 ＋ 59×47 三块，每块只剩半个式子——
+    用户指着说"图片中的字不全"。三块各自都合格，所以问题不在门槛，
+    在【横向没有缝合】（上下方向早就有 _stitch_across_questions）。
+    """
+    import app.extractor.figures as FG
+
+    def cand(qi, rect, page=2, col=0):
+        return {"q_index": qi, "page": page, "col": col, "rect": list(rect),
+                "band": [0.0, 127.6, 595.2, 264.7], "strict": True, "src": None,
+                "tbs": [], "w_pt": rect[2] - rect[0], "h_pt": rect[3] - rect[1]}
+
+    left = cand(4, [0.0, 142.4, 173.6, 267.2])
+    mid = cand(4, [183.5, 174.8, 242.0, 221.9])
+    right = cand(4, [305.2, 172.7, 364.4, 219.7])
+    got = FG._stitch_side_by_side([left, mid, right])
+    assert len(got) == 1, f"一张标注图被题内切成 {len(got)} 块：{[g['rect'] for g in got]}"
+    r = got[0]["rect"]
+    assert r[0] <= 1.0 and r[2] >= 363.0, f"合并后的框没盖住整张图：{r}"
+    assert got[0]["q_index"] == 4, f"合并后挂错题：{got[0]['q_index']}"
+
+    # 反例①：两个并排钟面（间隙 236pt）必须还是两张
+    a = cand(0, [68.0, 128.0, 152.0, 212.0], page=1)
+    b = cand(0, [388.0, 128.0, 472.0, 212.0], page=1)
+    g2 = FG._stitch_side_by_side([a, b])
+    assert len(g2) == 2, f"两张并排的图被并成一张横跨半页的怪图：{[x['rect'] for x in g2]}"
+    # 反例②：同一行、挨得很近，但【属于两道题】→ 不许把邻题的图吞过来
+    c = cand(7, [183.5, 174.8, 242.0, 221.9])
+    g3 = FG._stitch_side_by_side([left, c])
+    assert len(g3) == 2, f"跨题并图：邻题的图被并进来了 {[x['rect'] for x in g3]}"
+    # 反例③：同一题、水平也挨着，但【上下分开】（竖直只重叠 25%）→ 那是两张图
+    #   ⚠️ 必须留一点重叠：完全不相交的话，"把重叠阈值从 0.5 调到 0.05"这种破坏
+    #      改不了结果，就不是反例（第一版拿"上下分离 80pt"当反例，闸门当场报没抓到）。
+    d = cand(4, [183.5, 210.0, 242.0, 300.0])
+    g4 = FG._stitch_side_by_side([mid, d])
+    assert len(g4) == 2, f"上下两张图被并成一张：{[x['rect'] for x in g4]}"
+
+
+def side_stitch_is_wired_into_find_figures():
+    """判据对、线没接 = 没有判据。这条只验"find_figures 真的调了横向缝合"。
+
+    合成卷要造出"一张标注算式被文字行横切"的几何很挑，硬造容易造出自证的假绿；
+    所以这里不验几何（几何由上一条验），只验接线：
+    把函数换成一个会记账的壳子，跑一遍真流程，看它有没有被叫到。
+    """
+    import app.extractor.figures as FG
+    path = os.path.join(OUT, "接线_横向缝合.pdf")
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    _base(page)
+    _txt(page, 40, 90, "1. 看图列式。")
+    _grid(page, 60, 140, 300, 240)
+    _txt(page, 40, 300, "2. 第二题的题干文字。")
+    doc.save(path)
+    doc.close()
+    calls = []
+    real = FG._stitch_side_by_side
+
+    def spy(cands, report=None):
+        calls.append(len(cands))
+        return real(cands, report)
+
+    FG._stitch_side_by_side = spy
+    try:
+        run(path)
+    finally:
+        FG._stitch_side_by_side = real
+    assert calls, "find_figures 根本没调用横向缝合（判据成了死代码）"
+    assert sum(calls) >= 1, f"接线了但一道候选都没拿到：{calls}"
+
+
 CASES = [
+    ("同一行被文字行切断的图要并回一张（第2页标注图）", side_by_side_pieces_join_one_figure),
+    ("横向缝合真的接在裁图链路上（接线检查）", side_stitch_is_wired_into_find_figures),
+    ("同行被砍的小括号要并回图框（算式不许被截断）", row_peers_join_the_crop),
     ("横版两栏：裁图不许跨栏", two_column_crops_stay_in_their_own_column),
     ("两栏纯文字：一张废图都不裁（反例）", pure_text_two_column_crops_nothing),
     ("大题题头是硬墙：共享图挂本大题第一小题", section_header_is_a_wall),

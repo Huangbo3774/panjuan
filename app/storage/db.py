@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS questions (
   section TEXT, qtype TEXT, text TEXT, options TEXT, blanks INTEGER DEFAULT 0,
   score REAL DEFAULT 1, confidence REAL, needs_review INTEGER DEFAULT 0,
   manual_fixed INTEGER DEFAULT 0, source_lines TEXT, ord INTEGER,
-  images TEXT DEFAULT '[]'
+  images TEXT DEFAULT '[]', symbols TEXT DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS submissions (
   id INTEGER PRIMARY KEY, paper_id INTEGER,
@@ -78,6 +78,11 @@ def _migrate(c: sqlite3.Connection) -> None:
         return {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
     if "images" not in cols("questions"):
         c.execute("ALTER TABLE questions ADD COLUMN images TEXT DEFAULT '[]'")
+    if "symbols" not in cols("questions"):
+        # 卷面上是【画出来的】图形符号（★＋★＝20），OCR 读不出 → 系统按轮廓还原的行。
+        # 单独存一列，不并进 text：题干是"读到的"，这一列是"还原的"，混在一起
+        # 家长就分不清哪半句是原卷、哪半句是系统猜的。
+        c.execute("ALTER TABLE questions ADD COLUMN symbols TEXT DEFAULT '[]'")
     if "published_at" not in cols("papers"):
         c.execute("ALTER TABLE papers ADD COLUMN published_at TEXT")
     if "source_pages" not in cols("papers"):
@@ -182,8 +187,8 @@ def replace_questions(pid: int, questions: list[dict]) -> list[dict]:
         for i, q in enumerate(questions):
             c.execute(
                 "INSERT INTO questions(paper_id,q_no,auto_no,section,qtype,text,options,"
-                "blanks,score,confidence,needs_review,manual_fixed,source_lines,ord,images)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "blanks,score,confidence,needs_review,manual_fixed,source_lines,ord,images,"
+                "symbols) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (pid, q.get("q_no"), q.get("auto_no"), q.get("section", ""),
                  q.get("qtype", "unknown"), q.get("text", ""),
                  json.dumps(q.get("options") or [], ensure_ascii=False),
@@ -191,7 +196,8 @@ def replace_questions(pid: int, questions: list[dict]) -> list[dict]:
                  float(q.get("confidence", 0) or 0),
                  1 if q.get("needs_review") else 0, 1 if q.get("manual_fixed") else 0,
                  json.dumps(q.get("source_lines") or [], ensure_ascii=False), i,
-                 json.dumps(q.get("images") or [], ensure_ascii=False)))
+                 json.dumps(q.get("images") or [], ensure_ascii=False),
+                 json.dumps(q.get("symbols") or [], ensure_ascii=False)))
         c.execute("UPDATE questions SET auto_no=ord+1 WHERE paper_id=? AND auto_no IS NULL", (pid,))
         c.commit()
     finally:
@@ -214,8 +220,8 @@ def add_question(pid: int, q: dict, after_uid: str | None = None) -> dict:
             new_ord = len(rows)
         cur = c.execute(
             "INSERT INTO questions(paper_id,q_no,auto_no,section,qtype,text,options,"
-            "blanks,score,confidence,needs_review,manual_fixed,source_lines,ord,images)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "blanks,score,confidence,needs_review,manual_fixed,source_lines,ord,images,"
+            "symbols) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (pid, q.get("q_no"), q.get("auto_no"), q.get("section", ""),
              q.get("qtype", "fill"), q.get("text", ""),
              json.dumps(q.get("options") or [], ensure_ascii=False),
@@ -223,7 +229,8 @@ def add_question(pid: int, q: dict, after_uid: str | None = None) -> dict:
              1.0,                       # 人工新增的题 = 最高置信度，不该再标"需校对"
              0, 1,                      # manual_fixed=1
              json.dumps(q.get("source_lines") or []), new_ord,
-             json.dumps(q.get("images") or [], ensure_ascii=False)))
+             json.dumps(q.get("images") or [], ensure_ascii=False),
+             json.dumps(q.get("symbols") or [], ensure_ascii=False)))
         c.execute("UPDATE questions SET auto_no=ord+1 WHERE paper_id=?", (pid,))
         c.commit()
         nid = int(cur.lastrowid)
@@ -272,11 +279,19 @@ def get_questions(pid: int) -> list[dict]:
         out = []
         for r in rows:
             d = dict(r)
-            for k in ("options", "source_lines", "images"):
+            for k in ("options", "source_lines", "images", "symbols"):
                 try:
                     d[k] = json.loads(d.get(k) or "[]")
                 except (json.JSONDecodeError, TypeError):
                     d[k] = []
+            # 小问是【读时算出来的视图】，不是存进库里的第二份真相：
+            # 家长在校对页改了题干，下一次读出来就跟着变，永远不会和 text 打架。
+            from ..extractor.rules import split_subqs, BLANK_RE
+            d["subqs"] = split_subqs(d.get("text") or "")
+            # 空位数同理：它完全由题干决定，库里那一格只是【识别当时】的快照。
+            # 不读时重算的话，旧库里"括号里 6 个空格不算空位"的老口径会一直留着，
+            # 做题页就少给输入框（家长得重新上传一次才能自愈）。
+            d["blanks"] = len(BLANK_RE.findall(d.get("text") or ""))
             d["uid"] = f"q{d['id']}"           # 批改/答案/作答共用的稳定键
             d["needs_review"] = bool(d.get("needs_review"))
             d["manual_fixed"] = bool(d.get("manual_fixed"))

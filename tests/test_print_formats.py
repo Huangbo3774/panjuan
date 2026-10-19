@@ -346,5 +346,111 @@ def seal_line_stays_in_margin():
 t("密封线落在页边距以内（反例）", seal_line_stays_in_margin)
 
 
+def sub_questions_print_on_separate_lines():
+    """带（1）（2）（3）小问的题，打印时每一问各起一行。
+
+    用户拿真卷问的原话："一个题目里面有三个小题，非得挤在一个框子里，
+    怎么分别作答呢？" —— 题号/分值/批改仍按一道题走，但排版必须分开，
+    否则孩子看不出哪一空答哪一问。
+    """
+    from app.extractor.rules import split_subqs
+
+    t = ("看图填一填。 (1)2只2只地数,数了(    )次,一共有(    )只蝴蝶。 "
+         "(2)3只3只地数,数了(    )次,一共有(    )只蝴蝶。 "
+         "(3)4只4只地数,数了(    )次,一共有(    )只蝴蝶。")
+    q = {"uid": "q1", "q_no": 2, "section": "一、填空", "qtype": "fill", "text": t,
+         "subqs": split_subqs(t), "blanks": 6, "score": 3, "options": []}
+
+    def lines_of(path):
+        d = pymupdf.open(path)
+        out = []
+        for pg in d:
+            for blk in pg.get_text("dict")["blocks"]:
+                if blk.get("type") != 0:
+                    continue
+                for ln in blk["lines"]:
+                    out.append("".join(sp["text"] for sp in ln["spans"]).strip())
+        d.close()
+        return out
+
+    out = os.path.join(OUT, "小问分行.pdf")
+    render_answers_pdf([q], LayoutOptions.from_dict({}), out, title="小问分行", mode="blank")
+    got = lines_of(out)
+    # 行首可能带题号前缀（"2. （1）…"），所以先剥掉 "N. " 再看小问标记
+    def head_no(l):
+        m = re.match(r"^\s*(?:\d+[.、]\s*)?[（(](\d{1,2})[）)]", l)
+        return int(m.group(1)) if m else None
+    marks = [head_no(l) for l in got]
+    for n, kw in ((1, "2只2只"), (2, "3只3只"), (3, "4只4只")):
+        row = [l for l, m in zip(got, marks) if m == n]
+        assert len(row) == 1, f"第（{n}）问没独占一行（出现 {len(row)} 次）：{got}"
+        assert kw in row[0], f"第（{n}）问的正文没落在本行（{row[0]!r}）——可能被上一行吞了：{got}"
+    assert any(l.startswith("2. ") for l in got), f"题号仍要在第一行开头：{got}"
+    # 引导语（"看图填一填。"）不是小问，但也不能丢：它得排在（1）之前
+    lead_row = [i for i, l in enumerate(got) if "看图填一填" in l]
+    assert lead_row, f"引导语整句没了：{got}"
+    first_sub = min(i for i, m in enumerate(marks) if m == 1)
+    assert lead_row[0] < first_sub, f"引导语跑到小问后面了：{got}"
+    assert "（1）" not in got[lead_row[0]], f"引导语还和小问挤在同一行：{got[lead_row[0]]!r}"
+
+    # 反例：没有小问结构的题不许被硬拆（普通填空题一行照排）
+    plain = {"uid": "q2", "q_no": 3, "section": "一、填空", "qtype": "fill",
+             "text": "一年有（    ）个月，其中大月有（    ）个。", "subqs": [],
+             "blanks": 2, "score": 2, "options": []}
+    out2 = os.path.join(OUT, "小问分行反例.pdf")
+    render_answers_pdf([plain], LayoutOptions.from_dict({}), out2, title="无小问", mode="blank")
+    got2 = lines_of(out2)
+    assert not any(head_no(l) for l in got2), f"没小问也被加了编号：{got2}"
+    assert not any(l.startswith("（1）") for l in got2), f"没小问也被加了编号：{got2}"
+    assert any("一年有" in l for l in got2), got2
+t("（1）（2）（3）小问在打印版里各起一行（含反例）", sub_questions_print_on_separate_lines)
+
+
+def subqs_view_is_computed_at_read_time():
+    """小问视图必须【接在读库链路上】而且是【读时算】，不是库里存第二份真相。
+
+    两个失败方向都真会发生：
+      · 线没接 —— rules.split_subqs 写好了、单测全绿，但 API 读出来的题里没有 subqs，
+        打印版和做题页拿到的还是挤成一坨的题干（本项目的老毛病：判据对、线没接）；
+      · 存成字段 —— 家长在校对页把"（2）…"改成普通空位后，库里旧的小问还在，
+        打印版继续按三问排，跟题干打架。
+    """
+    tmp = os.path.join(OUT, "_subdb")
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp, exist_ok=True)
+    db.DB_PATH = os.path.join(tmp, "t3.db")
+    for suf in ("-wal", "-shm"):
+        if os.path.exists(db.DB_PATH + suf):
+            os.remove(db.DB_PATH + suf)
+    db.init()
+    pid = db.create_paper("小问卷")
+    db.replace_questions(pid, [{"q_no": 1, "auto_no": 1, "section": "一、填空", "qtype": "fill",
+                                "text": "看图数一数。(1)2只2只地数。(2)3只3只地数。",
+                                "blanks": 2, "options": []},
+                               {"q_no": 2, "auto_no": 2, "section": "一、填空", "qtype": "fill",
+                                "text": "算式 3×4=（12），5×6=（30）。", "blanks": 2,
+                                "options": []},
+                               {"q_no": 3, "auto_no": 3, "section": "一、填空", "qtype": "fill",
+                                "text": "数了(      )次,一共有(      )只蝴蝶。", "blanks": 0,
+                                "options": []}])
+    got = db.get_questions(pid)
+    assert len(got) == 3, f"小问不许拆成两道题（题号/分值仍按一道走）：{len(got)}"
+    # 老库里存着"空位数 0"（旧口径只认 1–4 个空格），读出来必须自愈成 2，
+    # 否则家长不重新上传一次，做题页永远只给一个输入框。
+    assert got[2]["blanks"] == 2, f"空位数没在读时重算（存的快照不会自愈）：{got[2]['blanks']}"
+    assert [s["no"] for s in got[0].get("subqs") or []] == [1, 2], \
+        f"读库没带出小问视图（线没接）：{got[0].get('subqs')}"
+    # 已经填了数的空位不是小问号 —— 库里读出来就必须是空视图
+    assert got[1].get("subqs") == [], f"把算式结果当成了小问：{got[1]['subqs']}"
+    assert "看图数一数" in str(got[0]["subqs"][0].get("lead") or ""), \
+        f"引导语没随视图读出来：{got[0]['subqs'][0]}"
+
+    db.update_question(pid, got[0]["uid"], text="看图数一数，一共有（    ）只蝴蝶。")
+    after = db.get_questions(pid)[0]
+    assert after.get("subqs") == [], f"改了题干，旧的小问视图还在（存成字段就会这样）：{after['subqs']}"
+    shutil.rmtree(tmp, ignore_errors=True)
+t("小问视图接在读库链路上、改题干后跟着变（含反例）", subqs_view_is_computed_at_read_time)
+
+
 print(f"\n{ok_n} passed, {bad_n} failed")
 sys.exit(1 if bad_n else 0)

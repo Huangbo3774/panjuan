@@ -45,6 +45,10 @@ MIN_FIG_AREA_PT = 1200.0
 MIN_INK_PT2 = 26.0         # 框内【真实墨迹】面积下限：空心大框（表格线、边框线）不是图
 DILATE_PT = 7.0            # 连通域膨胀半径：把"图 + 旁边的箭头/标注小字"连成一块
 MERGE_GAP_PT = 14.0        # 两个候选框近到这个程度就并成一张图
+ROW_PEER_MIN_OVERLAP = 0.6  # "同一行"的判定：和图框的竖直重叠占短边 60% 以上
+ROW_PEER_MAX_GAP_PT = 40.0  # 同行小块最多隔这么远才并回来（再远就是另一道式子）
+SIDE_STITCH_MIN_Y_SHARE = 0.5   # 横向缝合：竖直重叠至少要占较矮那块的一半
+SIDE_STITCH_MAX_GAP_PT = 80.0   # 横向缝合：两个并排钟面隔 236pt，不该并
 # 一题最多挂几张。3 → 4 的实测依据：四份真实卷里 3 张会挤掉真图
 # （第三单元练习题 第 2 题的三只蘑菇只剩两只），放到 4 之后图数 +3、
 # 打印页数一张没变（14 页 / 3 页照旧）—— 也就是说这 3 张本来就没占地方。
@@ -603,6 +607,111 @@ def _gate_scale(col_w: float) -> float:
     return max(0.5, min(1.0, col_w / GATE_REF_COL_PT))
 
 
+def _absorb_row_peers(rect: tuple[float, float, float, float], peers: list,
+                      box: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """同一行里被"太小"闸门砍掉的小块，并回这张图。
+
+    真实卷上的样子（第三单元练习题 第 1 页第 4 题「★＋★＝20」那道）：
+    星星和加号连成一张 366×107 的图，可式子末尾的"（   ）"只有 11×22pt，
+    被 small 闸门单独砍掉 → 裁图右边缘正好切在"＝（"上，
+    孩子看不到"）"里要填什么。审计器的"切边"也看不见它：
+    那条尺只看框外 6px 的贴边墨，而这里中间还隔着 26pt 空白。
+
+    三条约束，一条都不能少：
+      · 【同一行】竖直重叠 ≥60% —— 不然会把上下相邻的图一起拉进来；
+      · 【水平间隙 ≤40pt】 —— 不然会把栏里另一道式子并进来；
+      · 【夹回本题的栏区间】 —— 越栏就是用户骂过的"把右边跟他没关系的截过来"。
+    ⚠️ 只【横向】长：竖直方向长出去就会撞回规则 L（裁框上沿不许吞本题起手句），
+      而这一类缺陷本来就只发生在左右——式子被从中间截断。
+    """
+    r = rect
+    changed = True
+    while changed:
+        changed = False
+        for p in peers:
+            ov = min(r[3], p[3]) - max(r[1], p[1])
+            short = min(r[3] - r[1], p[3] - p[1])
+            if short <= 0 or ov < ROW_PEER_MIN_OVERLAP * short:
+                continue
+            gap = max(r[0] - p[2], p[0] - r[2])
+            if gap > ROW_PEER_MAX_GAP_PT:
+                continue
+            n = (min(r[0], p[0]), r[1], max(r[2], p[2]), r[3])
+            n = (max(n[0], box[0] - 3), max(n[1], box[1] - 3),
+                 min(n[2], box[2] + 3), min(n[3], box[3] + 3))
+            if n != r:
+                r = n
+                changed = True
+    return r
+
+
+def _side_adjacent(r1, r2) -> bool:
+    """两块是不是【同一行、横向挨得够近】—— 横向缝合的几何判据。"""
+    ov = min(r1[3], r2[3]) - max(r1[1], r2[1])
+    short = min(r1[3] - r1[1], r2[3] - r2[1])
+    if short <= 0 or ov < SIDE_STITCH_MIN_Y_SHARE * short:
+        return False
+    return max(r1[0] - r2[2], r2[0] - r1[2]) <= SIDE_STITCH_MAX_GAP_PT
+
+
+def _stitch_side_by_side(cands: list[dict[str, Any]],
+                         report: list | None = None) -> list[dict[str, Any]]:
+    """同一道题、同一行、被【文字行挖断】的几块，其实是一张图。
+
+    真实卷（第三单元练习题.pdf 第 2 页第 1 题）：
+        3 × 21 读作：（ ）        ← 一张"乘数 × 乘数 ＝ 积"的标注图
+    OCR 的行框正好横穿这张图，按规矩文字行要从墨里挖掉，于是图被切成
+    174×125 ＋ 59×47 ＋ 59×47 三块，每块只剩半个式子——用户指着说
+    "图片中的字不全"。三块各自都过门槛，所以问题不在门槛，
+    在【横向从来没有缝合】（上下方向早就有 _stitch_across_questions 治棋盘）。
+
+    判据要严，两条各挡一类误伤：
+      · 竖直重叠 ≥ 较矮那块的 50% —— 挡"上下本来就是两张图"被并成一张巨框；
+      · 水平间隙 ≤ 80pt —— 挡两个并排钟面（实测间隙 236pt）被并成
+        一张横跨半页的怪图（那是 test_figures 里现成的反例）。
+    并且【只并同一道题的】：跨题并图会把邻题的图吞过来。
+
+    ⚠️ 试过加第三条"缝里必须是我们自己挖的文字洞"（和上下补洞同一个原则），
+      实测【不成立】：真卷那两道缝的重叠带里，洞只占 **4.5% / 4.8%**
+      （复算见 tests/diag_hole_share.py；缝里绝大部分是算式上下两行之间的正常空白），
+      门槛取 40% 时两张图又裂回三块。所以这条判据不接。
+      代价说清楚：一题里两张【间距小于 80pt】的小图会被并成一张，
+      这比"一张图被切成三块、每块只剩半个式子"划算，所以认了。
+    """
+    by: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    for c in cands:
+        by.setdefault((int(c["page"]), int(c["q_index"])), []).append(c)
+    out: list[dict[str, Any]] = []
+    for _key, g in sorted(by.items()):
+        g = list(g)
+        merged = True
+        while merged:
+            merged = False
+            for i in range(len(g)):
+                if merged:
+                    break
+                for j in range(i + 1, len(g)):
+                    a, b = g[i], g[j]
+                    if not _side_adjacent(a["rect"], b["rect"]):
+                        continue
+                    r = [min(a["rect"][0], b["rect"][0]), min(a["rect"][1], b["rect"][1]),
+                         max(a["rect"][2], b["rect"][2]), max(a["rect"][3], b["rect"][3])]
+                    a["rect"] = r
+                    a["w_pt"] = round(r[2] - r[0], 1)
+                    a["h_pt"] = round(r[3] - r[1], 1)
+                    a["strict"] = bool(a.get("strict")) and bool(b.get("strict"))
+                    g.pop(j)
+                    if report is not None:
+                        report.append({"q_index": a["q_index"], "page": a["page"],
+                                       "kept": True, "rect": [round(v, 1) for v in r],
+                                       "why": "side-stitch"})
+                    merged = True
+                    break
+        out += g
+    out.sort(key=lambda x: (x["page"], x["q_index"], x["rect"][1], x["rect"][0]))
+    return out
+
+
 def _size_gate(w_pt: float, h_pt: float, col_w: float) -> tuple[bool, bool]:
     """(这张能不能裁, 它是不是"严格合格")。"""
     s = _gate_scale(col_w)
@@ -891,7 +1000,13 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
     except Exception:                                   # cv2 是硬依赖，缺了也不能拖垮整卷识别
         cv2 = None
 
+    # 被"太小"砍掉的小块先记下来：同一行里它们多半是式子的一部分
+    # （括号、运算符），图框长出来一点比"算式少半个括号"划算得多。见 _absorb_row_peers。
+    small_peers: dict[tuple[int, int], list] = {}
+
     def drop(qi: int, page: int, rect: tuple[float, float, float, float], why: str) -> None:
+        if why == "small":
+            small_peers.setdefault((page, qi), []).append(tuple(rect))
         if report is not None:
             report.append({"q_index": qi, "page": page, "kept": False,
                            "rect": [round(v, 1) for v in rect], "why": why})
@@ -1017,6 +1132,24 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
         ok.append(c)
 
     ok = _prefer_strict(ok)                 # 放宽那一档只在没严格图时才生效
+
+    # 同一行被"太小"砍掉的括号/运算符并回图框（治"算式被从中间截断"）
+    for c in ok:
+        peers = small_peers.get((c["page"], c["q_index"])) or []
+        if not peers:
+            continue
+        box = (c["band"][0], c["band"][1], c["band"][2], c["band"][3])
+        grown = _absorb_row_peers(c["rect"], peers, box)
+        if grown != c["rect"]:
+            c["rect"] = grown
+            c["w_pt"] = round(grown[2] - grown[0], 1)
+            c["h_pt"] = round(grown[3] - grown[1], 1)
+            if report is not None:
+                report.append({"q_index": c["q_index"], "page": c["page"], "kept": True,
+                               "rect": [round(v, 1) for v in grown], "why": "row-peer"})
+
+    # 同一行被文字行挖断的几块并回一张（见 _stitch_side_by_side 的真卷说明）
+    ok = _stitch_side_by_side(ok, report)
 
     # 限量必须【先按面积挑、再按阅读顺序排】。按 y 直接截断会出这种事：
     # 第三单元练习题 第 5 题的 453×109 大图被三个 58×46 的小块挤掉，

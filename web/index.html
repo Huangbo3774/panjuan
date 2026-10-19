@@ -191,7 +191,17 @@ async function toProofread(tid){
     $('#stage').textContent='识别题型失败：'+e.message;
     $('#go').disabled=false;
     const p=document.createElement('p'); p.className='hint'; p.style.marginTop='10px';
-    p.textContent='这份材料出得了版但认不出题目（常见于纯扫描又缺 OCR 引擎）。';
+    // 别一律怪 OCR 引擎：先问服务端引擎到底在不在。不在才那么说；
+    // 在的话就照实说"服务端这一步出错了"并把原话贴出来
+    // （实测误判过一次：真因是 OCR 临时图撞名导致 500，提示却写"常见于缺 OCR 引擎"）。
+    let why='服务端识别这一步出错了，整页版仍可打印。';
+    try{
+      const h=await (await fetch('api/health')).json();
+      why = (h.ocr && h.ocr.ok===false)
+        ? '这台机器的 OCR 引擎不可用（'+(h.ocr.why||'未知原因')+'），扫描页认不出题目。'
+        : '服务端识别时出错：'+e.message;
+    }catch(_e){}
+    p.textContent=why;
     const a=document.createElement('a'); a.href='print.html?task='+tid; a.textContent='先去第 4 步打一张整页版 →';
     p.appendChild(a);
     $('#prog').appendChild(p);

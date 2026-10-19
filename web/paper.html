@@ -10,6 +10,8 @@
 <script src="js/gate.js"></script>
 <!-- 步骤条顺序只有 js/app.js 那一份定义，页面只声明 data-step -->
 <script src="js/app.js"></script>
+<!-- 小问（1）（2）（3）的分行与空位标签：判据在 js/subqs.js，页面不自己写一遍 -->
+<script src="js/subqs.js"></script>
 </head>
 <body data-step="answer">
 <nav class="nav"><div class="wrap nav__in">
@@ -76,7 +78,9 @@ const paper0=new URLSearchParams(location.search).get('paper');
 const task0=new URLSearchParams(location.search).get('task');
 let PID=null, QS=[], SUBID=null;
 const key=()=>'panjuan:draft:'+(PID||paper0||task0);
-const nblanks=q=>Math.max(parseInt(q.blanks||0,10)||0,1);
+// 带（1）（2）（3）小问的题：题干按问分行、空位标签按问分组（(1)第1空 / (2)第1空…）。
+// 判据只在 js/subqs.js 那一份，和打印版同口径；这里只是接上，别再写一遍。
+const blankLabels=q=>PJSubs.blankLabels(q);
 
 // 步骤条由 js/app.js 统一渲染（顺序只有一份）
 function steps(){ if(window.PJSteps) PJSteps.render('answer', PID); }
@@ -101,8 +105,9 @@ function render(){
         <label class="opt-line"><input type="radio" name="q_${q.uid}" value="√"><span class="txt">对（√）</span></label>
         <label class="opt-line"><input type="radio" name="q_${q.uid}" value="×"><span class="txt">错（×）</span></label></div>`;
     }else if(q.qtype==='fill'){
-      body=`<div class="blanks">${Array.from({length:nblanks(q)},(_,k)=>
-        `<label class="blank-item"><span>第${k+1}空</span><input type="text" data-b="${i}|${k}"></label>`).join('')}</div>`;
+      const bl=blankLabels(q);
+      body=`<div class="blanks">${bl.map((lab,k)=>
+        `<label class="blank-item"><span>${esc(lab)}</span><input type="text" data-b="${i}|${k}"></label>`).join('')}</div>`;
     }else{
       body=`<textarea data-t="${i}" placeholder="写出过程和答案"></textarea>`;
     }
@@ -111,7 +116,8 @@ function render(){
       <div class="qcard__head">
         <div class="qcard__no">${esc(no)}</div>
         <div style="flex:1;min-width:0">
-          <div class="qcard__title">${esc(q.text)||'<span class="hint">（题干见下方配图）</span>'}</div>
+          <div class="qcard__title">${PJSubs.stemLines(q).map(esc).join('<br>')||'<span class="hint">（题干见下方配图）</span>'}</div>
+          ${(q.symbols||[]).length?`<div class="symlines"><div class="symlines__tip">按卷面图形还原的算式（★●□△ 是画出来的，OCR 读不出字）</div>${(q.symbols||[]).map(s=>`<div class="symlines__eq">${esc(s)}</div>`).join('')}</div>`:''}
           <div class="tags"><span class="badge badge--muted">${TYPES[q.qtype]||'题目'}</span>
             <span class="badge badge--muted">${esc(q.score)} 分</span>
             <span class="verdict" id="v_${q.uid}"></span></div>

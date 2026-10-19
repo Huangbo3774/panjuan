@@ -339,6 +339,21 @@ def spans_for_questions(ann: list[dict[str, Any]], questions: list[dict[str, Any
             for n in range(start, len(ann)):       # 被拆行/合并过的，退化成前缀匹配
                 if len(t) >= 4 and norm(ann[n]["text"]).startswith(t[:10]):
                     return n
+            # 题号粘在第一行行首的卷（真卷第 2 页："4.(1)一共有多少根胡萝卜?"）：
+            # 上面两招都比不中 —— 行首被剥掉一层"4."还剩"(1)"，而题干那行剥掉的是"(1)"，
+            # 两边剥的层数不一样，就对不上了。于是 locate 掉到这道题的第二行，
+            # 整张图落进【上一题】的区间：第 4 题一张图都没有，第 3 题的图里混着
+            # 第 4 题的算式和货架图（用户："这题都对不上，怎么做啊"）。
+            # ⚠️ 只认"行首正好是本题题号"这一种粘法：别的数字（页码、选项号、
+            #   上一题的题号）都不算，否则等于把区间起点随便往上挪。
+            if len(t) >= 4 and q.get("q_no") is not None:
+                lead = re.compile(r"^\s*%s\s*[.、．]?" % re.escape(str(q["q_no"])))
+                for n in range(start, len(ann)):
+                    raw = str(ann[n]["text"] or "")
+                    if not lead.match(raw):
+                        continue
+                    if norm(lead.sub("", raw, count=1)).startswith(t[:10]):
+                        return n
         return -1
 
     BARE = re.compile(r"^(\d{1,2})\s*[.、．]?$")

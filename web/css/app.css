@@ -377,3 +377,27 @@ ul.files .mv button:hover{border-color:var(--brand); color:var(--brand-deep); ba
 .pj-gate__row b{color:#5c2d04;font-size:var(--f-sm)}
 .pj-gate__row code{word-break:break-all}
 .pj-gate__row .pj-gate__sub{flex:1 1 100%;color:#8a5a24}
+
+/* 卷面上画出来的图形符号（★＋★＝20）：系统还原的算式单独一块，
+   必须和题干在视觉上分开——家长要能一眼看出这行不是 OCR 读到的原文。 */
+.symlines{margin:6px 0 2px;padding:6px 10px;border:1px dashed #c9a86a;
+  border-left:3px solid #c9a86a;background:#fffaf0;border-radius:4px}
+.symlines__tip{color:#8a5a24;font-size:var(--f-xs);line-height:1.5}
+.symlines__eq{color:#1f2937;font-size:var(--f-sm);line-height:1.9;letter-spacing:.5px;
+  font-family:"Cambria Math","Segoe UI Symbol","Microsoft YaHei",serif}
+
+/* 数学符号面板：固定在屏幕下方，点题干输入框才浮出来。
+   为什么不用弹出定位跟着光标：卷子上题目一多，跟着跑的面板会被滚动甩开，
+   钉在底部反而稳定 —— 手不用找按钮，扫一眼就有。 */
+.symbar{position:fixed;left:0;right:0;bottom:0;z-index:60;display:flex;flex-wrap:wrap;
+  gap:10px 16px;align-items:center;padding:8px 16px;background:#fff;
+  border-top:1px solid var(--line);box-shadow:0 -4px 16px rgba(16,24,40,.10)}
+.symbar[hidden]{display:none}
+.symbar__grp{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.symbar__grp>span{color:var(--muted);font-size:var(--f-xs);margin-right:2px}
+.symbar__k{min-width:30px;height:30px;padding:0 6px;border:1px solid var(--line);
+  border-radius:6px;background:var(--surface-2);color:var(--body);font-size:16px;
+  line-height:1;cursor:pointer;font-family:"Cambria Math","Segoe UI Symbol","Microsoft YaHei",serif}
+.symbar__k:hover{border-color:var(--brand);background:var(--brand-soft)}
+.symbar__close{margin-left:auto;border:0;background:none;color:var(--muted);
+  font-size:20px;line-height:1;cursor:pointer}

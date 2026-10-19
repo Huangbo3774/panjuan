@@ -682,5 +682,121 @@ t("装订栏过滤真的接在读页链路上", wiring_margin_filter_actually_ru
 t("补括号真的接在成题链路上", wiring_bracket_repair_actually_runs_in_extract)
 
 
+def sub_questions_split_for_display_but_stay_one_question():
+    """一道大题里的（1）（2）（3）要【分行分空作答】，但【不能拆成三道题】。
+
+    用户拿真实卷问的："一个题目里面有三个小题，非得挤在一个框子里，怎么分别作答呢？"
+    两头都要顾：拆成独立题会重排题号、丢分值（上一轮就是被这个搞出"重号假题"的）；
+    完全不拆又看不清哪一空归哪一问。所以题号/分值/批改仍按一道题走，
+    排版和作答按小问走 —— 这里测的是"小问怎么切"。
+    """
+    from app.extractor.rules import split_subqs
+
+    t = ("(1)2只2只地数,数了(    )次,一共有(    )只蝴蝶。 "
+         "(2)3只3只地数,数了(    )次,一共有(    )只蝴蝶。 "
+         "(3)4只4只地数,数了(    )次,一共有(    )只蝴蝶。")
+    subs = split_subqs(t)
+    assert [s["no"] for s in subs] == [1, 2, 3], f"三问没切出来：{subs}"
+    assert [s["blanks"] for s in subs] == [2, 2, 2], f"每问该有两个空：{subs}"
+    assert sum(s["blanks"] for s in subs) == 6, "小问空位数要能对上做题页的 6 个输入框"
+
+    # 反例①：填空的空位写作"（   ）"，没有数字 —— 绝不能当成小问号
+    assert split_subqs("一年有（    ）个月，其中大月有（    ）个。") == [], \
+        "把空位当成了小问号"
+    # 反例②：只出现一次编号 → 不是一串小问
+    assert split_subqs("（1）这一问后面再没有第二问。") == []
+    # 反例③：已经填了数的括号（"3×4=（12）"）编号不从 1 起、也不递增
+    assert split_subqs("算式 3×4=（12），5×6=（30）") == [], "把算式结果当成了小问号"
+    # 反例④：编号跳号（1）、（3）—— 中间丢了（2），宁可整条不拆
+    assert split_subqs("（1）第一问。（3）第三问。") == [], "跳号也照样拆，会把小问标错"
+    # 反例⑤：光杆编号（内容在表格里，OCR 只回"（1）（2）（3）"）→ 拆出来是三行空白
+    assert split_subqs("数一数。（1）（2）（3）") == [], "把没有正文的编号拆成三个空行"
+    # 反例⑥：行内的普通数字（"第 1 组…第 2 组…"）—— 括号的【成对形状】才是小问号
+    assert split_subqs("第 1 组有 5 个，第 2 组有 3 个，第 3 组有 7 个。") == [], \
+        "括号可有可无时，量词数字被当成了小问号"
+
+    # 引导语要留住：「看图填一填。（1）…（2）…」里的"看图填一填"不是小问，也不能丢
+    lead = split_subqs("看图填一填。 （1）数是几个几？（2）一共有多少？")
+    assert lead and lead[0].get("lead") == "看图填一填。", f"引导语丢了：{lead}"
+    assert len(lead) == 2 and [x["no"] for x in lead] == [1, 2], lead
+
+
+t("（1）（2）（3）小问切得出来也不误伤空位（含六个反例）",
+  sub_questions_split_for_display_but_stay_one_question)
+
+
+def long_blank_runs_count_as_blanks():
+    """括号里【一整串空白】就是一个空位，不管几个空格。
+
+    真卷实测（E:\\数学卷子\\第三单元练习题.pdf 第 1 页）：扫描 OCR 把空位读成
+    "(      )" 六个空格，旧口径只认 1–4 个 → 卷面 33 个空位数出 3 个，
+    做题页每道题只给一个输入框，孩子根本没法"分别作答"。
+    """
+    from app.extractor.rules import BLANK_RE
+
+    real = "(1)2只2只地数,数了(      )次,一共有(      )只蝴蝶。"
+    assert len(BLANK_RE.findall(real)) == 2, \
+        f"真卷这一行的空位数不对：{len(BLANK_RE.findall(real))}（应为 2：两个 6 空格空位；(1) 是小问号不算）"
+    assert len(BLANK_RE.findall("一年有（        ）个月，大月有（  ）个。")) == 2
+    # OCR 常把一对括号读成"全角开 + 半角闭"的混配，只认成对写法就漏（真卷有 5 个）
+    assert len(BLANK_RE.findall("数了（      )次,一共有(      ）只蝴蝶。")) == 2, \
+        "混配括号的空位没数到"
+    assert len(BLANK_RE.findall("算式：____________ ＝ ____________")) == 2
+    # 反例①：括号里有内容 → 那是填了数的空/普通括号，不是空位
+    assert len(BLANK_RE.findall("3×4=（12），5×6=（30）")) == 0, "把填了数的括号当成空位"
+    # 反例②：括号里夹了字 → 不是空位
+    assert len(BLANK_RE.findall("（ 见上图 ）不对，应该是（   ）")) == 1, "把带字的括号当成空位"
+    # 反例③：一个下划线不是空位（卷面上的脚注线、破折号）
+    assert len(BLANK_RE.findall("a_b")) == 0
+t("括号里的长空格流要数成空位（含三个反例）", long_blank_runs_count_as_blanks)
+
+
+def span_locates_the_number_glued_stem_row():
+    """题号【粘在第一行行首】（"4.(1)一共有多少根胡萝卜?"）时，区间起点必须是这一行。
+
+    真卷第 2 页实测：上一题的区间一路吃到 y=584.8，第 4 题的货架图和答题空
+    整块落进第 3 题的裁框里 → 第 3 题的图混着别人的题，第 4 题一张图都没有。
+    用户那句话就是这么来的："这题都对不上，怎么做啊"。
+    """
+    from app.extractor.lines import spans_for_questions
+    ann = [
+        {"text": "3.[自然科普]落叶腐(f)烂后会化作养分,促进植物生长。下面的树叶片数",
+         "x": 41, "y": 407.0, "w": 480, "h": 19, "page": 2, "col": 0},
+        {"text": "不能用2×4表示的是(       )。(填序号)",
+         "x": 60, "y": 436.7, "w": 300, "h": 19, "page": 2, "col": 0},
+        {"text": "CL            长长", "x": 60, "y": 482.9, "w": 400, "h": 18,
+         "page": 2, "col": 0},
+        {"text": "4.(1)一共有多少根胡萝卜?", "x": 41, "y": 519.5, "w": 210, "h": 19,
+         "page": 2, "col": 0},
+        {"text": "(2)5X2在图中表示什么意思？", "x": 60, "y": 584.8, "w": 220, "h": 19,
+         "page": 2, "col": 0},
+        {"text": "第三步提思维", "x": 41, "y": 701.9, "w": 100, "h": 19, "page": 2, "col": 0},
+    ]
+    questions = [
+        {"q_no": 3, "text": "[自然科普]落叶腐(f)烂后会化作养分,促进植物生长。"
+                           "下面的树叶片数 不能用2×4表示的是(       )。(填序号)",
+         "source_lines": ["[自然科普]落叶腐(f)烂后会化作养分,促进植物生长。下面的树叶片数",
+                          "不能用2×4表示的是(       )。(填序号)", "CL            长长"]},
+        {"q_no": 4, "text": "(1)一共有多少根胡萝卜? (2)5X2在图中表示什么意思？",
+         "source_lines": ["(1)一共有多少根胡萝卜?", "(2)5X2在图中表示什么意思？"]},
+    ]
+    pages = [{"page": 2, "width_pt": 595, "height_pt": 907,
+              "bands": [{"x0": 0.0, "x1": 595.0}]}]
+    sp = {int(s["q_index"]): s for s in spans_for_questions(ann, questions, pages=pages)}
+    assert abs(sp[1]["y0"] - 519.5) < 1, \
+        f"第 4 题的区间没从粘着题号的那一行开始：{sp[1]['y0']}（图会整个给上一题）"
+    assert abs(sp[0]["y1"] - 519.5) < 1, \
+        f"第 3 题的区间下界没收到第 4 题起手行：{sp[0]['y1']}"
+
+    # 反例：行首的数字【不是本题题号】→ 不许拿这一行当起点（否则区间会乱吞）
+    ann2 = [dict(x) for x in ann]
+    ann2[3] = dict(ann[3], text="9.(1)一共有多少根胡萝卜?")
+    sp2 = {int(s["q_index"]): s for s in spans_for_questions(ann2, questions, pages=pages)}
+    assert abs(sp2[1]["y0"] - 584.8) < 1, \
+        f"行首数字对不上也把区间往上抬了：{sp2[1]['y0']}"
+t("题号粘在题干行首时，区间起点要落在这一行（含反例）",
+  span_locates_the_number_glued_stem_row)
+
+
 print(f"\n{ok_n} passed, {bad_n} failed")
 sys.exit(1 if bad_n else 0)
