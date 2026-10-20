@@ -190,6 +190,27 @@ M = [
              "    return len(s) <= 16 and not Q_NUM_RE.match(s) and any(k in s for k in STAGE_KW)",
              "    return len(s) <= 24 and any(k in s for k in STAGE_KW)",
              "教辅栏目横幅是家具不是配图"),
+    # ---- 第九轮（用户截图：乘法题被判成判断题；图片选项的选择题没有尺在量）----
+    Mutation("旧·判断信号带光秃秃的 ×（所有乘法题被判判断题）", RULES,
+             'JUDGE_HINT = ("对的打", "正确的打", "错的打", "判断", "对的画", "正确的画",\n'
+             '              "打√", "打×", "画√", "画×")',
+             'JUDGE_HINT = ("对的打", "正确的打", "错的打", "判断", "对的画", "正确的画",\n'
+             '              "打√", "打×", "画√", "画×", "×", "√")',
+             "乘法题不许被判成判断题"),
+    Mutation("关·选择题信号（题干要「填序号」也不提醒）", RULES,
+             'CHOICE_CUE = re.compile(\n'
+             '    r"填序号|填字母|正确的序号|序号填在|选一选|选择题|单项选择|多项选择|选出|"\n'
+             '    r"正确的是|错误的是|不正确的是|不能用.{0,16}表示的是")',
+             'CHOICE_CUE = re.compile(r"(?!x)x")',
+             "图片选项的选择题：可作答 + 待校对"),
+    Mutation("关·「像选择题却没选项」不标待校对", RULES,
+             '    if (q["qtype"] != "choice" and not judge_signal',
+             '    if (False and q["qtype"] != "choice" and not judge_signal',
+             "图片选项的选择题：可作答 + 待校对"),
+    Mutation("关·待校对汇总不看 review_note（提醒被置信度冲掉）", RULES,
+             '    q["needs_review"] = q["confidence"] < 0.7 or bool(q.get("review_note"))',
+             '    q["needs_review"] = q["confidence"] < 0.7',
+             "图片选项的选择题：可作答 + 待校对"),
 ]
 
 if __name__ == "__main__":

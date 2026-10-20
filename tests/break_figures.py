@@ -234,6 +234,36 @@ CASES = [
      '        by.setdefault((int(c["page"]), int(c["q_index"])), []).append(c)',
      '        by.setdefault((int(c["page"]), 0), []).append(c)',
      "同一行被文字行切断的图要并回一张"),
+    # ---- 第九轮（用户截图：栏目横幅 / 答题框行被当成配图）----
+    ("关·家具行占比判据整条不接（栏目横幅当配图）", FIG,
+     '            if _wall_ink_share(rect, sgn.get("raw"), sgn.get("wall"),\n'
+     '                               k, cx0, y0) >= WALL_INK_SHARE_MAX:',
+     "            if False:",
+     "家具行判据接线检查（含丢弃原因）"),
+    ("过·家具行阈值放到 101%（横幅永远砍不掉）", FIG,
+     "WALL_INK_SHARE_MAX = 0.60", "WALL_INK_SHARE_MAX = 1.01",
+     "栏目横幅接线（真实文字层）"),
+    ("关·答题框判据整条不接（□×□＝□ 当配图）", FIG,
+     '            if _is_answer_box_block(rect, sgn.get("raw"), k, cx0, y0, np):',
+     "            if False:",
+     "栏目横幅与答题框行不许当配图"),
+    ("过·答题框占比门槛降到 0（单个方框也砍）", FIG,
+     "ANSWER_BOX_MIN_SHARE = 0.40", "ANSWER_BOX_MIN_SHARE = 0.0",
+     "家具行占比/答题框判据的反例（真图不许砍）"),
+    ("过·只数到一个方框也当答题框", FIG,
+     "ANSWER_BOX_MIN_SQUARES = 2", "ANSWER_BOX_MIN_SQUARES = 1",
+     "家具行占比/答题框判据的反例（真图不许砍）"),
+    ("过·答题框高度上限取消（整张图带方框也被砍）", FIG,
+     "ANSWER_BOX_MAX_H_PT = 90.0", "ANSWER_BOX_MAX_H_PT = 100000.0",
+     "家具行占比/答题框判据的反例（真图不许砍）"),
+    ("过·答题框不看「框里有大块别的墨」（真图被砍）", FIG,
+     "        if max(w_pt, h_pt) >= ANSWER_BOX_MAX_OTHER_PT:",
+     "        if False:",
+     "家具行占比/答题框判据的反例（真图不许砍）"),
+    ("过·答题框不看别的形状（花/星被砍）", FIG,
+     '        if lab in SY.SHAPE_LABELS and lab != "square":',
+     "        if False:",
+     "家具行占比/答题框判据的反例（真图不许砍）"),
 ]
 
 
@@ -245,9 +275,16 @@ def run_tests() -> tuple[int, str]:
 
 
 def main() -> int:
+    # 可选过滤：只跑名字里含某个关键词的变异（改一条判据时不必等整轮 20 分钟）。
+    # 不带参数＝跑全部，check.bat 走的就是这条。
+    only = [a for a in sys.argv[1:] if a.strip()]
+    cases = [c for c in CASES if not only or any(o in c[0] for o in only)]
+    if only and not cases:
+        print("没有名字匹配的变异：" + "、".join(only))
+        return 1
     orig = {p: open(p, "rb").read() for p in (FIG, LNS, AWR)}
     missed = []
-    for name, path, old, new, want in CASES:
+    for name, path, old, new, want in cases:
         raw = orig[path]
         enc = old.encode("utf-8")
         assert raw.count(enc) == 1, "锚点不唯一或已变：%s（%d 处）" % (name, raw.count(enc))
@@ -266,7 +303,7 @@ def main() -> int:
             tag = "（没红）" if not red else "（红了，但不是预期那条）"
             missed.append(name + tag)
 
-    print("\n%d/%d 处退回旧行为被抓到" % (len(CASES) - len(missed), len(CASES)))
+    print("\n%d/%d 处退回旧行为被抓到" % (len(cases) - len(missed), len(cases)))
     if missed:
         print("没抓到：" + "、".join(missed))
         return 1

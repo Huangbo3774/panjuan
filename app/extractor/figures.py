@@ -120,6 +120,26 @@ GATE_REF_COL_PT = 280.0
 # 裁框盖住【本题第一行文字】这么多比例，就算「图里重复了一遍题目」
 STEM_IN_FIG_COVER = 0.8
 
+# ── 栏目横幅 / 答题框块：不是题图（用户截图里的两种废图）─────────────────
+# 栏目横幅（"第二步 练变式"的橙底白字色块）：OCR 读成文字、被 is_furniture_text
+# 认成家具行 → 进了 wall；可色块比那行字高，上下两条边留在墙外，膨胀 + 14pt
+# 近邻合并又把它们连成一个 111×37 的候选。判据只看墨落在哪：
+#   第三单元练习题 实测：横幅候选 89.1% 的墨在墙里；同卷 37 张真图最高 30.5%
+#   （"3×21 读作"那张，右沿压到竖排装订栏），次高 6.9% → 0.60 两边各留 30 点。
+WALL_INK_SHARE_MAX = 0.60
+# 答题框块（`□×□＝□`）：那是【作答位置】，不是画。它和"图形代表数"的题图
+# 长得像，所以不能只看"方框出现"——四条同时成立才砍：
+#   ① ≥2 个 ≥12pt 的空心方框（用题干符号重建的同一个分类器，星/圆不算方框）；
+#   ② 方框的墨占全框墨 ≥40%（实测真卷四个样本 0.49–0.84）；
+#   ③ 高 ≤90pt（两行 `□×□＝□` 实测 72pt，单行 38–39pt）；
+#   ④ 没有 ≥38pt 的其他墨、也没有星/圆/三角/菱形等形状（那才是题图）。
+# 六份真实 PDF 全量跑：命中的正是用户截图的 4 张答题框，真图 0 误伤。
+ANSWER_BOX_MIN_SQUARES = 2
+ANSWER_BOX_MIN_PT = 12.0
+ANSWER_BOX_MIN_SHARE = 0.40
+ANSWER_BOX_MAX_H_PT = 90.0
+ANSWER_BOX_MAX_OTHER_PT = 38.0
+
 
 def _ink_threshold(gray) -> int:
     """这一页"什么算墨"的门限：**让最黑的 12% 像素算墨**，夹在 [150, 225]。
@@ -774,6 +794,92 @@ def _is_furniture(rect: tuple[float, float, float, float], page_no: int,
     return False
 
 
+def _band_slice(rect: tuple[float, float, float, float], k: float, cx0: int, y0: int,
+                shape: tuple[int, int]) -> tuple[int, int, int, int]:
+    """页面 pt 框 → 探测带上的像素切片，夹在边界内。
+
+    ⚠️ 裁框允许比探测带外扩 3pt，直接相减会得到负下标；numpy 的负下标不是报错，
+       而是静默从另一头切 —— 量出来的会是完全不相干的一块（这个坑实测踩过）。
+    """
+    hh, ww = shape
+    return (max(0, int(rect[0] * k) - cx0), max(0, int(rect[1] * k) - y0),
+            min(ww, int(rect[2] * k) - cx0), min(hh, int(rect[3] * k) - y0))
+
+
+def _wall_ink_share(rect: tuple[float, float, float, float], raw, wall,
+                    k: float, cx0: int, y0: int) -> float:
+    """候选框里的墨，有多大比例落在【印刷家具行】的墙里（0 表示量不到）。
+
+    为什么需要：栏目横幅（"第二步 练变式"的橙底色块）会被 OCR 读成一行文字、
+    被 is_furniture_text 认成家具行而进 wall；但色块比那行字高，上下两条边留在
+    墙外，膨胀 + 14pt 近邻合并又把它们连成一个 111×37 的"图"。
+    判据只看墨落在哪，不看候选长什么样：
+      真实卷实测 —— 横幅候选 89.1% 的墨在墙里；同卷 37 张真图最高 30.5%
+      （右沿压到竖排装订栏的那张），次高 6.9%。阈值 0.60 两边各留 30 点。
+    """
+    if raw is None or wall is None:
+        return 0.0
+    px0, py0, px1, py1 = _band_slice(rect, k, cx0, y0, raw.shape)
+    if px1 <= px0 or py1 <= py0:
+        return 0.0
+    sub = raw[py0:py1, px0:px1]
+    total = int(sub.sum())
+    if total <= 0:
+        return 0.0
+    return int((sub & wall[py0:py1, px0:px1]).sum()) / float(total)
+
+
+def _is_answer_box_block(rect: tuple[float, float, float, float], raw,
+                         k: float, cx0: int, y0: int, np) -> bool:
+    """这个候选是不是【作答位置的答题框行】（`□×□＝□`），而不是题图。
+
+    用户截图里 `4+4+4+3+5=□×□`、`□×□＝□` 被当成配图裁走，一题配图三四张，
+    打印出来全是些小方框。它和"图形代表数"的题图确实长得像，所以四条同时成立才砍：
+      ① ≥2 个边长 ≥12pt 的空心方框（用 symbols 里重建题干的同一个分类器，
+         星/圆/三角/菱形都不算方框）；
+      ② 这些方框的墨占全框墨 ≥40%（实测四个真样本 0.49–0.84）；
+      ③ 整个候选高 ≤90pt（两行 `□×□＝□` 实测 72pt，单行 38–39pt）；
+      ④ 框里没有 ≥38pt 的其他墨、也没有任何形状（那才是题图的主体）。
+    六份真实 PDF 全量跑：命中的正是那 4 张答题框，真图 0 误伤。
+
+    ⚠️ 已知不可分辨：如果卷面真的印了一道"只用方框和运算符"的图形算式题，
+       它也会被这条砍掉。没有上下文时两者在像素上就是同一件东西；
+       宁可少一张废图，不给每题塞四张答题框。
+    """
+    if raw is None:
+        return False
+    if rect[3] - rect[1] > ANSWER_BOX_MAX_H_PT:
+        return False
+    px0, py0, px1, py1 = _band_slice(rect, k, cx0, y0, raw.shape)
+    sub = raw[py0:py1, px0:px1]
+    if sub.size == 0:
+        return False
+    total = int(sub.sum())
+    if total <= 0:
+        return False
+    import cv2
+    from . import symbols as SY          # 和题干符号重建共用一把尺，别另写一份
+    n, _lab, stats, _cent = cv2.connectedComponentsWithStats(
+        sub.astype(np.uint8) * 255, connectivity=8)
+    n_sq, sq_area = 0, 0
+    for i in range(1, n):
+        x, y, w, h, area = [int(v) for v in stats[i]]
+        if area < 4:
+            continue
+        w_pt, h_pt = w / k, h / k
+        if max(w_pt, h_pt) >= ANSWER_BOX_MAX_OTHER_PT:
+            return False                 # 还有一大块别的墨 → 是图的主体
+        lab = SY.classify(SY.features(sub[y:y + h, x:x + w], np))
+        if lab in SY.SHAPE_LABELS and lab != "square":
+            return False                 # 星星/圆/三角/菱形…出来就不是答题框
+        if lab == "square" and min(w_pt, h_pt) >= ANSWER_BOX_MIN_PT:
+            n_sq += 1
+            sq_area += area
+    if n_sq < ANSWER_BOX_MIN_SQUARES:
+        return False
+    return sq_area / float(total) >= ANSWER_BOX_MIN_SHARE
+
+
 def _covers(box_a, box_b) -> float:
     """box_a 盖住了 box_b 多少（交叠面积 ÷ box_b 面积）。"""
     ix = min(box_a[2], box_b[2]) - max(box_a[0], box_b[0])
@@ -993,6 +1099,8 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
       H) 贴物理页边的窄长条是装订栏 / 侧边栏，不当图。
       I) 紧贴图边、横向又在图范围内的那行文字（被挖掉的图内标签）要吸回裁图范围，
          否则裁出来的图缺最后一行。
+      另）候选框的墨绝大多数落在"家具行"里（栏目横幅的色块）→ 不是题图；
+          由 ≥2 个空心方框＋运算符组成的矮块是【作答位置】→ 不是图。
     """
     import numpy as np
     try:
@@ -1094,6 +1202,17 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
                                    "rect": [round(v, 1) for v in rect],
                                    "why": "stem-clipped"})
             if rect[2] - rect[0] < 8 or rect[3] - rect[1] < 8:
+                continue
+            # ── J) 候选的墨绝大多数在【家具行】里 → 是栏目横幅，不是图 ──────
+            #    横幅色块比 OCR 读到的那行字高，上下沿逃过了 wall，膨胀后才连成候选。
+            if _wall_ink_share(rect, sgn.get("raw"), sgn.get("wall"),
+                               k, cx0, y0) >= WALL_INK_SHARE_MAX:
+                drop(qi, pg, rect, "furniture-row")
+                continue
+            # ── J2) 矮矮的一排空心方框＋运算符＝答题位置（`□×□＝□`）───────
+            #    它和"图形代表数"的题图在像素上几乎同形，四条判据见 _is_answer_box_block。
+            if _is_answer_box_block(rect, sgn.get("raw"), k, cx0, y0, np):
+                drop(qi, pg, rect, "answer-boxes")
                 continue
             # 装订栏框【只记一笔提醒，不砍候选】：试过"盖住装订栏字样就丢"，
             # 结果横版卷右半的地铁图/路线图因为右边 45pt 正好是装订栏而被整张砍掉

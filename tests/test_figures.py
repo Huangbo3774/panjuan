@@ -1150,6 +1150,163 @@ def side_stitch_is_wired_into_find_figures():
     assert sum(calls) >= 1, f"接线了但一道候选都没拿到：{calls}"
 
 
+def banner_and_answer_boxes_are_not_figures():
+    """用户截图里的两种废图：栏目横幅色块、答题框行（□×□＝□）。
+
+    横幅：色块比 OCR 读到的那行字高，上下沿逃过 wall，膨胀后才连成"图"；
+    答题框行：一排空心方框＋运算符，和"图形代表数"的题图同形。
+    这两种都必须一张都不裁出来（真正看图作答的题另有两栏卷等正面用例）。
+    """
+    path = os.path.join(OUT, "横幅与答题框.pdf")
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    _base(page)
+    _txt(page, 40, 90, "1. 第一题的题干文字内容。")
+    # 栏目横幅：橙底色块 + 反白字。字号大，让 OCR 行框盖住色块的大部分（真卷 89%）
+    page.draw_rect(pymupdf.Rect(40, 155, 230, 193), color=None,
+                   fill=(0.88, 0.46, 0.12))
+    _txt(page, 46, 184, "第二步 练变式", size=26)
+    _txt(page, 40, 260, "2. 第二题的题干文字内容。")
+    # 答题框行：四个空心方框＋加号/等号，没有任何图的主体
+    for i, x in enumerate((60, 100, 140, 190)):
+        page.draw_rect(pymupdf.Rect(x, 320, x + 16, 336), color=(0, 0, 0), width=1.2)
+        if i < 3:
+            page.draw_line((x + 18, 328), (x + 38, 328), color=(0, 0, 0), width=1.2)
+    page.draw_line((166, 326), (182, 326), color=(0, 0, 0), width=1.2)
+    page.draw_line((166, 330), (182, 330), color=(0, 0, 0), width=1.2)
+    _txt(page, 40, 390, "3. 第三题的题干文字内容。")
+    _txt(page, 40, 470, "4. 第四题的题干文字内容。")
+    doc.save(path)
+    doc.close()
+    _r, _res, qs, spans, got = run(path)
+    bad = {qi: [im for im in lst] for qi, lst in got.items()
+           if qi in (0, 1)}
+    assert not bad, f"横幅/答题框被当成配图裁出来了：{bad}"
+    assert not any(lst for lst in got.values()), f"整页都是文字和符号，却裁出图：{got}"
+    # 正例必须真的落在题目区间里，否则"没裁出来"只是因为裁图根本没看这块地方
+    assert any("第二步" in str(t.get("text") or "")
+               for t in spans[0].get("text_boxes") or []), \
+        f"夹具没把横幅放进第 1 题区间（这条测试就白测了）：{spans[0].get('text_boxes')}"
+    assert any(float(s["y0"]) <= 320 < float(s["y1"]) for s in spans), \
+        f"答题框没落在任何题目区间里（测试白测）：{[(s['q_index'], s['y0'], s['y1']) for s in spans]}"
+
+
+def junk_crop_measures_keep_real_figures():
+    """两条新判据的【反例】必须当场量给自己看：
+
+    · 家具行占比 30% 的真图不许砍（阈值 0.60，两边各留 30 点）；
+    · 一个方框 / 方框旁有圆（花）的图不许被当答题框。
+    """
+    import numpy as np
+    import app.extractor.figures as FG
+
+    # 墙占比：80×80 的墨，底部 20 行落在 wall 里 = 25%
+    raw = np.zeros((120, 120), dtype=bool)
+    raw[10:90, 10:90] = True
+    wall = np.zeros_like(raw)
+    wall[70:90, 10:90] = True
+    share = FG._wall_ink_share((10, 10, 90, 90), raw, wall, 1.0, 0, 0)
+    assert abs(share - 0.25) < 0.02, f"墙占比量错：{share}"
+    assert share < FG.WALL_INK_SHARE_MAX, "25% 的真图被当成横幅（阈值太松）"
+    wall[10:80, 10:90] = True
+    share2 = FG._wall_ink_share((10, 10, 90, 90), raw, wall, 1.0, 0, 0)
+    assert share2 >= FG.WALL_INK_SHARE_MAX, f"70% 的墨在墙里却没到阈值：{share2}"
+
+    # 答题框：四个空心方框 → 是；只有一个方框 → 不是
+    def squares(n, big=False, size=20, step=30):
+        m = np.zeros((140, 300), dtype=bool)
+        for i in range(n):
+            x, y = 10 + i * step, 10
+            m[y:y + size, x:x + 2] = True
+            m[y:y + size, x + size - 2:x + size] = True
+            m[y:y + 2, x:x + size] = True
+            m[y + size - 2:y + size, x:x + size] = True
+        if big:
+            # 40×8 的「图的主体」：够宽（≥38pt）但很矮，方框仍占 49% 的墨。
+            # 这样它只能被"有大块别的墨"那一条挡住；去掉那一条，函数就会误判成答题框。
+            m[45:53, 95:135] = True
+        return m
+    four = squares(4)
+    assert FG._is_answer_box_block((5, 5, 130, 40), four, 1.0, 0, 0, np), \
+        "四个空心方框组成的答题框没被认出来"
+    assert not FG._is_answer_box_block((5, 5, 130, 40), squares(1), 1.0, 0, 0, np), \
+        "只有一个方框也当成答题框（误砍题图）"
+    assert not FG._is_answer_box_block((5, 5, 145, 70), squares(4, big=True),
+                                       1.0, 0, 0, np), \
+        "框里还有一大块别的墨（真图的主体）却被当答题框"
+    # 高 95pt（超过 90pt 上限）：真图里的几个方框不许把整张图判成答题框
+    assert not FG._is_answer_box_block((5, 5, 130, 100), four, 1.0, 0, 0, np), \
+        "95pt 高的图里有方框却被当答题框（高度上限失效）"
+    # 两个方框（每个 144px 墨）+ 两根 37×6 的横杠（各 222px，运算符不是方框）：
+    # 方框只占 39% 墨。占比门槛必须挡在这里 —— 否则"有 ≥2 个方框"就够，
+    # 真图里带两个方框就被砍。37pt 也贴着"大块墨"上限 38 的内侧。
+    sparse = squares(2)
+    sparse[35:41, 10:47] = True
+    sparse[35:41, 50:87] = True
+    assert not FG._is_answer_box_block((5, 5, 130, 45), sparse, 1.0, 0, 0, np), \
+        "方框只占四成墨的图被当答题框（占比门槛形同虚设）"
+    # 四个方框 + 两朵实心圆花：方框占墨 65%（超过 40% 门槛），
+    # 所以只有"圆形是图形"这一条能挡住它 —— 专测那条，不测占比。
+    yy, xx = np.ogrid[:140, :300]
+    mixed = squares(4, size=30, step=40)
+    for cx in (200, 230):
+        mixed |= ((xx - cx) ** 2 + (yy - 25) ** 2) <= 9 ** 2
+    assert not FG._is_answer_box_block((5, 5, 250, 50), mixed, 1.0, 0, 0, np), \
+        "方框旁边有圆（花）却被当答题框砍掉"
+
+
+def banner_rule_is_wired_into_find_figures():
+    """接线检查：家具行占比这条必须跑在 find_figures 里，不是只存在于函数里。"""
+    import app.extractor.figures as FG
+    from app.extractor.figures import find_figures, PageSource
+    import numpy as np
+    k = FG.DPI_PROBE / 72.0
+
+    # 一页 200×200：第 1 题在 y=60，横幅色块在 y=100–152，第 2 题在 y=180。
+    # 家具行只盖住色块的左 120pt（真卷的 OCR 行框也比色块窄一点）：
+    # 右边 10pt 竖边把上下两条边连成【一个】候选，框里有 72% 的墨落在墙里。
+    # ⚠️ 不能让上下两条边各自独立：它们只有 6pt 高，会先被 thin-horizontal 砍掉，
+    #    那样测到的就不是家具行占比这条判据了（第一版夹具实测正是这样）。
+    g = np.full((int(200 * k), int(200 * k)), 255, dtype=np.uint8)
+    g[int(100 * k):int(152 * k), int(20 * k):int(150 * k)] = 100   # 横幅色块
+    g[int(60 * k):int(64 * k), int(20 * k):int(150 * k)] = 30      # 第 1 题文字墨
+    g[int(180 * k):int(184 * k), int(20 * k):int(150 * k)] = 30    # 第 2 题文字墨
+    src = PageSource(1, 200.0, 200.0, g, lambda rect, out: None)
+    spans = [
+        {"q_index": 0, "page": 1, "col": 0, "y0": 55.0, "y1": 175.0, "x0": 0.0, "x1": 200.0,
+         "text_boxes": [{"x": 20, "y": 60, "w": 130, "h": 4},
+                        {"x": 20, "y": 106, "w": 120, "h": 40, "text": "第二步 练变式"}]},
+        {"q_index": 1, "page": 1, "col": 0, "y0": 175.0, "y1": 200.0, "x0": 0.0, "x1": 200.0,
+         "text_boxes": [{"x": 20, "y": 180, "w": 130, "h": 4}]},
+    ]
+    rep = []
+    got = find_figures({1: src}, spans, OUT, report=rep)
+    dropped = [d for d in rep if not d.get("kept") and d.get("why") == "furniture-row"]
+    assert dropped, f"横幅没被家具行判据砍掉：{rep}"
+    assert not got.get(0), f"横幅仍挂在第 1 题上：{got.get(0)}"
+
+
+def banner_rule_wiring_end_to_end():
+    """接线检查（走真实文字层）：栏目横幅必须由 find_figures 自己砍掉。"""
+    path = os.path.join(OUT, "横幅接线.pdf")
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    _base(page)
+    _txt(page, 40, 90, "1. 第一题的题干文字内容。")
+    page.draw_rect(pymupdf.Rect(40, 155, 230, 193), color=None,
+                   fill=(0.88, 0.46, 0.12))
+    _txt(page, 46, 184, "第二步 练变式", size=26)
+    _txt(page, 40, 260, "2. 第二题的题干文字内容。")
+    doc.save(path)
+    doc.close()
+    _r, _res, qs, spans, got = run(path)
+    assert len(qs) >= 2, f"夹具没切成 2 题：{[q['text'][:10] for q in qs]}"
+    assert not got.get(0), f"横幅没砍掉，仍挂在第 1 题：{got.get(0)}"
+    assert any("第二步" in str(t.get("text") or "")
+               for t in spans[0].get("text_boxes") or []), \
+        f"夹具没把横幅放进第 1 题区间（这条测试就白测了）：{spans[0].get('text_boxes')}"
+
+
 CASES = [
     ("同一行被文字行切断的图要并回一张（第2页标注图）", side_by_side_pieces_join_one_figure),
     ("横向缝合真的接在裁图链路上（接线检查）", side_stitch_is_wired_into_find_figures),
@@ -1181,6 +1338,10 @@ CASES = [
     ("圈小标点不许把换行正文串进图里", short_mark_extension_skips_wordy_boxes),
     ("页脚与扫描 app logo 是墙，不许缝进题图", page_footer_is_a_wall_not_a_seam),
     ("裁框上沿不许吞掉本题起手句（含三个反例）", crop_top_edge_does_not_swallow_the_stem_first_line),
+    ("栏目横幅与答题框行不许当配图", banner_and_answer_boxes_are_not_figures),
+    ("家具行占比/答题框判据的反例（真图不许砍）", junk_crop_measures_keep_real_figures),
+    ("家具行判据接线检查（含丢弃原因）", banner_rule_is_wired_into_find_figures),
+    ("栏目横幅接线（真实文字层）", banner_rule_wiring_end_to_end),
 ]
 for name, fn in CASES:
     t(name, fn)

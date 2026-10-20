@@ -11,6 +11,8 @@
   切边     裁图框外紧贴一片【不是文字的墨】→ 图被切掉一块
   串题     这道题的裁框盖住了【同一页另一道题】的文字行 → 图片和题目不对应
   含题干   裁框把整句题干框进去 → 图里混着题目文字
+  题型可疑 题干明写"填序号/选一选/选出"，题型却不是 choice（选项多半是图片，
+            OCR 读不到 A/B/C/D）。仍可作答，但校对页要看一眼。
 
 用法：
   py -3.11 tests/audit_papers.py                    不给参数＝跑 samples/private 全部
@@ -38,7 +40,7 @@ import pymupdf                                                   # noqa: E402
 from app.extractor import lines as L                             # noqa: E402
 from app.extractor.figures import (find_figures, page_source_from_pdf,   # noqa: E402
                                    page_source_from_image)
-from app.extractor.rules import extract, flatten_questions       # noqa: E402
+from app.extractor.rules import (extract, flatten_questions, CHOICE_CUE)  # noqa: E402
 from app.layout.options import LayoutOptions                     # noqa: E402
 from app.papers.answer_writer import render_answers_pdf          # noqa: E402
 
@@ -224,6 +226,33 @@ def wants_figure(t: str, qt: str = "") -> bool:
     return bool(FIG_TOPIC.search(t) and FIG_DEICTIC.search(t))
 
 
+def type_suspects(qs) -> list[tuple[int, int, str, str]]:
+    """题型可疑：题干/大题名在要求"挑一个"，题型却不是 choice。
+
+    为什么需要这把尺：第三单元练习题 第 3 题（自然科普·树叶）四片叶子是【图片选项】，
+    OCR 读不到 A/B/C/D，题目被当时的 JUDGE_HINT 里那个光秃秃的「×」判成判断题
+    （因为题干算式里有 2×4）—— 做题页只给"对/错"两个单选，孩子没有地方写序号。
+    老审计只看"选择题没选项"，对这种"判成了别的题型"完全瞎。
+
+    为什么只列为【做得别扭】而不是硬门禁：这种题现在会保留成 fill/essay，
+    孩子还能在空里写序号，题是能做的；把它卡成"做不了"会让整套真实材料永远红灯，
+    反而没人再信这盏灯。校对页会挂"待校对"提醒家长补选项/改题型。
+
+    返回 [(题序, 题号, 当前题型, 命中的信号)]。
+    """
+    out: list[tuple[int, int, str, str]] = []
+    for i, q in enumerate(qs):
+        qt = str(q.get("qtype") or "")
+        if qt == "choice":
+            continue
+        t = str(q.get("text") or "")
+        sec = str(q.get("section") or "")
+        m = CHOICE_CUE.search(t) or CHOICE_CUE.search(sec)
+        if m:
+            out.append((i + 1, int(q.get("q_no") or i + 1), qt, m.group(0)))
+    return out
+
+
 def duplicates(qs) -> list[tuple]:
     """同一大题里同一个题号出现两次 = 卷面上多出一道"假题"。
 
@@ -324,6 +353,31 @@ def selftest() -> list[str]:
         fails.append("漏块尺：OCR 已经读到、本来就当文字挖掉的行被算成漏块（误报）")
     if row_leaks(src2, mine, [], other_crops=[(150.0, 110.0, 170.0, 130.0)]):
         fails.append("漏块尺：邻题已经裁走的图被算成这道题的漏块（误报）")
+
+    # 题型可疑尺：选项是图片时 OCR 读不到 A/B/C/D，题型会被判成 fill/essay/judge。
+    # 正例＝题干明写"填序号"却非 choice；反例＝乘法算式、判断题、真选择题、普通解答。
+    ts = type_suspects([q("下面的树叶片数不能用2×4表示的是（  ）。(填序号)",
+                          qt="fill", blanks=1)])
+    if not ts:
+        fails.append("题型可疑尺：题干要求填序号却判成 fill，没报（这条尺坏了）")
+    ts = type_suspects([q("2×3=（  ）", qt="fill", blanks=1)])
+    if ts:
+        fails.append(f"题型可疑尺：乘法算式被当成选择题信号（误报）：{ts}")
+    ts = type_suspects([q("对的打√，错的打×。", qt="judge")])
+    if ts:
+        fails.append(f"题型可疑尺：判断题被报成题型可疑（误报）：{ts}")
+    # 反例必须【带着选择题信号而且是 choice】：没有信号的 choice 不报，只说明
+    # "这段文字里没有可选信号"，证明不了"choice 会被放行"（变异闸门实测放过一次）。
+    ts = type_suspects([q("选出正确的答案（ ）。", qt="choice",
+                          opts=["A. 对", "B. 错"])])
+    if ts:
+        fails.append(f"题型可疑尺：真正的选择题被报（误报）：{ts}")
+    ts = type_suspects([q("选择合适的方法计算下面各题。", qt="essay")])
+    if ts:
+        fails.append(f"题型可疑尺：光有「选择」二字的解答题被报（误报）：{ts}")
+    ts = type_suspects([q("根据下图写算式。", qt="essay", sec="二、选一选。")])
+    if not ts:
+        fails.append("题型可疑尺：大题名是「选一选」却没报（这条尺坏了）")
     return fails
 
 
@@ -391,6 +445,7 @@ def audit(path: str, render=True) -> dict:
 
     bad = answerability(qs)
     dup = duplicates(qs)
+    type_bad = type_suspects(qs)
     pages_out = 0
     if render:
         os.makedirs(OUT, exist_ok=True)
@@ -409,11 +464,14 @@ def audit(path: str, render=True) -> dict:
     print(f"\n【{name}】源{r['n_pages']}页 · 题{len(qs)} · 配图{n_img}张（带图题{len(got)}）"
           f"· 出卷{pages_out}页 · 待校对{sum(1 for q in qs if q.get('needs_review'))}")
     print(f"  做不了 {len(bad)}　·　做得别扭：切边 {len(clip)} · 漏块 {len(leak)} · 串题 {len(bleed)} "
-          f"· 含题干 {len(stem_in)} · 重号 {len(dup)}")
+          f"· 含题干 {len(stem_in)} · 重号 {len(dup)} · 题型可疑 {len(type_bad)}")
     for kind, no, why in bad:
         print(f"    ✗ {kind:6} 第 {no} 题 {why}")
     for sec, no, n in dup:
         print(f"    · 重号   大题「{sec[:14]}」第 {no} 题出现 {n} 次（其中一道多半是乱码假题）")
+    for i, no, qt, cue in type_bad:
+        print(f"    · 题型可疑 第 {no} 题判成 {qt}，题干却在要求「{cue}」"
+              f"（选项多半是图片，请在校对页确认题型/补选项）")
     for t, c, rr in clip:
         print(f"    · 切边   第 {t} 题 {c} 框{rr}")
     for t, c, rr in leak:
@@ -424,7 +482,7 @@ def audit(path: str, render=True) -> dict:
         print(f"    · 含题干 第 {t} 题的图框住「{s}」  {w}")
     print(f"    砍掉的候选：{dict(Counter(d['why'] for d in cut))}")
     return {"name": name, "bad": bad, "clip": clip, "leak": leak, "bleed": bleed,
-            "stem": stem_in, "dup": dup,
+            "stem": stem_in, "dup": dup, "type": type_bad,
             "pages": pages_out, "questions": len(qs)}
 
 
@@ -450,13 +508,16 @@ def main() -> int:
     if bad_ruler:
         print("✗ 审计尺本身坏了（这份报告一个字都别信）：")
         for m in bad_ruler:
-            print("   ", m)
+            # 前缀写成 FAIL：变异闸门 tests/break_audit.py 靠这一行判"打坏了会不会红"。
+            print("FAIL 审计尺自检：" + m)
         return 2
     # 括号里的条数只是【标签】，判决只看 selftest() 返回的 fails ——
     # 加检查时忘了改这个数字，不会让一把坏尺装成好的。
-    print("✓ 审计尺自检通过（15 条正/反对照）")
+    print("✓ 审计尺自检通过（23 条正/反对照）")
+    if "--selftest" in sys.argv:        # 只验尺、不看真实材料（变异闸门用）
+        return 0
     files = collect(args) or collect([os.path.join(ROOT, "samples", "private")])
-    tot = {"bad": 0, "clip": 0, "leak": 0, "bleed": 0, "stem": 0, "dup": 0}
+    tot = {"bad": 0, "clip": 0, "leak": 0, "bleed": 0, "stem": 0, "dup": 0, "type": 0}
     for f in files:
         try:
             a = audit(f, render=render)
@@ -469,10 +530,11 @@ def main() -> int:
         if not a:
             continue
         tot["bad"] += len(a["bad"])
-        for k in ("clip", "leak", "bleed", "stem", "dup"):
+        for k in ("clip", "leak", "bleed", "stem", "dup", "type"):
             tot[k] += len(a[k])
     print(f"\n===== 合计：做不了 {tot['bad']} · 切边 {tot['clip']} · 漏块 {tot['leak']} "
-          f"· 串题 {tot['bleed']} · 含题干 {tot['stem']} · 重号 {tot['dup']} =====")
+          f"· 串题 {tot['bleed']} · 含题干 {tot['stem']} · 重号 {tot['dup']} "
+          f"· 题型可疑 {tot['type']} =====")
     print(f"逐页成品图在 {OUT}")
     return 1 if tot["bad"] else 0
 

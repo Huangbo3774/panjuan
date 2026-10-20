@@ -24,7 +24,8 @@ class Mutation(NamedTuple):
     expect: str        # 期望变红的测试名关键字
 
 
-def run(mutations: list[Mutation], test_file: str, python=None) -> int:
+def run(mutations: list[Mutation], test_file: str, python=None,
+        test_args: tuple[str, ...] = ()) -> int:
     py = python or sys.executable
     sources = {m.file: open(m.file, encoding="utf-8", newline="").read() for m in mutations}
     backups = {}
@@ -44,7 +45,7 @@ def run(mutations: list[Mutation], test_file: str, python=None) -> int:
                     os.remove(os.path.join(d, name))
     bad: list[str] = []
     try:
-        base = _fails(py, test_file)
+        base = _fails(py, test_file, test_args)
         print(f"基线：{len(base)} 条失败（应为 0）")
         if base:
             print("  基线就是红的，先修测试再谈变异：", base)
@@ -56,7 +57,7 @@ def run(mutations: list[Mutation], test_file: str, python=None) -> int:
                 bad.append(f"{m.name}（锚点失效）")
                 continue
             open(m.file, "w", encoding="utf-8", newline="").write(src.replace(m.needle, m.broken, 1))
-            fails = _fails(py, test_file)
+            fails = _fails(py, test_file, test_args)
             # ⚠️ 匹配对象必须是【整行】，不能是"→ 之前截断的名字"。
             #    第一版在这里截断过，凡是期望串里带了「→ 」的变异（比如「无标准答案 → 待确认」）
             #    永远匹配不上，被判成「这条缺陷没有尺在量」——尺本身出错时把产品喊成有病，
@@ -81,9 +82,9 @@ def run(mutations: list[Mutation], test_file: str, python=None) -> int:
     return 1 if bad else 0
 
 
-def _fails(py: str, test_file: str) -> list[str]:
+def _fails(py: str, test_file: str, test_args: tuple[str, ...] = ()) -> list[str]:
     """返回【完整】的失败行（含 → 后面的原因），匹配用整行，显示时再截断。"""
-    p = subprocess.run([py, "-B", test_file], capture_output=True, text=True,
+    p = subprocess.run([py, "-B", test_file, *test_args], capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
     out = (p.stdout or "") + (p.stderr or "")
     return [ln.strip() for ln in out.splitlines()

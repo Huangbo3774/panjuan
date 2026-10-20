@@ -96,6 +96,53 @@ def judge_type():
 t("判断题识别（对的打√）", judge_type)
 
 
+def multiplication_is_not_a_judge_signal():
+    """乘号不是判断信号：题干里只要有 × 就判 judge，做题页只给对/错，孩子没处写答案。
+
+    真实卷（第三单元练习题）实测 8 道乘法题因此被判成判断题；用户原话"这题都怎么做啊"。
+    判断题的信号必须是"对的打/判断/画√"这类指令，不是光秃秃一个符号。
+    """
+    lines = ["一、填一填。",
+             "1. 2×3 可以表示（  ）个（  ）相加。",
+             "2. 6×2=（  ），5×3=（  ）。"]
+    q = qs(extract(lines))
+    assert len(q) == 2, f"应切出 2 题：{[x['text'][:20] for x in q]}"
+    assert all(x["qtype"] != "judge" for x in q), \
+        f"乘法题被判成判断题：{[(x['text'][:16], x['qtype']) for x in q]}"
+    assert q[0]["qtype"] == "fill" and q[1]["qtype"] == "fill", \
+        f"应是有空位的填空题：{[x['qtype'] for x in q]}"
+t("乘法题不许被判成判断题", multiplication_is_not_a_judge_signal)
+
+
+def picture_choice_is_flagged_not_turned_into_judge():
+    """选项是图片的选择题：OCR 读不到 A/B/C/D，不许判成判断题，且要挂待校对。
+
+    真实卷第 3 题（自然科普·树叶）：题干"不能用2×4表示的是（ ）(填序号)"，
+    四片叶子是图片选项。修掉乘号误判后它应是可作答的 fill，并提醒家长补选项。
+    """
+    lines = ["第2天 儿童乐园",
+             "3. 下面的树叶中，不能用2×4表示的是（  ）。(填序号)",
+             "4. 第二题的题干文字。"]
+    q = qs(extract(lines))
+    assert len(q) == 2, f"应切出 2 题：{[x['text'][:18] for x in q]}"
+    assert q[0]["qtype"] != "judge", f"又是判断题：{q[0]['qtype']}"
+    assert q[0]["qtype"] == "fill", f"应保留成可作答的 fill：{q[0]['qtype']}"
+    assert q[0]["needs_review"], "题干明写填序号却没选项，必须挂待校对"
+    assert "选择题" in str(q[0].get("review_note") or ""), \
+        f"待校对理由没说清：{q[0].get('review_note')}"
+t("图片选项的选择题：可作答 + 待校对", picture_choice_is_flagged_not_turned_into_judge)
+
+
+def real_judge_section_still_works():
+    """反例保险：修掉乘号后，真正的判断题（大题名给的信号）不能跟着丢。"""
+    lines = ["三、判断。（对的画√，错的画×）",
+             "1. 所有直角都一样大。",
+             "2. 长方形的四条边都相等。"]
+    q = qs(extract(lines))
+    assert all(x["qtype"] == "judge" for x in q), f"判断题丢了：{[x['qtype'] for x in q]}"
+t("真判断题仍然认（反例保险）", real_judge_section_still_works)
+
+
 def header_not_question():
     """反例：表头「班级/姓名/满分」不该变成题目。"""
     lines = ["第三单元达标练习", "班级＿＿ 姓名＿＿ 得分＿＿", "满分：100 分  时间：40 分钟",
