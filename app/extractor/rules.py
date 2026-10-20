@@ -113,6 +113,13 @@ NOISE_ANSWER_REF_RE = re.compile(r"答案\s*P\s*\d+")
 STAGE_KW = ("第一步", "第二步", "第三步", "第四步", "知识演练场", "智慧加油站",
             "基础过关", "能力提升", "拓展延伸", "素养提升", "过关检测", "考点集合")
 
+# 页眉上的扫码批改/AI 伴学广告（王朝霞系教辅每页都印）：
+#   "拍照批改互动讲解" / "智能错题本" / "分钟教材变式练        实际用时："
+# 真实卷（周末作业(1).pdf 第 3 页）：这三行被 OCR 拼成一道【没有题号】的假题，
+# 又因为旁边是彩色横幅 + 二维码，裁出一张 581×77 的页眉废图挂在"第 2 题"下面。
+# 整行匹配 + 短行上限：题干里恰好出现"实际用时"的长句不受影响。
+NOISE_HEADER_RE = re.compile(r"(拍照批改|互动讲解|智能错题本|教材变式练)")
+
 
 def _is_noise(line: str) -> bool:
     s = line.strip()
@@ -122,6 +129,8 @@ def _is_noise(line: str) -> bool:
         return True
     if len(s) <= 24 and NOISE_BOOK_RE.search(s) and not BLANK_RE.search(s):
         return True
+    if len(s) <= 30 and NOISE_HEADER_RE.search(s):
+        return True                      # 页眉的扫码批改广告，不是题
     rest = s.replace("，", " ").replace(",", " ")
     for w in NOISE_WORDS:
         rest = rest.replace(w, " ")
@@ -144,6 +153,8 @@ def is_furniture_text(line: str) -> bool:
         return True
     if any(w in s for w in NOISE_WORDS):
         return True
+    if len(s) <= 30 and NOISE_HEADER_RE.search(s):
+        return True                      # 页眉广告/栏目横幅，是墙不是图
     # 教辅的【栏目横幅】（"第二步 练变式"、"知识演练场"、"能力提升"）：
     # 整块彩色底 + 反白字，被当成"配图"裁出来就是一张印着栏目名的废图
     # （真卷实测：第三单元练习题 第 3 页第 1 题的配图里挂着"第二步练变式"）。

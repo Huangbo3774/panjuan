@@ -39,7 +39,10 @@ import pymupdf                                                   # noqa: E402
 
 from app.extractor import lines as L                             # noqa: E402
 from app.extractor.figures import (find_figures, page_source_from_pdf,   # noqa: E402
-                                   page_source_from_image)
+                                   page_source_from_image,
+                                   strip_text_inside_figures,
+                                   residue_covered, box_text_patterns,
+                                   RESIDUE_KEEP_FIRST_CHARS)
 from app.extractor.rules import (extract, flatten_questions, CHOICE_CUE)  # noqa: E402
 from app.layout.options import LayoutOptions                     # noqa: E402
 from app.papers.answer_writer import render_answers_pdf          # noqa: E402
@@ -269,6 +272,88 @@ def duplicates(qs) -> list[tuple]:
     return [(sec, no, n) for (sec, no), n in seen.items() if n > 1]
 
 
+def text_residues(qs, got, span_by_q) -> list[tuple]:
+    """题干里还有【整行落在本题配图框内】的字 → 同一句话会印两遍。
+
+    正常流水线会先调 `strip_text_inside_figures` 删掉；这里是独立的第二把尺：
+    如果删漏了、或者以后有人把清理那一步关掉，审计必须自己喊出来。
+
+    只按"图内文字出现在题干里"报会误伤同名正文：句子里本来就有「辰辰」，
+    地图上的「散通道」又是「紧急疏散通道」的一部分。所以按出现次数算：
+    题干里该词的出现次数，必须超过所有【框外行】加起来能解释的次数，才算残渣。
+    """
+    out: list[tuple] = []
+    for qi, imgs in got.items():
+        if not (0 <= qi < len(qs)) or not imgs:
+            continue
+        text = str(qs[qi].get("text") or "")
+        rects = [tuple(im["rect"]) for im in imgs if im.get("rect")]
+        content_seen = False
+        boxes: list[tuple[str, bool]] = []          # (文字, 是否图内候选)
+        for b in span_by_q.get(qi, {}).get("text_boxes") or []:
+            t = str(b.get("text") or "").strip()
+            if not t:
+                continue
+            bb = (float(b["x"]), float(b["y"]),
+                  float(b["x"]) + float(b.get("w") or 0),
+                  float(b["y"]) + float(b.get("h") or 0))
+            pats = box_text_patterns(t)
+            # 起手句按设计保留（见 figures.strip_text_inside_figures），不算残渣；
+            # 但它被裁框整行盖住照样由「含题干」那把尺报，不能在这里重复报。
+            # ⚠️ 必须是【真的出现在题干里】的那一行才算起手句。大题题头/栏目名
+            # 也在 text_boxes 里、且不在题干里；若它抢走豁免，真正的第一句
+            # （常被裁框整行盖住）就会被误报成残渣（达标B 第 8 题）。
+            if (not content_seen
+                    and len(re.sub(r"\s+", "", t)) >= RESIDUE_KEEP_FIRST_CHARS
+                    and any(re.search(p, text) for p in pats)):
+                content_seen = True
+                boxes.append((t, False))
+                continue
+            boxes.append((t, any(residue_covered(r, bb) for r in rects)))
+        # 同一个词可能本来就出现在【没被图盖住】的正文行里：
+        # 「辰辰从( )面走来」里的「辰辰」、『紧急疏散通道』里的『散通道』。
+        # 只有出现次数超过正文行能解释的那几次，才算真正的图内残渣。
+        legit = "\n".join(t for t, cand in boxes if not cand)
+        for t, cand in boxes:
+            if not cand:
+                continue
+            pats = box_text_patterns(t)
+            hit = max(len(re.findall(p, text)) for p in pats)
+            if hit and hit > max(len(re.findall(p, legit)) for p in pats):
+                out.append((qi + 1, t[:20]))
+                break
+    return out
+
+
+def stem_in_figures(qs, got, span_by_q) -> list[tuple]:
+    """裁框把【题干里还在的整句】框进去 → 图里混着题目文字。
+
+    图内标注（对话气泡、地图标签）同样落在框里，但清理那一步已经把
+    它们从题干删掉了 —— 题干里没有这行字，就不算"含题干"。
+    第 1 行（起手句）按设计保留在题干里，所以被框住时照报。
+    """
+    out: list[tuple] = []
+    for qi, imgs in got.items():
+        if not (0 <= qi < len(qs)) or not imgs:
+            continue
+        rects = [tuple(im["rect"]) for im in imgs if im.get("rect")]
+        text = str(qs[qi].get("text") or "")
+        for bi, b in enumerate(span_by_q.get(qi, {}).get("text_boxes") or []):
+            t = str(b.get("text") or "")
+            if len(t) < 8 or not STEMISH.search(t):
+                continue
+            bb = (float(b["x"]), float(b["y"]),
+                  float(b["x"]) + float(b.get("w") or 0),
+                  float(b["y"]) + float(b.get("h") or 0))
+            if not any(overlap(r, bb) >= 0.8 for r in rects):
+                continue
+            if not any(re.search(p, text) for p in box_text_patterns(t)):
+                continue
+            out.append((qi + 1, t[:20], "题干首行" if bi == 0 else f"第{bi + 1}行"))
+            break
+    return out
+
+
 def selftest() -> list[str]:
     """尺自己要先证明"它会 FAIL"——不然"做不了 0"只说明我把判据写松了。
 
@@ -378,6 +463,75 @@ def selftest() -> list[str]:
     ts = type_suspects([q("根据下图写算式。", qt="essay", sec="二、选一选。")])
     if not ts:
         fails.append("题型可疑尺：大题名是「选一选」却没报（这条尺坏了）")
+
+    # 题干残渣尺：整行落在【本题】配图框内的字必须报；框外、只压住一半的不许报。
+    rq = q("CL            长长", imgs=[{"rect": [0.0, 0.0, 300.0, 200.0]}])
+    rg = {0: rq["images"]}
+    if not text_residues([rq], rg, {0: {"text_boxes": [
+            {"x": 100, "y": 50, "w": 40, "h": 12, "text": "CL 长长"}]}}):
+        fails.append("题干残渣尺：整行落在配图框里却没报（这条尺坏了）")
+    if text_residues([rq], rg, {0: {"text_boxes": [
+            {"x": 500, "y": 50, "w": 40, "h": 12, "text": "CL 长长"}]}}):
+        fails.append("题干残渣尺：框外的题干被报成残渣（误报）")
+    if text_residues([rq], rg, {0: {"text_boxes": [
+            {"x": 280, "y": 50, "w": 40, "h": 12, "text": "CL 长长"}]}}):
+        fails.append("题干残渣尺：只压住一半的题干被报成残渣（误报）")
+    rq2 = q("观察图片,提出两个能用6×2解决的问题。",
+            imgs=[{"rect": [0.0, 0.0, 300.0, 200.0]}])
+    if text_residues([rq2], {0: rq2["images"]}, {0: {"text_boxes": [
+            {"x": 100, "y": 50, "w": 200, "h": 12,
+             "text": "观察图片,提出两个能用6×2解决的问题。"}]}}):
+        fails.append("题干残渣尺：按设计保留的起手句被报成残渣（误报）")
+    # 裁框上沿削掉一整行地图标注 3.3pt（覆盖率 80%）仍是图内文字 → 必须报；
+    # 上沿超出 8pt（只有下半截在图里）→ 是图上方真正的题干行，不许报。
+    rq3 = q("观察校园，并记录下操场的四个方向各有什么。 教学楼 活动室 北 北",
+            imgs=[{"rect": [0.0, 32.3, 300.0, 200.0]}])
+    rg3 = {0: rq3["images"]}
+    if not text_residues([rq3], rg3, {0: {"text_boxes": [
+            {"x": 20, "y": 0, "w": 200, "h": 14,
+             "text": "观察校园，并记录下操场的四个方向各有什么。"},
+            {"x": 100, "y": 29, "w": 180, "h": 16,
+             "text": "教学楼 活动室 北 北"}]}}):
+        fails.append("题干残渣尺：被裁框削掉 3pt 的图内标注行没报（这条尺坏了）")
+    if text_residues([rq3], rg3, {0: {"text_boxes": [
+            {"x": 20, "y": 0, "w": 200, "h": 14,
+             "text": "观察校园，并记录下操场的四个方向各有什么。"},
+            {"x": 100, "y": 24, "w": 180, "h": 16,
+             "text": "教学楼 活动室 北 北"}]}}):
+        fails.append("题干残渣尺：框外半行题干被报成残渣（误报）")
+    # 同名正文不能误伤：「辰辰从…」里的「辰辰」是句子自己的；只有多出一份才报。
+    rq4 = q("辰辰从( )面走来。", imgs=[{"rect": [0.0, 40.0, 300.0, 200.0]}])
+    rg4 = {0: rq4["images"]}
+    if text_residues([rq4], rg4, {0: {"text_boxes": [
+            {"x": 20, "y": 10, "w": 200, "h": 14, "text": "辰辰从( )面走来。"},
+            {"x": 100, "y": 60, "w": 30, "h": 14, "text": "辰辰"}]}}):
+        fails.append("题干残渣尺：句子里的同名正文被报成残渣（误报）")
+    rq4b = q("辰辰从( )面走来。 辰辰", imgs=[{"rect": [0.0, 40.0, 300.0, 200.0]}])
+    if not text_residues([rq4b], {0: rq4b["images"]}, {0: {"text_boxes": [
+            {"x": 20, "y": 10, "w": 200, "h": 14, "text": "辰辰从( )面走来。"},
+            {"x": 100, "y": 60, "w": 30, "h": 14, "text": "辰辰"}]}}):
+        fails.append("题干残渣尺：多出一份的同名图注没报（这条尺坏了）")
+    # 大题题头也在 text_boxes 里但不在题干里，不能抢走起手句豁免
+    # （达标B 第 8 题：真正的第一句被裁框整行盖住，却被误报成残渣）。
+    rq5 = q("每个人都在童年时做过一些有意思的事情。",
+            imgs=[{"rect": [0.0, 40.0, 300.0, 200.0]}])
+    if text_residues([rq5], {0: rq5["images"]}, {0: {"text_boxes": [
+            {"x": 20, "y": 0, "w": 250, "h": 14,
+             "text": "六、一起来为童年纪念册添故事吧！按要求写话。（15分）"},
+            {"x": 20, "y": 50, "w": 250, "h": 14,
+             "text": "每个人都在童年时做过一些有意思的事情。"}]}}):
+        fails.append("题干残渣尺：大题题头抢走起手句豁免（第一句被误报）")
+
+    # 含题干尺：图内标注从题干删掉后不许再报；题干里还在的整句被框住必须报。
+    s1 = q("小明和小红在玩游戏。", imgs=[{"rect": [0.0, 50.0, 300.0, 120.0]}])
+    sb = [{"x": 20, "y": 10, "w": 200, "h": 14, "text": "小明和小红在玩游戏。"},
+          {"x": 20, "y": 60, "w": 200, "h": 14, "text": "我站在北面，明明站在南面。"}]
+    if stem_in_figures([s1], {0: s1["images"]}, {0: {"text_boxes": sb}}):
+        fails.append("含题干尺：图内标签被删后还报（误报）")
+    s2 = q("小明和小红在玩游戏。 我站在北面，明明站在南面。",
+           imgs=[{"rect": [0.0, 50.0, 300.0, 120.0]}])
+    if not stem_in_figures([s2], {0: s2["images"]}, {0: {"text_boxes": sb}}):
+        fails.append("含题干尺：题干里还在的整句被图框住却没报（这条尺坏了）")
     return fails
 
 
@@ -397,6 +551,7 @@ def audit(path: str, render=True) -> dict:
     for qi, imgs in got.items():
         if 0 <= qi < len(qs):
             qs[qi]["images"] = imgs
+    n_res = strip_text_inside_figures(qs, spans, got)
 
     by_page: dict[int, list] = {}
     for a in r["ann"]:
@@ -405,6 +560,7 @@ def audit(path: str, render=True) -> dict:
                    float(a["y"]) + float(a["h"]), str(a.get("text") or ""))
                   for a in items] for pg, items in by_page.items()}
     span_by_q = {int(s["q_index"]): s for s in spans}
+    residue = text_residues(qs, got, span_by_q)
 
     clip, bleed, stem_in, leak = [], [], [], []
     crops_by_page: dict[int, list] = {}
@@ -433,15 +589,8 @@ def audit(path: str, render=True) -> dict:
                     if overlap(rect, bb) >= 0.6 and (bb[2] - bb[0]) > 20:
                         bleed.append((qi + 1, qj + 1, str(b.get("text", ""))[:16]))
                         break
-            own = span_by_q.get(qi, {}).get("text_boxes") or []
-            for bi, b in enumerate(own):
-                t = str(b.get("text") or "")
-                bb = (b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"])
-                if len(t) >= 8 and STEMISH.search(t) and overlap(rect, bb) >= 0.8:
-                    # 第一行＝题干的起手句，被图整行框住＝印出来重复一行题目；
-                    # 后面几行多半是【图自己的标注】（"我站在北面。"），那是图的一部分。
-                    stem_in.append((qi + 1, t[:20], "题干首行" if bi == 0 else f"第{bi + 1}行"))
-                    break
+    # 图内标注已由清理步骤从题干删掉，不能再算"含题干"；只报题干里还在的整句。
+    stem_in = stem_in_figures(qs, got, span_by_q)
 
     bad = answerability(qs)
     dup = duplicates(qs)
@@ -464,7 +613,10 @@ def audit(path: str, render=True) -> dict:
     print(f"\n【{name}】源{r['n_pages']}页 · 题{len(qs)} · 配图{n_img}张（带图题{len(got)}）"
           f"· 出卷{pages_out}页 · 待校对{sum(1 for q in qs if q.get('needs_review'))}")
     print(f"  做不了 {len(bad)}　·　做得别扭：切边 {len(clip)} · 漏块 {len(leak)} · 串题 {len(bleed)} "
-          f"· 含题干 {len(stem_in)} · 重号 {len(dup)} · 题型可疑 {len(type_bad)}")
+          f"· 含题干 {len(stem_in)} · 题干残渣 {len(residue)} · 重号 {len(dup)} "
+          f"· 题型可疑 {len(type_bad)}")
+    if n_res:
+        print(f"    （已清掉图内重复文字 {n_res} 行）")
     for kind, no, why in bad:
         print(f"    ✗ {kind:6} 第 {no} 题 {why}")
     for sec, no, n in dup:
@@ -480,9 +632,11 @@ def audit(path: str, render=True) -> dict:
         print(f"    · 串题   第 {t} 题的图盖住第 {o} 题「{s}」")
     for t, s, w in stem_in:
         print(f"    · 含题干 第 {t} 题的图框住「{s}」  {w}")
+    for t, s in residue:
+        print(f"    · 残渣   第 {t} 题的题干里还有图内文字「{s}」")
     print(f"    砍掉的候选：{dict(Counter(d['why'] for d in cut))}")
     return {"name": name, "bad": bad, "clip": clip, "leak": leak, "bleed": bleed,
-            "stem": stem_in, "dup": dup, "type": type_bad,
+            "stem": stem_in, "res": residue, "dup": dup, "type": type_bad,
             "pages": pages_out, "questions": len(qs)}
 
 
@@ -513,11 +667,12 @@ def main() -> int:
         return 2
     # 括号里的条数只是【标签】，判决只看 selftest() 返回的 fails ——
     # 加检查时忘了改这个数字，不会让一把坏尺装成好的。
-    print("✓ 审计尺自检通过（23 条正/反对照）")
+    print("✓ 审计尺自检通过（34 条正/反对照）")
     if "--selftest" in sys.argv:        # 只验尺、不看真实材料（变异闸门用）
         return 0
     files = collect(args) or collect([os.path.join(ROOT, "samples", "private")])
-    tot = {"bad": 0, "clip": 0, "leak": 0, "bleed": 0, "stem": 0, "dup": 0, "type": 0}
+    tot = {"bad": 0, "clip": 0, "leak": 0, "bleed": 0, "stem": 0, "res": 0,
+           "dup": 0, "type": 0}
     for f in files:
         try:
             a = audit(f, render=render)
@@ -530,11 +685,11 @@ def main() -> int:
         if not a:
             continue
         tot["bad"] += len(a["bad"])
-        for k in ("clip", "leak", "bleed", "stem", "dup", "type"):
+        for k in ("clip", "leak", "bleed", "stem", "res", "dup", "type"):
             tot[k] += len(a[k])
     print(f"\n===== 合计：做不了 {tot['bad']} · 切边 {tot['clip']} · 漏块 {tot['leak']} "
-          f"· 串题 {tot['bleed']} · 含题干 {tot['stem']} · 重号 {tot['dup']} "
-          f"· 题型可疑 {tot['type']} =====")
+          f"· 串题 {tot['bleed']} · 含题干 {tot['stem']} · 题干残渣 {tot['res']} "
+          f"· 重号 {tot['dup']} · 题型可疑 {tot['type']} =====")
     print(f"逐页成品图在 {OUT}")
     return 1 if tot["bad"] else 0
 

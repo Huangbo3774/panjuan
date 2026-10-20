@@ -863,5 +863,33 @@ def stage_banner_is_furniture_not_a_figure():
 t("教辅栏目横幅是家具不是配图（含反例）", stage_banner_is_furniture_not_a_figure)
 
 
+def page_header_ads_are_not_questions():
+    """页眉的扫码批改/AI 伴学广告不是题目，更不许拼成一道无题号假题。
+
+    真实卷（周末作业(1).pdf 第 3 页）：OCR 把三行广告并成
+    "拍照批改互动讲解 智能错题本 分钟教材变式练 实际用时："，
+    解析器给它单独立了一道题，裁图又顺着彩色横幅裁出 581×77 的页眉废图，
+    审计报"第 2 题 切边 上+291px"。
+    """
+    from app.extractor.rules import is_furniture_text
+    lines = ["1.第一题（    ）",
+             "拍照批改互动讲解",
+             "智能错题本",
+             "分钟教材变式练            实际用时：",
+             "2.第二题（    ）"]
+    got = qs(extract(lines))
+    assert len(got) == 2, f"页眉行被当成题目了：{[q.get('text') for q in got]}"
+    assert all("拍照批改" not in str(q.get("text")) and "智能错题本" not in str(q.get("text"))
+               for q in got), f"页眉文字混进题干：{[q.get('text') for q in got]}"
+
+    assert is_furniture_text("拍照批改互动讲解"), "页眉广告没当家具（会裁成废图）"
+    assert is_furniture_text("智能错题本")
+    assert is_furniture_text("分钟教材变式练            实际用时：")
+    # 反例：题干里恰好出现广告里的词（短句里带"实际用时"）不算页眉
+    assert not is_furniture_text("小明做口算题，实际用时比计划少了3分钟。"), \
+        "正常题干被当页眉抹掉了"
+t("页眉扫码批改广告不是题目（含反例）", page_header_ads_are_not_questions)
+
+
 print(f"\n{ok_n} passed, {bad_n} failed")
 sys.exit(1 if bad_n else 0)

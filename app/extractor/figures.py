@@ -125,6 +125,22 @@ STITCH_GAP_PT = 2.0            # 只缝"上下重叠或几乎贴上"的：题界
 STITCH_MIN_X_SHARE = 0.6
 STITCH_MIN_W_RATIO = 0.6       # 两半宽度比值下限：差太多就是两张图，不是一张被劈开
 STITCH_MAX_UNION_PT = 240.0        # 缝合后的图最大边长（pt）：超过就是"整页缝一张"了
+# 接缝的"贯穿"判据：题目区间上下各留 3pt 边，会让【两张各自完好、只是贴在一起】
+# 的图左右各自探出去 3pt 在题界上重叠 6pt。真实卷（第三单元练习题 第 4 页）：
+# 第 2 题的连环画底边 446、第 3 题的操场图顶边 451.5，本来差 5.5pt，
+# 被区间边一夹就"接上"了，第 3 题的裁图把第 2 题的图整个吞进来。
+# 被题界真正劈开的图（围棋盘），笔画会从上半块穿过接缝继续到下半块；
+# 两张分开的图只有各自的边框和零星墨点 —— 按【两侧都有连续笔画的列】数区分。
+SEAM_CROSS_MIN_COLS = 6            # 至少这么多列在两半都有 ≥2px 的竖向笔画
+SEAM_CROSS_WIDTH_SHARE = 0.02      # 且不少于接缝宽度的 2%（宽图按比例抬门槛）
+SEAM_CROSS_MIN_RUN_PX = 2
+# 被题界切下来的【一条薄片】例外：同宽的圆点阵被题界从两行之间切开时，
+# 上面那行圆点和下面几行之间本来就没有笔画跨过接缝（圆点是断开的），
+# 但薄片 + 同宽 + 紧贴已经足够证明是同一张图（第三单元练习题 第 4 页第 4 题：
+# 上面 99.6×24.7pt 一行圆点、下面 99.6×85.4pt 三行圆点，被劈成两道题）。
+# 两张完整的大图贴在一起不算：Q2 连环画 118pt、Q3 操场 122pt，都远高于这条。
+STITCH_SLIVER_MAX_PT = 32.0
+STITCH_SLIVER_MIN_W_RATIO = 0.9
 # 尺寸门槛的参照栏宽（pt）：A4 竖版两栏时一栏 ≈280pt，MIN_FIG_* 就是在这上面量的
 GATE_REF_COL_PT = 280.0
 # 裁框盖住【本题文字行】这么多比例，就算「图里重复了一遍题目」
@@ -141,6 +157,16 @@ STEM_TOP_TOL_PT = 4.0
 # 三处都是图的一部分，旧规则只裁第一行时都没事；放宽到"任意贴顶行"后全被切掉。
 # 正例（该裁）：第三单元达标练习题B 第 1 题读文行，行首 90.7 / 裁框 79.1（差 11.6）。
 STEM_LEFT_TOL_PT = 24.0
+# 裁框下沿把【最后一行题干】整行盖住时，行底离裁框下沿允许多远（pt）。
+# 上沿那条是 4pt（OCR 行框和字几乎贴着）；下沿不一样：行框底下常留着
+# 标点/行距的墨，裁框会再往下探几个点。真实卷（第三单元练习题 第 8 页第 30 题）
+# 行底 422.0、裁框下沿 430.7，差 8.7pt —— 4pt 的门槛对它完全瞎。
+STEM_BOTTOM_TOL_PT = 12.0
+# 框底压着【多行】题干/阅读材料时，从末行往上把紧挨着的续行一起收。
+# 真实卷（综合实践单元(1) 第 23 题）：三行阅读材料只有末行带句号，
+# 旧版只收末行 → 前两行被当"图内重复文字"删掉，题干只剩一个孤零零的 ")"。
+# 6pt 是 OCR 行框之间的正常行距上限（实测 4.1–5.5pt）。
+STEM_BOTTOM_JOIN_PT = 6.0
 
 # ── 栏目横幅 / 答题框块：不是题图（用户截图里的两种废图）─────────────────
 # 栏目横幅（"第二步 练变式"的橙底白字色块）：OCR 读成文字、被 is_furniture_text
@@ -161,6 +187,78 @@ ANSWER_BOX_MIN_PT = 12.0
 ANSWER_BOX_MIN_SHARE = 0.40
 ANSWER_BOX_MAX_H_PT = 90.0
 ANSWER_BOX_MAX_OTHER_PT = 38.0
+# 作答圆圈（`50-55 ○ 3×9`）：比大小的圆圈也是【作答位置】，不是图。
+# L2 中期评估模拟卷 p1 第 2 题实测 42.7×65.7pt：两个 22pt 空心圈 + 几块
+# 5–10.1pt 的算式残角（OCR 只盖住一部分），裁出来就是一张"两个圆圈"的废图。
+# 判据（全部成立才砍）：
+#   · 小窄条：宽 ≤60pt、高 ≤90pt、墨密度 ≤15%、总墨 ≤1000pt²；
+#   · ≥2 个 12–40pt 的【空心】圈（必须有 ≥8pt 的圆洞，实心点/方框不算）；
+#   · 圆圈墨占全框 ≥30%（残角再多也认得出来）；
+#   · 其余墨块都 ≤14pt（真图主体、照片、大符号都会否决）。
+ANSWER_CIRCLE_MAX_W_PT = 60.0
+ANSWER_CIRCLE_MAX_H_PT = 90.0
+ANSWER_CIRCLE_MIN_PT = 12.0
+ANSWER_CIRCLE_MAX_PT = 40.0
+ANSWER_CIRCLE_MIN_HOLE_PT = 8.0
+ANSWER_CIRCLE_MIN_RINGS = 2
+ANSWER_CIRCLE_MIN_SHARE = 0.30
+ANSWER_CIRCLE_MAX_OTHER_PT = 14.0
+ANSWER_CIRCLE_MAX_INK_PT2 = 1000.0
+ANSWER_CIRCLE_MAX_DENSITY = 0.15
+# 扫描墨迹会把相邻的 `□×□` 连成【一个】连通域：第三单元练习题 第 4 题实测
+# 65.5×25.2pt 一块、内部 3 个洞（2 个是方框内腔），形状分类器只能叫它 minus。
+# 这种"一行空方框"要按洞来数，否则永远只数到旁白那个独立方框（n_sq=1）。
+# 只认【矮、宽、洞也是方的】那一种，免得把乘法阵列/方格图当成答题框。
+MERGED_SQUARE_MAX_H_PT = 35.0
+MERGED_SQUARE_MIN_ASPECT = 1.5
+MERGED_SQUARE_MIN_HOLE_PT = 8.0
+MERGED_SQUARE_MIN_HOLES = 2
+# 空白作答行：卷面上印的 `读作:( )` / `写作:( )` 两对括号加虚线引导，
+# 不是图 —— 第三单元练习题 p2 第 1 题实测 181×49pt、只有 4 个括号和 8 个点。
+# 判据宁窄勿宽：任何一个 ≥18pt 的墨块都说明"这里有东西"，不砍。
+BLANK_ROW_MAX_H_PT = 60.0
+BLANK_ROW_MAX_PIECE_PT = 18.0
+BLANK_ROW_MIN_PAREN_PAIRS = 1
+BLANK_ROW_MAX_DENSITY = 0.06
+BLANK_ROW_MAX_INK_PT2 = 500.0
+BLANK_ROW_DOT_PT = 4.0
+BLANK_ROW_ALLOWED = ("paren_open", "paren_close")
+# 空白作答横线：`你会对爷爷说：“ ______ ”` 下面那种两三条长横线。
+# 第三单元达标练习题B 第 5 题实测 320×38pt：两条长线（292pt / 88pt）＋
+# 几块 OCR 没挖干净的 5–10.1pt 字角（行尾的闭合引号 `”`，OCR 行框只盖到 x=378）。
+# 它不是图，印出来只是把题目里的作答线又画了一遍（与 `读作:( )` 的空白块同一类）。
+# 判据：文字挖掉之后，除了 2–4 条长横线，只剩 ≤12pt 的碎点；
+# 至少 1 条占框宽一半 —— 数轴只有 1 条长轴，不会被误砍。
+# 12pt 的由来：实测引号残角 10.1pt，留 2pt 余量；14pt 以上的实墨块仍会否决。
+BLANK_RULE_MAX_H_PT = 60.0
+BLANK_RULE_MIN_LINES = 2
+BLANK_RULE_MAX_LINES = 4
+BLANK_RULE_MIN_LINE_PT = 30.0
+BLANK_RULE_MAX_THICK_PT = 2.5
+BLANK_RULE_MAX_OTHER_PT = 12.0
+BLANK_RULE_LONG_SHARE = 0.5
+# 纯文字块：两行以上的文字被拼成一个窄块（OCR 行框只盖住 86% 的墨，
+# 剩下的字角连成候选）。第三单元练习题 p7 第 2 题实测 82×53pt、文字覆盖 86%，
+# 同一份卷里真图的覆盖率最高 64%（气球图）—— 85% 就是按这个断层定的。
+# 只认【小窄块】：整题截图（达标A 第 1 题 324×178pt、覆盖 70%）不在范围内。
+TEXT_BLOCK_MIN_W_PT = 30.0
+TEXT_BLOCK_MAX_W_PT = 160.0
+TEXT_BLOCK_MIN_H_PT = 10.0
+TEXT_BLOCK_MAX_H_PT = 90.0
+TEXT_BLOCK_COVER_MIN = 0.85
+# 大块虚线作答区（"问题一："/"问题二："那种 200×90pt 的虚线框）不是图。
+# 第三单元练习题 第 4 页第 3 题实测：左框 195×101pt、墨密度 0.031、最长横线 13pt；
+# 右框 229×135pt、0.048、18pt；同页真正的操场插图 436×117pt、0.247、100.8pt。
+# 四条同时成立才算空白作答区，缺一条都不动（宁可留一张废图，不砍真图）：
+#   · 框够大：宽 ≥100pt、高 ≥50pt；
+#   · 框里几乎没有墨：密度 ≤6%；
+#   · 框里没有长横线：最长连续横线 <20pt（实线表格/边框会超过）；
+#   · 框线的短划都 ≤15pt（虚线每段实测 1.4–7.2pt；18pt 的圆点是下一题的图，必须留下）。
+BLANK_AREA_MIN_W_PT = 100.0
+BLANK_AREA_MIN_H_PT = 50.0
+BLANK_AREA_MAX_DENSITY = 0.06
+BLANK_AREA_MAX_RUN_PT = 20.0
+BLANK_AREA_DASH_MAX_PT = 15.0
 
 
 def _ink_threshold(gray) -> int:
@@ -329,6 +427,96 @@ def _max_h_run(sub, k: float, np) -> float:
     return best / k
 
 
+def _max_v_run(col, np) -> int:
+    """一列里最长的【连续竖向墨迹】（px）。接缝判据用。"""
+    if not col.any():
+        return 0
+    d = np.diff(np.concatenate(([0], col.astype(np.int8), [0])))
+    starts = np.flatnonzero(d == 1)
+    ends = np.flatnonzero(d == -1)
+    return int((ends - starts).max()) if len(starts) else 0
+
+
+def _strip_blank_answer_areas(band, wall, k: float, np, cv2):
+    """大块虚线作答区（"问题一："那种框）从墨里剔掉，只剔框线的短划。
+
+    不剔的后果（第三单元练习题 第 4 页第 3 题，真实卷）：
+      · 左边 195×101pt 的虚线框和自己的插图被补洞连成一张 442×246pt 的巨图，
+        图里印着"观察图片…"和"问题一："，孩子拿到一张带题干的空白答题框；
+      · 右边虚线框又把下一题点阵图的顶行连走，点阵在题界处被劈成两半。
+
+    判据（见 BLANK_AREA_* 常量）：框大、墨稀、没有长横线。
+    只剔 ≤15pt 的小短划；点阵里 18pt 的圆点、框里真正的大块图都留下 ——
+    所以"框 + 下一题顶行"这种混在一起的候选，剔完框线后还能被跨题缝合接回去。
+    """
+    if cv2 is None or not band.any():
+        return band, wall
+    r = max(3, int(round(DILATE_PT * k)))
+    dil = cv2.dilate(band.astype(np.uint8) * 255,
+                     cv2.getStructuringElement(cv2.MORPH_RECT, (r, r)))
+    n, _lab, stats, _cent = cv2.connectedComponentsWithStats(dil, connectivity=8)
+    out = band.copy()
+    walls = wall.copy()
+    for i in range(1, n):
+        x, y, w, h, _area = [int(v) for v in stats[i]]
+        sub = band[y:y + h, x:x + w]
+        if sub.size == 0 or not sub.any():
+            continue
+        nr, _l, st, _c = cv2.connectedComponentsWithStats(
+            sub.astype(np.uint8) * 255, connectivity=8)
+        small = []
+        for j in range(1, nr):
+            sx, sy, sw, sh, _sarea = [int(v) for v in st[j]]
+            if max(sw, sh) / k <= BLANK_AREA_DASH_MAX_PT:
+                small.append((sx, sy, sw, sh))
+        if len(small) < 8:
+            continue                      # 只有三五个小点的不是虚线框
+        # 短划自己的外接框才是"框"：同一个连通域里可能还粘着下一题的圆点
+        # （真实卷 q17 右框下面就是点阵顶行），用连通域的 bbox 会把框底算到圆点下面。
+        dx0 = min(s[0] for s in small)
+        dy0 = min(s[1] for s in small)
+        dx1 = max(s[0] + s[2] for s in small)
+        dy1 = max(s[1] + s[3] for s in small)
+        dw, dh = dx1 - dx0, dy1 - dy0
+        if dw / k < BLANK_AREA_MIN_W_PT or dh / k < BLANK_AREA_MIN_H_PT:
+            continue
+        frame = band[y + dy0:y + dy1, x + dx0:x + dx1]
+        if frame.size == 0 or float(frame.mean()) > BLANK_AREA_MAX_DENSITY:
+            continue
+        if _max_h_run(frame, k, np) >= BLANK_AREA_MAX_RUN_PT:
+            continue
+        mx = max(3.0, 0.05 * dw / k) * k
+        my = max(3.0, 0.05 * dh / k) * k
+        dashes = []
+        sides = [0, 0, 0, 0]                 # 上 / 下 / 左 / 右
+        for sx, sy, sw, sh in small:
+            cx, cy = sx + sw / 2.0, sy + sh / 2.0
+            near = []
+            if cy - dy0 <= my:
+                near.append(0)
+            if dy1 - cy <= my:
+                near.append(1)
+            if cx - dx0 <= mx:
+                near.append(2)
+            if dx1 - cx <= mx:
+                near.append(3)
+            for kk in near:
+                sides[kk] += 1
+            dashes.append((sx, sy, sw, sh, bool(near)))
+        on_edge = sum(1 for d in dashes if d[4])
+        # 短划必须【围在框边上】：点状纹理是铺满整块的，不能当虚线框剔。
+        if on_edge / float(len(dashes)) < 0.80:
+            continue
+        if min(sides) < 2:
+            continue                      # 四条边都得有，缺边的是别的东西
+        for sx, sy, sw, sh, near in dashes:
+            if not near:
+                continue
+            out[y + sy:y + sy + sh, x + sx:x + sx + sw] = False
+            walls[y + sy:y + sy + sh, x + sx:x + sx + sw] = True
+    return out, walls
+
+
 def span_box(src: PageSource, s: dict[str, Any]) -> tuple[float, float, float, float]:
     """这道题能用的矩形：【自己那一栏的 x 范围】×【区间 y0..y1】。
 
@@ -383,6 +571,9 @@ def _scan(src: PageSource, s: dict[str, Any], np, cv2) -> dict[str, Any] | None:
         tb_px.append([tx0, ty0, tx1, ty1])
         tb_wall.append(furniture)
     band = band & ~punched           # 洞单独留一份，补洞合并时才用得到
+    # 大块虚线作答区先剔掉：不剔就会把"插图 + 空白框"补成一张巨图，
+    # 或者把下一题的点阵图顶行连走（第三单元练习题 第 4 页第 3 题）。
+    band, wall = _strip_blank_answer_areas(band, wall, k, np, cv2)
     comps = _merge_boxes(_components(band, k, np, cv2, wall), MERGE_GAP_PT * k)
     comps.sort(key=lambda b: (b[1], b[0]))
     return {"band": band, "raw": raw_band, "hole": hole, "wall": wall,
@@ -421,6 +612,78 @@ def _is_text_residual(box: list[float], tb_px: list[list[float]], band, k: float
     if not inside:
         return False
     return _max_h_run(band[by0:by1, bx0:bx1], k, np) < TEXT_MIN_RUN_PT
+
+
+def _is_text_covered_block(box: list[float], raw, tb_px: list[list[float]],
+                           k: float, np) -> bool:
+    """一小块窄框里的墨几乎全落在 OCR 文字行框里 → 是文字，不是图。
+
+    真实卷（第三单元练习题 p7 第 2 题）：选项 ① 的右半截被 OCR 行框盖住 86%，
+    剩下的字角散成候选、bbox 横跨 82×53pt，`_is_text_residual` 只认"一行高"
+    于是放过了它 —— 成品里这幅"图"就是半句重复的选项文字。
+    判据只有两条：
+      · 覆盖：框里的墨 ≥85% 落在某一行文字框里（同卷真图最高 64%，断层 21 个点）；
+      · 尺寸：30–160pt 宽、10–90pt 高。整题截图/材料框都比这个大，且覆盖率更低。
+    """
+    if raw is None or not tb_px:
+        return False
+    w_pt, h_pt = (box[2] - box[0]) / k, (box[3] - box[1]) / k
+    if not (TEXT_BLOCK_MIN_W_PT <= w_pt <= TEXT_BLOCK_MAX_W_PT
+            and TEXT_BLOCK_MIN_H_PT <= h_pt <= TEXT_BLOCK_MAX_H_PT):
+        return False
+    bx0, by0 = max(0, int(box[0])), max(0, int(box[1]))
+    bx1, by1 = min(raw.shape[1], int(box[2])), min(raw.shape[0], int(box[3]))
+    if bx1 - bx0 < 4 or by1 - by0 < 4:
+        return False
+    sub = raw[by0:by1, bx0:bx1]
+    total = int(sub.sum())
+    if total <= 0:
+        return False
+    inside = np.zeros(sub.shape, dtype=bool)
+    for t in tb_px:
+        a, b = max(int(t[0]) - bx0, 0), min(int(t[2]) - bx0, sub.shape[1])
+        c, d = max(int(t[1]) - by0, 0), min(int(t[3]) - by0, sub.shape[0])
+        if b > a and d > c:
+            inside[c:d, a:b] = True
+    return int((sub & inside).sum()) / float(total) >= TEXT_BLOCK_COVER_MIN
+
+
+def _is_blank_rule_row(rect: tuple[float, float, float, float], band,
+                       k: float, cx0: int, y0: int, np) -> bool:
+    """文字挖掉之后只剩两三条长横线 → 是作答横线，不是图。
+
+    `band` 必须是【已经挖过文字】的那一层：这一块的文字本来就会被 OCR 行框盖住，
+    残留的字角允许 ≤10pt；要判定的是"除文字外还有什么"。
+    """
+    if band is None:
+        return False
+    if (rect[3] - rect[1]) / k > BLANK_RULE_MAX_H_PT:
+        return False
+    bx0, by0, bx1, by1 = _band_slice(rect, k, cx0, y0, band.shape)
+    if bx1 - bx0 < 8 or by1 - by0 < 4:
+        return False
+    sub = band[by0:by1, bx0:bx1]
+    if not sub.any():
+        return False
+    import cv2
+    n, _lab, stats, _cent = cv2.connectedComponentsWithStats(
+        sub.astype(np.uint8) * 255, connectivity=8)
+    w_pt = (bx1 - bx0) / k
+    n_lines = 0
+    longest = 0.0
+    for i in range(1, n):
+        x, y, w, h, area = [int(v) for v in stats[i]]
+        if area < 4:
+            continue
+        cw, ch = w / k, h / k
+        if ch <= BLANK_RULE_MAX_THICK_PT and cw >= BLANK_RULE_MIN_LINE_PT:
+            n_lines += 1
+            longest = max(longest, cw)
+            continue
+        if max(cw, ch) > BLANK_RULE_MAX_OTHER_PT:
+            return False                     # 有字/图/表格竖线 → 不是空白横线
+    return (BLANK_RULE_MIN_LINES <= n_lines <= BLANK_RULE_MAX_LINES
+            and longest >= w_pt * BLANK_RULE_LONG_SHARE)
 
 
 def _axis_measure(hole, a: list[float], b: list[float], axis: int) -> dict[str, Any] | None:
@@ -826,6 +1089,68 @@ def _drop_contained(cands: list[dict[str, Any]],
     return out
 
 
+def _recheck_merged(cands: list[dict[str, Any]], report: list | None,
+                    np, cv2) -> list[dict[str, Any]]:
+    """合并/缝合/吸收之后，按【最终裁框】把文字残影和空白横线再判一次。
+
+    候选阶段那一眼看到的是碎片：`_absorb_row_peers` 把同行的小块并回来之后，
+    框子会横着长一大截，形状已经和当初不是一回事了。真实卷里两处都是这样跑掉的：
+      · 第三单元练习题 p7 第 2 题：选项文字被 OCR 行框盖住 86%，剩下的字角散成
+        几块，被 row-peer 并成一个 82×53 的"图"；
+      · 达标B 第 5 题：两条作答横线原本被 thin-horizontal 砍成几段，row-peer
+        接起来之后成了 320×38 的框，越过了"矮块只剩横线"的判据。
+    这里用同一份 `_scan` 重建 raw / 挖字后的 band / 文字框，再按最终 rect 跑
+    G2 与 J4 —— 判据只有一份实现，这里只换量测对象，不另抄阈值。
+
+    ⚠️ 只复检【整块仍在本栏区间内】的框。跨题缝合（_stitch_across_questions）
+       允许框越过原题区间，那类框的 tbs 是另一道题的，拿来量覆盖率会误杀。
+    """
+    out: list[dict[str, Any]] = []
+    cache: dict[tuple, Any] = {}          # 同题的多张候选共用一份 _scan（别重复扫整条带）
+    for c in cands:
+        src, rect = c.get("src"), c["rect"]
+        band_box = c.get("band") or []
+        inside = (len(band_box) == 4
+                  and rect[0] >= band_box[0] - 3.0 and rect[1] >= band_box[1] - 3.0
+                  and rect[2] <= band_box[2] + 3.0 and rect[3] <= band_box[3] + 3.0)
+        if src is None or not inside:
+            out.append(c)
+            continue
+        key = (c["page"], c["q_index"], tuple(band_box))
+        if key in cache:
+            sgn = cache[key]
+        else:
+            span = {"q_index": c["q_index"], "page": c["page"], "col": c.get("col", 0),
+                    "x0": band_box[0], "y0": band_box[1],
+                    "x1": band_box[2], "y1": band_box[3],
+                    "text_boxes": c.get("tbs") or []}
+            try:
+                sgn = _scan(src, span, np, cv2)
+            except Exception:
+                sgn = None
+            cache[key] = sgn
+        why = None
+        if sgn:
+            k, cx0, y0 = sgn["k"], sgn["cx0"], sgn["y0"]
+            px = _band_slice(rect, k, cx0, y0, sgn["band"].shape)
+            if _is_text_covered_block(list(px), sgn.get("raw"),
+                                      sgn.get("tb") or [], k, np):
+                why = "text-block-final"
+            elif _is_blank_rule_row(rect, sgn.get("band"), k, cx0, y0, np):
+                why = "answer-rules-final"
+            elif _is_answer_circle_row(rect, sgn.get("raw"), k, cx0, y0, np):
+                why = "answer-circles-final"
+        if why:
+            if report is not None:
+                report.append({"q_index": c["q_index"], "page": c["page"],
+                               "kept": False,
+                               "rect": [round(v, 1) for v in rect],
+                               "why": why})
+            continue
+        out.append(c)
+    return out
+
+
 def _size_gate(w_pt: float, h_pt: float, col_w: float) -> tuple[bool, bool]:
     """(这张能不能裁, 它是不是"严格合格")。"""
     s = _gate_scale(col_w)
@@ -925,6 +1250,50 @@ def _wall_ink_share(rect: tuple[float, float, float, float], raw, wall,
     return int((sub & wall[py0:py1, px0:px1]).sum()) / float(total)
 
 
+def _merged_square_units(patch, k: float, cv2, np) -> int:
+    """一个连通域里藏着几个【方框内腔】。
+
+    第三单元练习题第 4 题的 `□×□` 被扫描墨迹连成 65.5×25.2pt 一块，外形是减号，
+    但内部有两个 ≥8pt 的方洞。只认同时满足下面几条的：
+      · 整块矮（≤35pt）且明显横宽（≥1.5 倍高）—— 一行空方框；
+      · 洞的短边 ≥8pt、长短边比 ≤2；
+      · 洞的面积 ≥其外接框的一半（真的是空腔，不是笔画夹缝）。
+    乘法阵列/方格图通常是多行多列，高度先过不了第一条；单行 1×N 方格图若
+    只有方框没有别的墨，本来就会被原有"≥2 个方框＋墨占比"判据砍掉，口径一致。
+    """
+    ph, pw = patch.shape
+    if ph <= 0 or pw <= 0:
+        return 0
+    h_pt, w_pt = ph / k, pw / k
+    if h_pt > MERGED_SQUARE_MAX_H_PT or w_pt < h_pt * MERGED_SQUARE_MIN_ASPECT:
+        return 0
+    contours, hier = cv2.findContours(patch.astype("uint8") * 255,
+                                      cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    if hier is None:
+        return 0
+    n = 0
+    for ci, c in enumerate(contours):
+        if hier[0][ci][3] == -1:            # 没有父轮廓＝外轮廓，不是洞
+            continue
+        hx, hy, hw, hh = cv2.boundingRect(c)
+        if min(hw, hh) / k < MERGED_SQUARE_MIN_HOLE_PT:
+            continue
+        if hw <= 0 or hh <= 0 or max(hw, hh) / float(min(hw, hh)) > 2.0:
+            continue
+        if cv2.contourArea(c) / float(hw * hh) < 0.50:
+            continue
+        # 洞里也是个【方框】才算：地铁线路图的圆站点内腔是圆的，
+        # 用同一把形状分类器挡掉（第一版没挡，淡蓝线路图整张被当答题框砍了）。
+        from . import symbols as SY
+        hm = np.zeros(patch.shape, dtype="uint8")
+        cv2.drawContours(hm, [c], -1, 1, -1)
+        hole = hm[hy:hy + hh, hx:hx + hw].astype(bool)
+        if SY.classify(SY.features(hole, np)) != "square":
+            continue
+        n += 1
+    return n
+
+
 def _is_answer_box_block(rect: tuple[float, float, float, float], raw,
                          k: float, cx0: int, y0: int, np) -> bool:
     """这个候选是不是【作答位置的答题框行】（`□×□＝□`），而不是题图。
@@ -963,9 +1332,17 @@ def _is_answer_box_block(rect: tuple[float, float, float, float], raw,
         if area < 4:
             continue
         w_pt, h_pt = w / k, h / k
+        patch = sub[y:y + h, x:x + w]
+        # 扫描墨把 `□×□` 连成一块时，形状分类器只会叫它 minus；
+        # 按内腔数出这一排里有几个方框（见 _merged_square_units）。
+        merged = _merged_square_units(patch, k, cv2, np)
+        if merged >= MERGED_SQUARE_MIN_HOLES:
+            n_sq += merged
+            sq_area += area
+            continue
         if max(w_pt, h_pt) >= ANSWER_BOX_MAX_OTHER_PT:
             return False                 # 还有一大块别的墨 → 是图的主体
-        lab = SY.classify(SY.features(sub[y:y + h, x:x + w], np))
+        lab = SY.classify(SY.features(patch, np))
         if lab in SY.SHAPE_LABELS and lab != "square":
             return False                 # 星星/圆/三角/菱形…出来就不是答题框
         if lab == "square" and min(w_pt, h_pt) >= ANSWER_BOX_MIN_PT:
@@ -974,6 +1351,145 @@ def _is_answer_box_block(rect: tuple[float, float, float, float], raw,
     if n_sq < ANSWER_BOX_MIN_SQUARES:
         return False
     return sq_area / float(total) >= ANSWER_BOX_MIN_SHARE
+
+
+def _round_holes(patch, k: float, cv2, np) -> int:
+    """这个墨块里有几个 ≥8pt 的【圆洞】—— 空心圆圈的身份证明。
+
+    只数内腔：实心点没有洞；方框的洞会被形状分类器叫成 square，不算。
+    `50-55 ○ 3×9` 那两个作答圈的洞实测 20.9×20.2pt。
+    """
+    contours, hier = cv2.findContours(patch.astype("uint8") * 255,
+                                      cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    if hier is None:
+        return 0
+    from . import symbols as SY
+    n = 0
+    for ci, c in enumerate(contours):
+        if hier[0][ci][3] == -1:              # 没有父轮廓＝外轮廓，不是洞
+            continue
+        hx, hy, hw, hh = cv2.boundingRect(c)
+        if min(hw, hh) / k < ANSWER_CIRCLE_MIN_HOLE_PT:
+            continue
+        if hw <= 0 or hh <= 0 or max(hw, hh) / float(min(hw, hh)) > 1.6:
+            continue
+        if cv2.contourArea(c) / float(hw * hh) < 0.50:
+            continue
+        hm = np.zeros(patch.shape, dtype="uint8")
+        cv2.drawContours(hm, [c], -1, 1, -1)
+        hole = hm[hy:hy + hh, hx:hx + hw].astype(bool)
+        if SY.classify(SY.features(hole, np)) in ("circle", "ring"):
+            n += 1
+    return n
+
+
+def _is_answer_circle_row(rect: tuple[float, float, float, float], raw,
+                          k: float, cx0: int, y0: int, np) -> bool:
+    """两个空心圆圈夹着算式碎片＝比较大小的作答位置，不是图。
+
+    真实卷（L2 中期评估模拟卷 p1 第 2 题）：42.7×65.7pt 的窄条，里面只有
+    `100-55 ○ 100-65` 和 `4×6 ○ 3×9` 留下的两个 22pt 空心圈，外加几块
+    5–10.1pt 的算式残角。它和"图形代表数"的图确实长得像，所以全部成立才砍：
+      ① 小窄条：宽 ≤60pt、高 ≤90pt、墨密度 ≤15%、总墨 ≤1000pt²；
+      ② ≥2 个 12–40pt 的空心圈（必须有 ≥8pt 的圆洞，实心点/方框都不算）；
+      ③ 圆圈墨占全框墨 ≥30%；
+      ④ 其余墨块都 ≤14pt。
+    真图主体、照片、大符号会卡在①或④；实心点阵卡在②。
+
+    ⚠️ 已知不可分辨：一道只用两个圆圈做图的题（例如两枚硬币的示意图）
+       也会被砍。与 `□×□` 那条同理，宁可少一张废图。
+    """
+    if raw is None:
+        return False
+    if (rect[2] - rect[0] > ANSWER_CIRCLE_MAX_W_PT
+            or rect[3] - rect[1] > ANSWER_CIRCLE_MAX_H_PT):
+        return False
+    px0, py0, px1, py1 = _band_slice(rect, k, cx0, y0, raw.shape)
+    sub = raw[py0:py1, px0:px1]
+    if sub.size == 0:
+        return False
+    total = int(sub.sum())
+    if total <= 0:
+        return False
+    if total / float(sub.size) > ANSWER_CIRCLE_MAX_DENSITY:
+        return False
+    if total / (k * k) > ANSWER_CIRCLE_MAX_INK_PT2:
+        return False
+    import cv2
+    n, _lab, stats, _cent = cv2.connectedComponentsWithStats(
+        sub.astype(np.uint8) * 255, connectivity=8)
+    n_ring, ring_area = 0, 0
+    for i in range(1, n):
+        x, y, w, h, area = [int(v) for v in stats[i]]
+        if area < 4:
+            continue
+        w_pt, h_pt = w / k, h / k
+        patch = sub[y:y + h, x:x + w]
+        holes = _round_holes(patch, k, cv2, np)
+        if holes >= 1:
+            n_ring += 1
+            ring_area += area
+            continue
+        # 外圈不是空心圆时，只允许小残角（算式/标点/×）；更大的墨说明是图的主体。
+        # 注：`_round_holes` 已经挡掉了实心点（没洞）和方框（洞是方的）。
+        if max(w_pt, h_pt) > ANSWER_CIRCLE_MAX_OTHER_PT:
+            return False
+    if n_ring < ANSWER_CIRCLE_MIN_RINGS:
+        return False
+    return ring_area / float(total) >= ANSWER_CIRCLE_MIN_SHARE
+
+
+def _is_blank_answer_row(rect: tuple[float, float, float, float], raw,
+                         k: float, cx0: int, y0: int, np) -> bool:
+    """这一块是不是【只有作答括号和虚线引导】的空白行，而不是图。
+
+    第三单元练习题 p2 第 1 题实测 181×49pt：两对 `（ ）` 加两列虚线点，
+    墨只占 1.6%，没有任何 ≥18pt 的东西。孩子看到这张"图"就是两个空括号，
+    对它做不了题；删掉它，题干里的 `读作:( )` 反而更清楚。
+    判据（全部成立才砍，宁窄勿宽）：
+      · 高 ≤60pt；
+      · 每个 ≥4pt 的墨块都 ≤18pt，且必须是括号；更小的点（虚线）放过；
+      · 至少一对括号（这一行先被切成两半时，每半只有一对；缝合后才是两对）；
+      · 墨密度 ≤6%，墨面积 ≤500pt²。
+    任何一块 ≥18pt 的墨都直接否决 —— 真图、照片、算式主体都过不了这一条。
+    """
+    if raw is None:
+        return False
+    if rect[3] - rect[1] > BLANK_ROW_MAX_H_PT:
+        return False
+    px0, py0, px1, py1 = _band_slice(rect, k, cx0, y0, raw.shape)
+    sub = raw[py0:py1, px0:px1]
+    if sub.size == 0:
+        return False
+    total = int(sub.sum())
+    if total <= 0:
+        return False
+    if total / float(sub.size) > BLANK_ROW_MAX_DENSITY:
+        return False
+    if total / (k * k) > BLANK_ROW_MAX_INK_PT2:
+        return False
+    import cv2
+    from . import symbols as SY
+    n, _lab, stats, _cent = cv2.connectedComponentsWithStats(
+        sub.astype(np.uint8) * 255, connectivity=8)
+    n_open = n_close = 0
+    for i in range(1, n):
+        x, y, w, h, area = [int(v) for v in stats[i]]
+        if area < 4:
+            continue
+        w_pt, h_pt = w / k, h / k
+        if max(w_pt, h_pt) > BLANK_ROW_MAX_PIECE_PT:
+            return False
+        if min(w_pt, h_pt) <= BLANK_ROW_DOT_PT:
+            continue                         # 虚线引导点，不是字
+        lab = SY.classify(SY.features(sub[y:y + h, x:x + w], np))
+        if lab not in BLANK_ROW_ALLOWED:
+            return False                     # 有非括号的实墨 → 这不是空白行
+        if lab == "paren_open":
+            n_open += 1
+        else:
+            n_close += 1
+    return min(n_open, n_close) >= BLANK_ROW_MIN_PAREN_PAIRS
 
 
 def _covers(box_a, box_b) -> float:
@@ -1056,7 +1572,22 @@ def _seam_has_ink(src: PageSource, a: tuple[float, float, float, float],
         e, f = max(int(tb["x"] * k) - bx0, 0), min(int((tb["x"] + tb["w"]) * k) - bx0, sub.shape[1])
         if d > c and f > e:
             sub[c:d, e:f] = False
-    return int(sub.sum()) >= 12
+    if int(sub.sum()) < 12:
+        return False
+    # 光有墨不算"同一张图被劈开"：两块各自的边框贴上来也会留下一片墨。
+    # 必须找到【贯穿接缝】的笔画 —— 同一列在上半块和下半块都有连续竖向墨，
+    # 且这样的列要够多（见 SEAM_CROSS_*）。两张独立的图贴在一起只有零星点。
+    mid = int(round(yj * k)) - y0
+    if mid <= 0 or mid >= sub.shape[0]:
+        return False
+    top, bot = sub[:mid], sub[mid:]
+    cols = 0
+    for c in np.flatnonzero(top.any(axis=0) & bot.any(axis=0)):
+        if (_max_v_run(top[:, c], np) >= SEAM_CROSS_MIN_RUN_PX
+                and _max_v_run(bot[:, c], np) >= SEAM_CROSS_MIN_RUN_PX):
+            cols += 1
+    need = max(SEAM_CROSS_MIN_COLS, int(round(SEAM_CROSS_WIDTH_SHARE * sub.shape[1])))
+    return cols >= need
 
 
 def _band_share(u, band) -> float:
@@ -1119,9 +1650,14 @@ def _stitch_across_questions(cands: list[dict[str, Any]]) -> list[dict[str, Any]
                     #    真正被题界劈开的图（围棋盘 127×35 + 130×87）拼起来才 130×117。
                     if (u[3] - u[1]) > STITCH_MAX_UNION_PT or (u[2] - u[0]) > STITCH_MAX_UNION_PT * 2:
                         continue
-                    if not _seam_has_ink(a["src"], tuple(r), tuple(b),
-                                         a["tbs"] + g[j]["tbs"], _np):
-                        continue                      # 接缝上没有墨＝两张本来分开的图
+                    # 薄片 + 同宽：圆点阵被从两行之间切开的那一类。圆点彼此不连，
+                    # 接缝上当然没有"贯穿的笔画"，但一条 25pt 高、和下面一样宽的
+                    # 顶行圆点不可能是另一张完整的图（见 STITCH_SLIVER_*）。
+                    sliver = (min(r[3] - r[1], b[3] - b[1]) <= STITCH_SLIVER_MAX_PT
+                              and narrow / wide >= STITCH_SLIVER_MIN_W_RATIO)
+                    if not sliver and not _seam_has_ink(a["src"], tuple(r), tuple(b),
+                                                        a["tbs"] + g[j]["tbs"], _np):
+                        continue                      # 接缝上没有贯穿笔画＝两张本来分开的图
                     # 挂给【图落在谁的区间里更多】那道题，不是无脑挂靠前那道：
                     # 真实卷（综合实践单元.pdf 第 1 页）第 4 题"背靠背夹球"那张图
                     # 顶到 441、底到 515，而第 3、4 题的分界在 466 —— 图有 48pt 属于
@@ -1140,6 +1676,199 @@ def _stitch_across_questions(cands: list[dict[str, Any]]) -> list[dict[str, Any]
             a["q_index"] = qi
             out.append(a)
     return out
+
+
+TOP_GROW_MAX_PT = 45.0
+TOP_GROW_GAP_PT = 5.0
+TOP_GROW_MAX_W_PT = 40.0
+TOP_GROW_MAX_H_PT = 40.0
+TOP_GROW_CLUSTER_W_PT = 60.0   # 太阳 + 旁边一小段平线实测 46.1pt，40 会把太阳卡掉
+TOP_GROW_CLUSTER_H_PT = 40.0
+TOP_GROW_TOTAL_PT = 30.0      # 整条规则最多往上长多少（太阳实测 22.5pt）
+
+
+def _grow_up_small_attached(rect, src, text_boxes, span_y0, np, cv2,
+                            floor_top=0.0):
+    """裁框贴着本题上沿时，把正上方【紧挨着的小图标】吃进来（太阳/月亮/星星）。
+
+    真实卷（综合实践课.pdf 第 1 页第 1 题）：男孩举手的图在右上角，太阳在他头顶
+    上方 1.4pt；题目区间从题干第一行开始，太阳落在区间外，裁出来只剩男孩 ——
+    用户原话"太阳被裁在题干上面"。
+
+    ⚠️ 旧的 `_grow_to_ink`（四面都长）已被实测否掉：周末作业切边降了，但第三单元
+       配图 57→50、缺图 0→2。这里只长【上方】、只吃【小图标】，五条同时成立：
+         · 裁框顶本来就贴着本题上沿（不是图中间）；
+         · 正上方那一团墨【单个】≤40×40pt、【合起来】≤60×40pt，且离裁框顶 ≤5pt
+           —— 共享地图的楼/人/路是一大片墨，合起来必然超 60，不许吃；
+         · 整条规则最多长 30pt，不许连续三轮越拉越高；
+         · 不许越过上一题的底边（floor_top），跨题的一律不长大；
+         · 墨团不碰【整页】任何 OCR 文字框（原来只传本题的框，
+           共享图会把上一题的题干/大题题头吃进图里，实测造成 做不了 2、串题 4）。
+       够不着就原样返回；宁可少一个太阳，不再重演"长出去把邻图挤没"。
+    """
+    if rect[1] > float(span_y0) + 1.0:
+        return rect
+    k = DPI_PROBE / 72.0
+    x0, top, x1, y1 = rect
+    width_pt = x1 - x0
+    if width_pt < 8 or y1 - top < 8:
+        return rect
+    tbs = []
+    for tb in text_boxes or []:
+        tbs.append((float(tb["x"]), float(tb["y"]),
+                    float(tb["x"]) + float(tb.get("w") or 0),
+                    float(tb["y"]) + float(tb.get("h") or 0)))
+    limit = max(0.0, rect[1] - TOP_GROW_TOTAL_PT, float(floor_top or 0.0))
+    for _ in range(3):
+        yp1 = int(top * k)
+        yp0 = max(0, int((top - TOP_GROW_MAX_PT) * k))
+        xp0 = max(0, int(x0 * k))
+        xp1 = min(src.gray.shape[1], int(x1 * k))
+        if yp1 - yp0 < 2 or xp1 - xp0 < 2:
+            break
+        ink = (src.gray[yp0:yp1, xp0:xp1] < src.ink_thr)
+        n, _lab, stats, _cent = cv2.connectedComponentsWithStats(
+            ink.astype("uint8") * 255, connectivity=8)
+        cands = []
+        for i in range(1, n):
+            x, y, w, h, area = [int(v) for v in stats[i]]
+            if area < 20:
+                continue
+            cx0, cy0 = (xp0 + x) / k, (yp0 + y) / k
+            cx1, cy1 = (xp0 + x + w) / k, (yp0 + y + h) / k
+            if cy1 > top + 0.5 or top - cy1 > TOP_GROW_GAP_PT:
+                continue
+            if (cx1 - cx0) > TOP_GROW_MAX_W_PT or (cy1 - cy0) > TOP_GROW_MAX_H_PT:
+                continue
+            if h <= 2 and (cx1 - cx0) >= 0.80 * width_pt:
+                continue                          # 页眉横线/页脚横线
+            box = (cx0, cy0, cx1, cy1)
+            if any(_covers(box, t) >= 0.20 for t in tbs):
+                continue                          # 碰着 OCR 文字框：不是图
+            cands.append(box)
+        if not cands:
+            break
+        # 只吃"一个图标"：候选墨团合起来也得小。共享地图的楼/人/路合起来是一大片，
+        # 一旦按最上面那一块去长，就会一路把上一题的图也卷进来（实测 98pt）。
+        # ⚠️ 合起来的上限比单个墨团宽（60 vs 40）：真实太阳的圆和旁边一小段墨
+        #    （14.4×2.9pt，离上沿 0.7pt）合起来 46.1×20.8pt，按 40 卡会把太阳挡在
+        #    框外。60 仍远小于共享地图那一大片，且高度和总长（30pt）都没有放宽。
+        ux0 = min(c[0] for c in cands)
+        uy0 = min(c[1] for c in cands)
+        ux1 = max(c[2] for c in cands)
+        uy1 = max(c[3] for c in cands)
+        if (ux1 - ux0) > TOP_GROW_CLUSTER_W_PT or (uy1 - uy0) > TOP_GROW_CLUSTER_H_PT:
+            break
+        new_top = max(0.0, uy0 - 1.0)
+        if new_top < limit - 0.001:
+            break                                 # 再长就跨题/超总长
+        if new_top >= top - 0.5:
+            break
+        top = new_top
+    if top >= rect[1] - 0.5:
+        return rect
+    return (x0, top, x1, y1)
+
+
+def _looks_like_label_row(text: str) -> bool:
+    """OCR 把几个短标签（人名/气泡/表头）并成一行 —— 这不是题干行。
+
+    真实卷（综合实践单元.pdf 第 1 页第 6 题）：四个气泡被读成
+    "兰兰     站在（    )面。            小红"，贴着裁框下沿、贴左沿、带空位、
+    ≥8 字 —— 下沿那三条判据全过，旧版把它当末行题干削掉，四个气泡只剩上半截。
+    题干行是连续句子/两栏阅读材料；不会由两个以上【不含括号/运算符的短标签】
+    拼成。q23 的两栏材料与 q30 的算式空行都只有两段，不会被误拦。
+    """
+    parts = [p for p in re.split(r"\s{2,}", (text or "").strip()) if p.strip()]
+    if len(parts) < 3:
+        return False
+    short = [p for p in parts
+             if len(re.sub(r"\s+", "", p)) <= 3
+             and not re.search(r"[（(）)□×＋+－=＝]", p)]
+    return len(short) >= 2
+
+
+def _clip_stem_row_bottom(rect, text_boxes, absorbed_rows=()):
+    """裁框下沿把【本题的题干行】整行盖住 → 把下沿收到这一行的上沿。
+
+    真实卷（第三单元练习题 第 8 页第 30 题）：青蛙跳数轴在上、题干第一段紧贴
+    数轴下面，OCR 把这段行框 403.3–422.0 整行划进图，裁框下沿 430.7 ——
+    印出来图里抄了半句题目，题干又留着完整的一句（审计 含题干 第 30 题）。
+
+    只认同时满足的行（比上沿那条更紧，因为图底部常有真正的题注）：
+      · 行底贴着裁框下沿（±4pt）；
+      · 行首从图的左边界起排（≤24pt）—— 图自己的标注从图中间起；
+      · 整行 ≥80% 落在框里，≥8 个字，且是成句/带空位（"图1 平面图"这种题注不收）；
+      · 不是规则⑤吸回来的图注；收完还得有 ≥8pt 图。
+    """
+    if not text_boxes:
+        return rect
+    skip = set(absorbed_rows or ())
+    first_i = min(range(len(text_boxes)), key=lambda i: float(text_boxes[i]["y"]))
+    cut = rect
+    while True:
+        hits = []
+        for i, tb in enumerate(text_boxes):
+            if i in skip:
+                continue
+            row = (float(tb["x"]), float(tb["y"]),
+                   float(tb["x"]) + float(tb.get("w") or 0),
+                   float(tb["y"]) + float(tb.get("h") or 0))
+            if row[3] < cut[3] - STEM_BOTTOM_TOL_PT:
+                continue                              # 行底不在下沿：图内的字
+            if i != first_i and row[0] > cut[0] + STEM_LEFT_TOL_PT:
+                continue                              # 从图中间起句：图自己的标注
+            t = str(tb.get("text") or "").strip()
+            if len(re.sub(r"\s+", "", t)) < 8:
+                continue
+            if _looks_like_label_row(t):
+                continue                              # 人名/气泡/表头并成一行，不是题干
+            if not re.search(r"[。？?]|[（(]\s*[）)]", t):
+                continue                              # 成句/带空位，不是"图1"这种题注
+            if _covers(cut, row) < STEM_IN_FIG_COVER:
+                continue
+            hits.append(row)
+        if not hits:
+            break
+        top = min(r[1] for r in hits)
+        # 阅读材料/多行题干常一起压在框底：命中行（带句号/空位）往上，
+        # 把紧挨着、贴左沿、整行在框里的续行一并收掉（见 STEM_BOTTOM_JOIN_PT）。
+        # 不往上收的话，未命中的前几行会留给"图内重复文字"清理，
+        # 题干只剩半句（真实卷：三行材料删了两行，"（"没了、"）"还在）。
+        while True:
+            above = []
+            for i, tb in enumerate(text_boxes):
+                if i in skip:
+                    continue
+                row = (float(tb["x"]), float(tb["y"]),
+                       float(tb["x"]) + float(tb.get("w") or 0),
+                       float(tb["y"]) + float(tb.get("h") or 0))
+                if not (top - STEM_BOTTOM_JOIN_PT <= row[3] <= top + 2.0):
+                    continue                      # 不是紧挨在上一行
+                if row[1] >= top - 0.5:
+                    continue                      # 还是当前这一行，没得往上
+                if i != first_i and row[0] > cut[0] + STEM_LEFT_TOL_PT:
+                    continue                      # 从图中间起句：图自己的标注
+                if len(re.sub(r"\s+", "", str(tb.get("text") or ""))) < 8:
+                    continue
+                if _looks_like_label_row(str(tb.get("text") or "")):
+                    continue                      # 图里的人名/气泡标签并成一行
+                if _covers(cut, row) < STEM_IN_FIG_COVER:
+                    continue
+                above.append(row)
+            if not above:
+                break
+            nxt = min(r[1] for r in above)
+            if nxt >= top - 0.5:
+                break
+            top = nxt
+        new_bottom = min(cut[3], top - 1.0)
+        if new_bottom >= cut[3]:
+            break
+        cut = (cut[0], cut[1], cut[2], new_bottom)
+        if cut[3] - cut[1] < 8 or cut[2] - cut[0] < 8:
+            return rect                                 # 收完就没图了：宁可重复一行题干
+    return cut
 
 
 def _clip_stem_row(rect, text_boxes, absorbed_rows=()):
@@ -1196,6 +1925,128 @@ def _clip_stem_row(rect, text_boxes, absorbed_rows=()):
     return cut
 
 
+RESIDUE_COVER_MIN = 0.90
+RESIDUE_EDGE_MIN = 0.70
+RESIDUE_EDGE_SLACK_PT = 6.0
+RESIDUE_KEEP_FIRST_CHARS = 6
+
+
+def box_text_patterns(t: str) -> list[str]:
+    """OCR 行框的文字在题干里可能长什么样（正则，空白数量不计）。
+
+    行框常把题号也读进来（"2.按要求填一填。"），而拼好的题干已经把题号剥掉；
+    不归一化就永远匹配不上起手句。原样和去题号两版都试。
+    """
+    variants = [t]
+    bare = re.sub(r"^\s*\d+\s*[、.．]\s*", "", t).strip()
+    if bare and bare != t:
+        variants.append(bare)
+    return [r"\s*".join(re.escape(p) for p in v.split()) for v in variants if v.strip()]
+
+
+def residue_covered(rect, box) -> bool:
+    """这一行字是不是"基本印在配图框里"，该从题干里删掉。
+
+    主判据仍是面积 ≥90%。但真实卷（综合实践课 p1 第 3 题）有一整行地图标注
+    「教学楼 活动室 北 北」只被裁框上沿削掉 3.3pt，覆盖率 0.80 —— 字还印在图里，
+    题干却留了同样一行。所以再放宽一档：任何一边超出 ≤6pt 且面积 ≥70% 也算在图内。
+    这一档不会误伤图上方真正的题干行：那种行至少半个字高（>8pt）在框外。
+    """
+    ix0, iy0 = max(rect[0], box[0]), max(rect[1], box[1])
+    ix1, iy1 = min(rect[2], box[2]), min(rect[3], box[3])
+    if ix1 <= ix0 or iy1 <= iy0:
+        return False
+    bw = max(1e-6, box[2] - box[0])
+    bh = max(1e-6, box[3] - box[1])
+    area = (ix1 - ix0) * (iy1 - iy0) / (bw * bh)
+    if area >= RESIDUE_COVER_MIN:
+        return True
+    if area < RESIDUE_EDGE_MIN:
+        return False
+    out = max(rect[0] - box[0], rect[1] - box[1],
+              box[2] - rect[2], box[3] - rect[3], 0.0)
+    return out <= RESIDUE_EDGE_SLACK_PT
+
+
+def strip_text_inside_figures(qs: list[dict[str, Any]], spans: list[dict[str, Any]],
+                              got: dict[int, list[dict[str, Any]]]) -> int:
+    """把【已经完全落在本题配图框内】的 OCR 文字从题干里删掉，返回删掉的条数。
+
+    为什么需要：图里的标注（"加法算式:""CL 长长"）会被 OCR 当成正文行，
+    先拼进题干；裁图时这些字又被当作图的一部分裁进来 —— 同一句话印两遍。
+    判据只有一条：整行文字框 ≥90% 落在【本题自己的】配图框里。部分压住的不动：
+    那可能是图上方真正的题干，不能因为蹭到边就删。
+    """
+    by_q = {int(s.get("q_index", -1)): s for s in spans}
+    n = 0
+    for qi, imgs in got.items():
+        if not imgs or not (0 <= qi < len(qs)):
+            continue
+        q = qs[qi]
+        text = str(q.get("text") or "")
+        if not text.strip():
+            continue
+        rects = [tuple(im["rect"]) for im in imgs if im.get("rect")]
+        removed = False
+        content_seen = False
+        # ⚠️ 必须按【行在题干里的先后】找对应的那一次出现，不能一律删第一处。
+        # 真实卷（综合实践课 p1）：「辰辰从( )面走来…」后面还挂着一行图内标签「辰辰」，
+        # 删第一处会把句子里的「辰辰」删掉、把标签留在末尾 —— 题干被改坏，残渣还在。
+        # 也不能一律删最后一处：地图标签「散通道」在题干里出现过，但最后一句
+        # 「紧急疏散通道」里的那三个字是正文，删了就把题改残。
+        # 游标按 OCR 行序前进：没被框住的行只把游标推过去，不删。
+        cursor = 0
+        for b in by_q.get(qi, {}).get("text_boxes") or []:
+            t = str(b.get("text") or "").strip()
+            if not t:
+                continue
+            # OCR 两次读出来的空格数量可能不同（行框里是"CL        长长"），
+            # 按空白切段再拼成 \s* 才匹配得上；其它字符必须逐字相同。
+            # 行框可能带题号（"2.按要求填一填。"），题干已剥题号 —— 不先归一化
+            # 就永远匹配不上起手句，content_seen 翻不过来，紧跟其后的单字图注
+            # （"北""辰辰"）会被当正文删掉。见 box_text_patterns。
+            pats = box_text_patterns(t)
+            m = None
+            for p in pats:
+                m = re.compile(p).search(text, cursor)
+                if m:
+                    break
+            if not m and cursor:
+                # 多栏排版时 OCR 行的先后和拼出来的题干先后不一定一致；
+                # 游标后面找不到，就退回全文找（否则这一行永远删不掉）。
+                for p in pats:
+                    m = re.compile(p).search(text)
+                    if m:
+                        break
+            if not m:
+                continue
+            bb = (float(b["x"]), float(b["y"]),
+                  float(b["x"]) + float(b.get("w") or 0),
+                  float(b["y"]) + float(b.get("h") or 0))
+            covered = any(residue_covered(r, bb) for r in rects)
+            # 本题的起手句永远不删 —— 就算裁框把它整行盖住了，题干也得留一句
+            # 能看出在问什么的话（真实卷 第三单元 p4 第 3 题：裁框同时盖住了
+            # 起手句和"问题一/问题二"标签，全删就成空题）。
+            if not content_seen and len(re.sub(r"\s+", "", t)) >= RESIDUE_KEEP_FIRST_CHARS:
+                content_seen = True
+                cursor = m.end()
+                continue
+            if not covered:
+                cursor = m.end()
+                continue
+            cand = text[:m.start()] + text[m.end():]
+            if len(re.sub(r"\s+", "", cand)) < 2:
+                cursor = m.end()
+                continue                  # 删完就空了：宁可留残渣，不交白卷
+            text = cand
+            cursor = m.start()
+            removed = True
+            n += 1
+        if removed:
+            q["text"] = re.sub(r"[ \t]{2,}", " ", text).strip()
+    return n
+
+
 def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
                  out_dir: str, report: list[dict[str, Any]] | None = None,
                  noise: list[dict[str, Any]] | None = None
@@ -1249,6 +2100,21 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
             (float(m["x"]), float(m["y"]), float(m["x"]) + float(m.get("w") or 0),
              float(m["y"]) + float(m.get("h") or 0)))
 
+    # 向上吃小图标时的两个"墙"：整页文字框（别人的题干/题头不吃进图）、
+    # 上一题的底边（绝不跨题）。原来只传本题文字框，实测共享地图会一路吃穿上一题。
+    page_boxes: dict[int, list] = {}
+    prev_bottom: dict[int, float] = {}
+    _groups: dict[tuple[int, int], list] = {}
+    for s in spans:
+        pg_s = int(s.get("page", 1))
+        page_boxes.setdefault(pg_s, []).extend(s.get("text_boxes") or [])
+        _groups.setdefault((pg_s, int(s.get("col", 0))), []).append(s)
+    for _grp in _groups.values():
+        _grp.sort(key=lambda x: float(x["y0"]))
+        for _i, _s in enumerate(_grp):
+            prev_bottom[int(_s["q_index"])] = (
+                float(_grp[_i - 1]["y1"]) if _i else 0.0)
+
     # ── 第一遍：只测量，不裁图。家具判定要看【全部】候选，单题循环里看不到另一页 ──
     cands: list[dict[str, Any]] = []
     for s in spans:
@@ -1272,6 +2138,11 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
             # ── G) 补洞之后先剔文字残影：整块墨被某一行文字框装下的，是这行字没挖干净 ──
             if _is_text_residual([bx0, by0, bx1, by1], sgn["tb"], band, k, np):
                 drop(qi, pg, to_pt((bx0, by0, bx1, by1)), "text-residual")
+                continue
+            # ── G2) 小窄块里的墨 ≥85% 落在文字行框里 → 多行文字的残影，不是图 ──
+            if _is_text_covered_block([bx0, by0, bx1, by1], sgn.get("raw"),
+                                      sgn.get("tb") or [], k, np):
+                drop(qi, pg, to_pt((bx0, by0, bx1, by1)), "text-block")
                 continue
             # ── I) 图边被挖掉的那一行标签吸回来（否则裁出的图缺最后一行）──
             #     ⚠️ 必须在算 raw/rect 之前做：先算完再吸收，吸收就白做了（第一版实测漏吸）
@@ -1307,11 +2178,22 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
             lbx0, lby0, lbx1, lby1 = span_box(src, s)
             rect = (max(rect[0], lbx0 - 3), max(rect[1], lby0 - 3),
                     min(rect[2], lbx1 + 3), min(rect[3], lby1 + 3))
-            # ⚠️ 试过"把框外紧贴的图形墨吃进来"（_grow_to_ink）来治审计器的"切边"，
+            # ⚠️ 试过"四面把框外紧贴的图形墨吃进来"（_grow_to_ink）来治审计器的"切边"，
             #    实测两头不讨好：周末作业确实 切边 1→0、含题干 3→1，
             #    但第三单元练习题 配图 57→50、缺图 0→2、切边 2→5 ——
             #    因为长出去的框被这道题的区间边界夹住，反而把邻题的图挤没了。
-            #    结论：宁可少长 3pt，不可丢图——这条判据不接。
+            #    结论：四面长这条判据不接。只保留【上方小图标】这一种（见 K0）。
+            # ── K0) 太阳/月亮紧贴本题上沿：只向上吃 ≤40×40pt 的小图标 ────
+            if rect[1] <= lby0 + 1.0:
+                grown = _grow_up_small_attached(rect, src, page_boxes.get(pg, []),
+                                                lby0, np, cv2,
+                                                floor_top=prev_bottom.get(qi, 0.0))
+                if grown != rect:
+                    rect = grown
+                    if report is not None:
+                        report.append({"q_index": qi, "page": pg, "kept": True,
+                                       "rect": [round(v, 1) for v in rect],
+                                       "why": "grew-up"})
             # ── L) 裁框不许把「本题的起手句」整行框进图里 ─────────────
             #   照片卷/扫描卷上最常见的那种脏：图就印在题干下面，裁框上沿顶到区间
             #   第一行（＝题干第一行），印出来图里又重复一遍「2. 请为2号无人配送车…」。
@@ -1324,6 +2206,17 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
                     report.append({"q_index": qi, "page": pg, "kept": True,
                                    "rect": [round(v, 1) for v in rect],
                                    "why": "stem-clipped"})
+            # ── L2) 裁框下沿把本题【最后一行题干】盖住 → 下沿收到这一行上面 ─────
+            #     上沿管"图在题干下面"，下沿管"图在题干上面、题干紧跟着图"。
+            #     真实卷：第三单元练习题 第 8 页第 30 题，青蛙跳数轴下面紧贴
+            #     "青蛙1次跳4格,兔子1次跳( )个4格…"，裁框下沿 430.7 把整行框进图。
+            cut = _clip_stem_row_bottom(rect, s.get("text_boxes") or [], ate_rows)
+            if cut != rect:
+                rect = cut
+                if report is not None:
+                    report.append({"q_index": qi, "page": pg, "kept": True,
+                                   "rect": [round(v, 1) for v in rect],
+                                   "why": "stem-bottom-clipped"})
             if rect[2] - rect[0] < 8 or rect[3] - rect[1] < 8:
                 continue
             # ── J) 候选的墨绝大多数在【家具行】里 → 是栏目横幅，不是图 ──────
@@ -1336,6 +2229,18 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
             #    它和"图形代表数"的题图在像素上几乎同形，四条判据见 _is_answer_box_block。
             if _is_answer_box_block(rect, sgn.get("raw"), k, cx0, y0, np):
                 drop(qi, pg, rect, "answer-boxes")
+                continue
+            # ── J2b) 两个空心圆圈＝比较大小的作答圈（`50-55 ○ 3×9`）───
+            if _is_answer_circle_row(rect, sgn.get("raw"), k, cx0, y0, np):
+                drop(qi, pg, rect, "answer-circles")
+                continue
+            # ── J3) 只有括号和虚线引导的空白作答行（`读作:( )`）─────────────
+            if _is_blank_answer_row(rect, sgn.get("raw"), k, cx0, y0, np):
+                drop(qi, pg, rect, "answer-blanks")
+                continue
+            # ── J4) 文字挖掉后只剩两三条作答横线（`你会对爷爷说：“ ____ ”`）──
+            if _is_blank_rule_row(rect, sgn.get("band"), k, cx0, y0, np):
+                drop(qi, pg, rect, "answer-rules")
                 continue
             # 装订栏框【只记一笔提醒，不砍候选】：试过"盖住装订栏字样就丢"，
             # 结果横版卷右半的地铁图/路线图因为右边 45pt 正好是装订栏而被整张砍掉
@@ -1395,6 +2300,10 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
 
     # 大框已经把小框整个罩住＝同一张图裁了两遍，只留大框（见 _drop_contained）
     ok = _drop_contained(ok, report)
+
+    # 框子被吸收/缝合改过形状之后，文字残影与空白横线要按最终形状复检一次
+    # （见 _recheck_merged；候选阶段看到的是碎片，两个真实缺陷都在这一步之前长歪了）
+    ok = _recheck_merged(ok, report, np, cv2)
 
     # 限量必须【先按面积挑、再按阅读顺序排】。按 y 直接截断会出这种事：
     # 第三单元练习题 第 5 题的 453×109 大图被三个 58×46 的小块挤掉，

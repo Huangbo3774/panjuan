@@ -190,6 +190,15 @@ M = [
              "    return len(s) <= 16 and not Q_NUM_RE.match(s) and any(k in s for k in STAGE_KW)",
              "    return len(s) <= 24 and any(k in s for k in STAGE_KW)",
              "教辅栏目横幅是家具不是配图"),
+    # ---- 第十二轮（周末作业 第 3 页：页眉广告拼成无题号假题 + 581×77 废图）----
+    Mutation("关·页眉扫码批改广告不认（拼成无题号假题、裁出废图）", RULES,
+             'NOISE_HEADER_RE = re.compile(r"(拍照批改|互动讲解|智能错题本|教材变式练)")',
+             'NOISE_HEADER_RE = re.compile(r"(?!x)x")',
+             "页眉扫码批改广告不是题目"),
+    Mutation("过·页眉判据把「实际用时」也吞掉（正常题干被抹）", RULES,
+             'NOISE_HEADER_RE = re.compile(r"(拍照批改|互动讲解|智能错题本|教材变式练)")',
+             'NOISE_HEADER_RE = re.compile(r"(拍照批改|互动讲解|智能错题本|教材变式练|实际用时)")',
+             "页眉扫码批改广告不是题目"),
     # ---- 第九轮（用户截图：乘法题被判成判断题；图片选项的选择题没有尺在量）----
     Mutation("旧·判断信号带光秃秃的 ×（所有乘法题被判判断题）", RULES,
              'JUDGE_HINT = ("对的打", "正确的打", "错的打", "判断", "对的画", "正确的画",\n'

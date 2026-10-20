@@ -22,7 +22,7 @@ from .store import STORE
 from ..paths import VAR, DATA
 from ..extractor import lines as L
 from ..extractor import ocr as OC
-from ..extractor.figures import find_figures
+from ..extractor.figures import find_figures, strip_text_inside_figures
 from ..extractor.rules import extract, flatten_questions
 from ..grading.engine import grade, make_uid
 from ..storage import db
@@ -97,7 +97,12 @@ def api_parse(id_str: str) -> dict:
         for qi, imgs in got.items():
             if 0 <= qi < len(qs):
                 qs[qi]["images"] = imgs
+        # 图里的标注行先被 OCR 拼进题干、又被裁进图里 → 同一句话印两遍
+        # （判据与真实反例见 docs 14.12-F）。
+        n_res = strip_text_inside_figures(qs, spans, got)
         fig_note = f"，裁出配图 {sum(len(v) for v in got.values())} 张"
+        if n_res:
+            fig_note += f"，清掉图内重复文字 {n_res} 行"
         # ── 卷面上【画出来】的图形符号（★＋★＝20 这种）：OCR 只认字，整行会读成
         #    "=20 39" 的残渣。这里按轮廓把算式还原出来，单独存 symbols 一列 ——
         #    不并进题干：家长必须能分清哪半句是卷面上读到的、哪半句是系统还原的。
