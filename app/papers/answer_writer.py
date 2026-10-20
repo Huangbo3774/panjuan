@@ -252,6 +252,7 @@ def _paint(c: rl_canvas.Canvas, questions: list[dict], opt: LayoutOptions, title
         alist = [str(a) for a in alist]
         qtype = (q.get("qtype") or "unknown").lower()
         y0 = fl.y
+        figures_done = False
 
         if qtype == "choice" and q.get("options"):
             fl.text(f"{prefix}{stem}", fs, indent=indent, gap_after=1)
@@ -285,8 +286,22 @@ def _paint(c: rl_canvas.Canvas, questions: list[dict], opt: LayoutOptions, title
         else:
             fl.text(f"{prefix}{stem}", fs, indent=indent, gap_after=1)
             body = " ".join(alist).strip()
+            # 图形算式的整行原图【就是题干的一部分】（番茄/黄瓜 OCR 读不出来），
+            # 必须紧贴题干印；先印两条作答横线再把原图放下面，孩子会以为上面
+            # 那行残缺的"如果 =16"才是题目。其余题的图仍按老顺序排在作答行后。
+            graphic_img = any(bool(im.get("graphic")) for im in (q.get("images") or []))
             if body:
                 fl.text("答：" + body, fs, indent=indent + 6, gap_after=1)
+            elif graphic_img:
+                _draw_figures(c, q, opt, fl, indent, fig_dir=fig_dir, stats=stats)
+                figures_done = True
+                for _ in range(2):
+                    fl.need(fl.opt.leading + 6)
+                    c.setStrokeColor(HexColor("#BBBBBB"))
+                    c.setLineWidth(0.5)
+                    c.line(opt.margin_left + indent + 6, fl.y - fs,
+                           A4_W - opt.margin_right, fl.y - fs)
+                    fl.y -= fl.opt.leading + 6
             else:
                 for _ in range(2):
                     fl.need(fl.opt.leading + 6)
@@ -307,7 +322,8 @@ def _paint(c: rl_canvas.Canvas, questions: list[dict], opt: LayoutOptions, title
             for s in syms:
                 fl.text(s, fs - 1, indent=indent + 8, gap_after=0)
 
-        _draw_figures(c, q, opt, fl, indent, fig_dir=fig_dir, stats=stats)
+        if not figures_done:
+            _draw_figures(c, q, opt, fl, indent, fig_dir=fig_dir, stats=stats)
         if graded and not alist:
             # 没写的题要显式印「未作答」：否则家长分不清"孩子没写"和"系统漏印了"
             fl.text("（未作答）", fs - 1, indent=indent + 8, gap_after=0)

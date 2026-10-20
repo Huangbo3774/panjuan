@@ -23,10 +23,10 @@
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 from typing import Any, Callable
-
 from .rules import is_furniture_text
 
 # ── "什么算墨"的门限：每页按 Otsu 自适应，夹在 [150, 215] ──────────────
@@ -91,6 +91,98 @@ MARGIN_MAX_W_PT = 60.0
 # 真图不会从 0 开始：±3pt 外扩要碰到 x=0，原图必须已经印在页边上。
 MARGIN_FLUSH_W_PT = 100.0
 MARGIN_MIN_ASPECT = 1.5
+# ── 页边装饰 / 扫描阴影 ────────────────────────────────────────────────
+# 彩色练习册在左右页边印波浪边框（周末作业(1).pdf 第 4 页：蓝边 + 装订阴影），
+# 灰度 120–188 之间，会被 ink_thr 算成"墨"，再经膨胀/近邻合并就连进旁边的表格，
+# 裁出来的图右边多一条波浪边、左边多一条 61pt 的"边框 + 题干碎字"。
+# 判据（十份材料逐页逐列实测，var/_diag_edge_profile.py）：
+#   ① 外 30pt 的弱墨占比 ≥0.06 —— 只有真的有装饰才动手；空白页边是 0.000
+#      （实测触发：周末 p4 L/R 0.187/0.260、第三单元 p2 L 0.102、p5 R 0.088、
+#        综合实践课 p1 R 0.079；同一批的空白页边全部 ≤0.057）
+#   ② 从页边向内扫到第一列"真墨"（<120，且一列 ≥10px）为止，这段叫死区；
+#      死区里真墨占比 ≤0.01 —— 有正文/表格线就立刻停，不会吃进内容
+#      （周末 p4 死区 47.5/47.5pt，真墨占比 0.0000/0.0001）
+#   ③ 死区弱墨占比 ≤0.30 —— 一大片淡色插画不算装饰，不许整段抹掉
+EDGE_SCAN_PT = 60.0
+EDGE_DECOR_BAND_PT = 30.0
+EDGE_DECOR_MIN_SHARE = 0.06
+EDGE_DARK_LEVEL = 120
+EDGE_DARK_MIN_PX = 10
+EDGE_DEAD_MIN_PT = 8.0
+EDGE_DEAD_DARK_MAX = 0.01
+EDGE_DEAD_WEAK_MAX = 0.30
+# 候选框罩住一整行【页面家具】文字（页脚/扫码广告/栏目横幅）≥ 这个比例 → 不是题图。
+# 真卷证据：周末作业(1) 第 1 页 q1 巨框 [63,255,573,773] 含"智慧加油站"，
+# 第 3 页底部卡 [0,711,586,885]、第 4 页 q5 卡 [0,549,586,855] 含"夸克扫描王/极速扫描；
+# 其余九份材料 0 命中（十份材料全量复跑，见 var/_diag_furniture_rows.py）。
+FURNITURE_ROW_COVER_MIN = 0.50
+FURNITURE_ROW_MIN_W_PT = 24.0
+# 小图把【两整行以上】文字从右边切断 → 是文字残片，不是图。
+# 综合实践单元(1).pdf 第 2 页第 19 题：64×31 的框里只有两行"8505的人向( )…"的
+# 左半截 + 一个蓝色装饰，右边 72pt 的字全在框外；这种框裁出来谁都看不懂。
+# 只认"行从框内开始、伸到框外 ≥20pt、竖向 ≥60% 落在框内"的行，且要 ≥2 行。
+# 十份材料全量读数（var/_diag_cut_lines.py）：
+#   命中 2 行的只有这一张；命中 1 行的有 5 张，全部是带气泡/地图标签的真图
+#   （q4 对话气泡、q9/q11 路线图、q10 地图），所以门槛必须是 2 行。
+TEXT_CUT_MIN_ROWS = 2
+TEXT_CUT_MIN_CHARS = 8
+TEXT_CUT_OVER_PT = 20.0
+TEXT_CUT_MIN_VSHARE = 0.60
+# 二维码：教辅页脚的"扫码看讲解"是页上家具，不是题图。
+# 用 OpenCV 的专用检测器，只在 24–200pt 的近似方块上跑（十份材料实测：
+# 周末作业 p1 页脚二维码命中，其余 9 张保留图全部不命中）。
+QR_MIN_PT = 24.0
+QR_MAX_PT = 200.0
+QR_ASPECT_MIN = 0.60
+# 检测器会在"金鱼群"这种高对比小图案上误报（第三单元练习题 p5 实测：detect=True、
+# 但 decode 为空）。真二维码是黑白模块，暗墨占比 0.24–0.27；金鱼图只有 0.05。
+# 判据取 detect + 暗墨占比 ≥0.15，两头都留足余量。
+QR_DARK_MIN = 0.15
+# ── 整题截图：文字归题干、图里只留真正的图形 ─────────────────────────────
+# 用户原话："整题截图导致的「含题干 2」…下一轮做图文分离"。
+# 达标A q1 是故事题整块截图：5 行题干全在框里，文字块下面只剩 15pt 纸边
+#   → 整框不要（题干里的字一个不少，pinyin/空格都还在）。
+# 达标B q8 是作文题截图：提示语 + 词语提示 + 写作格；文字块下面还有 200pt 格子
+#   → 把顶部文字块切掉，只留格子（否则打印出来没有作答区）。
+# 判据要同时满足 ≥2 行、其中一行 ≥15 字：图内的对话气泡/地图标签都是短句，
+# 且题干起手句通常印在图框上方，不会整行落进图里。十份材料实测只有这两张命中。
+ECHO_ROW_COVER_MIN = 0.80
+ECHO_ROW_MIN_CHARS = 8
+ECHO_SENTENCE_MIN_CHARS = 15
+ECHO_MIN_ROWS = 2
+ECHO_CLEAN_MIN_PT = 60.0
+ECHO_TRIM_GAP_PT = 2.0
+# 图被栏边界切断：竖线/表格伸进隔壁【没有题目】的页边带时，把连续的墨接回来。
+# 达标B q8 的写作格右框线在 820pt、栏界 810.9pt，裁出来缺 6pt，
+# 审计报"右+2795px"。只接"从框边起连续有墨"的条带，最多 40pt；
+# 隔壁栏只要还有题，栏界仍是硬墙（横版两张 A4 的越栏事故不能再出现）。
+EDGE_EXTEND_MAX_PT = 40.0
+EDGE_EXTEND_GAP_PX = 1
+# ── 图形算式整行：题干行里夹着"一个汉字大"的图标（番茄/黄瓜/苹果），OCR 读不出它们 ──
+# 第三单元练习题 p7 第 31 题实测：一行 7 个图标（23–27×25–30pt，填充率 0.67–0.78），
+# OCR 只读出"如果            =16,            =16,那么"——两处 12 个空格就是图标位置。
+# 按普通图形裁，图标先被 OCR 行框从中间挖断，再裁出来只剩上下两截碎片；
+# 打印出来题干是"如果 =16, =16,那么"，图是几块番茄皮，这道题没法做。
+# 处理：命中"整行图形算式"时，不再按墨块裁，而是把这一整行（文字+图标+括号）
+# 原样裁成一张【原图】，挂在题下；题干里补一句"图形见原图"。
+# 这样孩子看到的是卷面原样，系统不猜图标是什么、更不编一行算式。
+# 判据（十份材料全量扫过，只有第 31 题命中；q11 的空心方框/椭圆填充率 0.1–0.3 被挡）：
+#   ① 同一 OCR 行里至少 3 个"字符级大图标"：短边 ≥18pt、长边 ≤42pt、
+#      面积 ≥600px@100dpi、填充率 ≥0.50；
+#   ② 这一行 OCR 文本里带 =，且有 ≥4 个连续空格的缺口（图标被 OCR 跳过的地方）；
+#   ③ 图标横向铺开 ≥120pt；整块高 ≤120pt；块里不许再罩住别的 OCR 行。
+GRAPHIC_ICON_MIN_PT = 18.0
+GRAPHIC_ICON_MAX_PT = 42.0
+GRAPHIC_ICON_MIN_AREA_PX = 600
+GRAPHIC_ICON_FILL_MIN = 0.50
+GRAPHIC_ICON_MAX_ASPECT = 2.2
+GRAPHIC_EQ_MIN_ICONS = 3
+GRAPHIC_EQ_MIN_GAP = 4
+GRAPHIC_EQ_MIN_RUNS = 1
+GRAPHIC_EQ_SPREAD_PT = 120.0
+GRAPHIC_EQ_TAIL_PT = 120.0
+GRAPHIC_EQ_CONT_PT = 55.0
+GRAPHIC_EQ_MAX_H_PT = 120.0
 # 文字残影判定：容差 = 该行文字框高度 × 这个倍数（容差是"一行高"，不是固定像素，
 # 因为 OCR 行框的偏差量级就是一行高）
 TEXT_RESIDUAL_LINE_PAD = 1.0
@@ -284,9 +376,44 @@ def _ink_threshold(gray) -> int:
         return INK_THR_FIXED
 
 
+def _edge_dead_px(gray, ink_thr: int, k: float, np, side: str) -> int:
+    """从物理页边向内量出"只有装饰/阴影"的宽度（像素）；0＝不动。
+
+    只有在【外 30pt 确实有一片弱墨】时才启动（空白页边占比 0.000，不值得动刀），
+    然后逐列找第一列"真墨"（<120 且该列 ≥10 个像素）—— 那一列就是内容的起点。
+    死区里真墨必须近乎为零、弱墨不能铺满，否则说明是一张淡色插画，整段都不碰。
+    阈值与十份材料的实测读数见常量区注释。
+    """
+    h, w = gray.shape
+    span = min(w, int(EDGE_SCAN_PT * k))
+    band = min(span, int(EDGE_DECOR_BAND_PT * k))
+    if span < int(EDGE_DEAD_MIN_PT * k) or band < 4:
+        return 0
+    outer = gray[:, :band] if side == "left" else gray[:, w - band:]
+    if float((outer < ink_thr).sum()) / max(1, outer.size) < EDGE_DECOR_MIN_SHARE:
+        return 0
+    cols = gray[:, :span] if side == "left" else gray[:, w - span:]
+    strong = np.nonzero((cols < EDGE_DARK_LEVEL).sum(axis=0) >= EDGE_DARK_MIN_PX)[0]
+    if side == "left":
+        dead = int(strong[0]) if strong.size else span
+        sub = cols[:, :dead]
+    else:
+        dead = int(span - 1 - strong[-1]) if strong.size else span
+        sub = cols[:, span - dead:] if dead > 0 else cols[:, :0]
+    if dead < int(EDGE_DEAD_MIN_PT * k):
+        return 0
+    area = int(sub.size)
+    if area <= 0:
+        return 0
+    if float((sub < EDGE_DARK_LEVEL).sum()) / area > EDGE_DEAD_DARK_MAX:
+        return 0
+    if float((sub < ink_thr).sum()) / area > EDGE_DEAD_WEAK_MAX:
+        return 0
+    return dead
+
+
 class PageSource:
     """一页源材料：统一成"pt 坐标 + 可栅格化 + 可裁剪"。"""
-
     def __init__(self, page_no: int, width_pt: float, height_pt: float,
                  gray: Any, crop: Callable[[tuple[float, float, float, float], str], None],
                  ink_thr: int | None = None):
@@ -547,12 +674,38 @@ def _scan(src: PageSource, s: dict[str, Any], np, cv2) -> dict[str, Any] | None:
         return None
     band = (src.gray[y0:y1, cx0:cx1] < src.ink_thr)
     raw_band = band.copy()           # 挖字之前的墨：碎片判定要用（见 _row_fragments）
+    # ── 页边装饰/扫描阴影：从【物理页边】量死区，再映射回探测带 ──────────
+    #    必须对 band 和 raw_band 同时生效：只看 band 的话，raw 里的波浪边
+    #    仍会参与 _wall_ink_share / 文字覆盖判定，等于没删。
+    dead_l = _edge_dead_px(src.gray, src.ink_thr, k, np, "left") if cx0 <= 0 else 0
+    # ⚠️ 不能用 `cx1 >= w_img`：span 的 x1 是 595.2pt，乘 k 取整后是 826，
+    #    比图像宽 827 少 1px —— 判据看似等价，实测直接让右页边抑制失效
+    #    （周末作业 p4 的表格框仍伸到 595pt，波浪边原样带进成品）。
+    dead_r = (_edge_dead_px(src.gray, src.ink_thr, k, np, "right")
+              if cx1 >= w_img - 2 else 0)
+    if dead_l:
+        dl = max(0, dead_l - cx0)
+        if dl:
+            band[:, :min(band.shape[1], dl)] = False
+            raw_band[:, :min(raw_band.shape[1], dl)] = False
+    if dead_r:
+        # 死区从【物理页边】向内算；探测带可能比页边早 1–2px 结束，要换算回带内坐标。
+        dr0 = max(0, (w_img - dead_r) - cx0)
+        if dr0 < band.shape[1]:
+            band[:, dr0:] = False
+            raw_band[:, dr0:] = False
     hole = np.zeros(band.shape, dtype=bool)      # 【图里的标注】挖的洞 —— 补洞合并只认这个
     punched = np.zeros(band.shape, dtype=bool)   # 所有文字行都要从墨里挖掉（含页脚/logo）
     wall = np.zeros(band.shape, dtype=bool)      # 印刷家具占的行：连通域不许膨胀跨过去
     tb_px: list[list[float]] = []
     tb_wall: list[bool] = []
     for tb in s.get("text_boxes", []):
+        # 落在页边死区里的 OCR 行是装饰被误读（波浪边常被读成一行"字"）：
+        # 不挖、不当墙、更不许当图注吸回裁图。
+        if dead_l and float(tb["x"]) + float(tb["w"]) <= dead_l / k + 1.0:
+            continue
+        if dead_r and float(tb["x"]) >= (w_img - dead_r) / k - 1.0:
+            continue
         ty0 = max(0, int(float(tb["y"]) * k) - y0 - 2)
         ty1 = min(band.shape[0], int((float(tb["y"]) + float(tb["h"])) * k) - y0 + 2)
         tx0 = max(0, int(float(tb["x"]) * k) - cx0 - 2)
@@ -1018,6 +1171,8 @@ def _stitch_side_by_side(cands: list[dict[str, Any]],
                     break
                 for j in range(i + 1, len(g)):
                     a, b = g[i], g[j]
+                    if a.get("graphic") or b.get("graphic"):
+                        continue          # 整行原图已经是最完整的裁框，不再和别人缝
                     if not _side_adjacent(a["rect"], b["rect"]):
                         continue
                     r = [min(a["rect"][0], b["rect"][0]), min(a["rect"][1], b["rect"][1]),
@@ -1061,6 +1216,9 @@ def _drop_contained(cands: list[dict[str, Any]],
         keep: list[dict[str, Any]] = []
         for c in sorted(g, key=lambda x: -((x["rect"][2] - x["rect"][0])
                                           * (x["rect"][3] - x["rect"][1]))):
+            if c.get("graphic"):
+                keep.append(c)          # 整行原图是唯一该留的那张，不许被"罩住"吃掉
+                continue
             r = c["rect"]
             area = max(0.0, r[2] - r[0]) * max(0.0, r[3] - r[1])
             swallowed = False
@@ -1108,6 +1266,9 @@ def _recheck_merged(cands: list[dict[str, Any]], report: list | None,
     out: list[dict[str, Any]] = []
     cache: dict[tuple, Any] = {}          # 同题的多张候选共用一份 _scan（别重复扫整条带）
     for c in cands:
+        if c.get("graphic"):
+            out.append(c)                 # 整行原图本来就含文字行，复检的"文字残影"尺对它不适用
+            continue
         src, rect = c.get("src"), c["rect"]
         band_box = c.get("band") or []
         inside = (len(band_box) == 4
@@ -1188,6 +1349,386 @@ def _is_margin_strip(rect: tuple[float, float, float, float], page_w: float) -> 
     if w > MARGIN_MAX_W_PT or h < MARGIN_MIN_ASPECT * w:
         return False
     return rect[0] <= MARGIN_EDGE_PT or rect[2] >= page_w - MARGIN_EDGE_PT
+
+
+def _is_text_cut_strip(rect: tuple[float, float, float, float],
+                       page_boxes: list[dict[str, Any]]) -> bool:
+    """小框把两整行以上的文字从右边切断 → 文字残片（见常量区 q19 的实测）。"""
+    if rect[2] - rect[0] > 90.0 or rect[3] - rect[1] > 50.0:
+        return False
+    hits = 0
+    for tb in page_boxes:
+        text = re.sub(r"\s+", "", str(tb.get("text") or ""))
+        if len(text) < TEXT_CUT_MIN_CHARS:
+            continue
+        x0, y0 = float(tb["x"]), float(tb["y"])
+        x1, y1 = x0 + float(tb["w"]), y0 + float(tb["h"])
+        if y1 <= y0:
+            continue
+        v = min(rect[3], y1) - max(rect[1], y0)
+        if v < TEXT_CUT_MIN_VSHARE * (y1 - y0):
+            continue
+        if rect[0] <= x0 < rect[2] - 10.0 and x1 > rect[2] + TEXT_CUT_OVER_PT:
+            hits += 1
+            if hits >= TEXT_CUT_MIN_ROWS:
+                return True
+    return False
+
+
+def _furniture_row_cover(rect: tuple[float, float, float, float],
+                         page_boxes: list[dict[str, Any]]) -> tuple[float, str]:
+    """候选框罩住某一行【页面家具】文字（页脚/扫码广告/栏目横幅）的比例。
+
+    返回 (最大比例, 那行文字)。只看"像一行字"的框（宽 ≥24pt），
+    标点、页码两侧的装饰点不算。
+    """
+    best: tuple[float, str] = (0.0, "")
+    for tb in page_boxes:
+        text = str(tb.get("text") or "")
+        if not is_furniture_text(text):
+            continue
+        bx0, by0 = float(tb["x"]), float(tb["y"])
+        bx1, by1 = bx0 + float(tb["w"]), by0 + float(tb["h"])
+        if bx1 - bx0 < FURNITURE_ROW_MIN_W_PT or by1 - by0 <= 0:
+            continue
+        iw = min(rect[2], bx1) - max(rect[0], bx0)
+        ih = min(rect[3], by1) - max(rect[1], by0)
+        if iw <= 0 or ih <= 0:
+            continue
+        share = (iw * ih) / ((bx1 - bx0) * (by1 - by0))
+        if share > best[0]:
+            best = (share, text)
+    return best
+
+
+def _is_qr_block(rect: tuple[float, float, float, float], src, k: float,
+                 qr_det) -> bool:
+    """近似方块、24–200pt，且 OpenCV 真能识别出二维码 → 页脚扫码图，不是题图。"""
+    if qr_det is None:
+        return False
+    w = rect[2] - rect[0]
+    h = rect[3] - rect[1]
+    if not (QR_MIN_PT <= w <= QR_MAX_PT and QR_MIN_PT <= h <= QR_MAX_PT):
+        return False
+    if w / max(1e-6, h) < QR_ASPECT_MIN or h / max(1e-6, w) < QR_ASPECT_MIN:
+        return False
+    px0 = max(0, int(rect[0] * k))
+    py0 = max(0, int(rect[1] * k))
+    px1 = min(src.gray.shape[1], int(rect[2] * k))
+    py1 = min(src.gray.shape[0], int(rect[3] * k))
+    if px1 - px0 < 20 or py1 - py0 < 20:
+        return False
+    sub = src.gray[py0:py1, px0:px1]
+    if float((sub < EDGE_DARK_LEVEL).mean()) < QR_DARK_MIN:
+        return False
+    try:
+        ok, _pts = qr_det.detect(sub)
+    except Exception:
+        return False
+    return bool(ok)
+
+
+def _ink_comps_pt(src, box: tuple[float, float, float, float], np, cv2
+                  ) -> list[dict[str, float]]:
+    """页面 pt 矩形里的连通域 → pt 坐标/面积/填充率。只读 src.gray，不改任何状态。"""
+    k = DPI_PROBE / 72.0
+    x0, y0, x1, y1 = box
+    px0 = max(0, int(x0 * k))
+    py0 = max(0, int(y0 * k))
+    px1 = min(src.gray.shape[1], int(x1 * k))
+    py1 = min(src.gray.shape[0], int(y1 * k))
+    if px1 - px0 < 5 or py1 - py0 < 5:
+        return []
+    ink = (src.gray[py0:py1, px0:px1] < src.ink_thr).astype(np.uint8)
+    n, _lab, stats, _cent = cv2.connectedComponentsWithStats(ink, 8)
+    out: list[dict[str, float]] = []
+    for i in range(1, n):
+        x, y, w, h, area = [int(v) for v in stats[i]]
+        if w < 2 or h < 2:
+            continue
+        out.append({"x": (px0 + x) / k, "y": (py0 + y) / k,
+                    "w": w / k, "h": h / k, "area": float(area),
+                    "fill": area / float(max(1, w * h))})
+    return out
+
+
+def _is_inline_icon(c: dict[str, float]) -> bool:
+    """"一个汉字大"的实心图标。空心方框/椭圆（作答框）填充率不够，进不来。"""
+    w, h = c["w"], c["h"]
+    lo, hi = min(w, h), max(w, h)
+    return (lo >= GRAPHIC_ICON_MIN_PT and hi <= GRAPHIC_ICON_MAX_PT
+            and hi / max(1e-6, lo) <= GRAPHIC_ICON_MAX_ASPECT
+            and c["area"] >= GRAPHIC_ICON_MIN_AREA_PX
+            and c["fill"] >= GRAPHIC_ICON_FILL_MIN)
+
+
+def _graphic_equation_block(src, s: dict[str, Any], np, cv2
+                            ) -> dict[str, Any] | None:
+    """题干行里夹着多个大图标（图形算式）→ 返回整行原图框；不是这种行返回 None。
+
+    只回答"这一行该不该整行成图"，不猜图标是什么、也不重建算式。
+    参数与 `_scan` 同源（同一份 src.gray / ink_thr），避免两把尺读两张图。
+    """
+    tbs = [tb for tb in (s.get("text_boxes") or [])
+           if str(tb.get("text") or "").strip()]
+    anchor = None
+    best = -1.0
+    for tb in tbs:
+        t = str(tb.get("text") or "")
+        if "=" not in t and "＝" not in t:
+            continue
+        runs = [len(m.group(0)) for m in re.finditer(r"\s{2,}", t)]
+        long_runs = [g for g in runs if g >= GRAPHIC_EQ_MIN_GAP]
+        if len(long_runs) < GRAPHIC_EQ_MIN_RUNS:
+            continue
+        score = len(long_runs) * 10.0 + len(t)         # 缺口越多越像；同分取长行
+        if score > best:
+            best, anchor = score, tb
+    if anchor is None:
+        return None
+    tb = anchor
+    tx0, ty0 = float(tb["x"]), float(tb["y"])
+    tw, th = float(tb.get("w") or 0), float(tb.get("h") or 0)
+    if tw < 40.0 or th < 8.0:
+        return None
+    # 搜索带：以 OCR 行为中心。向上 24pt 够到图标顶（实测最高 5.4pt）；
+    # 向右留 120pt 给 OCR 行框没覆盖到的尾巴（第 31 题"🍅=( )，"在行框外 107pt）。
+    box = (max(0.0, tx0 - 8.0), max(0.0, ty0 - 24.0),
+           min(src.width_pt, tx0 + tw + GRAPHIC_EQ_TAIL_PT),
+           min(src.height_pt, ty0 + th + 24.0))
+    comps = _ink_comps_pt(src, box, np, cv2)
+    line_icons: list[dict[str, float]] = []
+    for c in comps:
+        if not _is_inline_icon(c):
+            continue
+        ov = min(c["y"] + c["h"], ty0 + th) - max(c["y"], ty0)
+        if ov < 0.3 * min(c["h"], th):
+            continue
+        line_icons.append(c)
+    if len(line_icons) < GRAPHIC_EQ_MIN_ICONS:
+        return None
+    ix0 = min(c["x"] for c in line_icons)
+    ix1 = max(c["x"] + c["w"] for c in line_icons)
+    if ix1 - ix0 < GRAPHIC_EQ_SPREAD_PT:
+        return None
+    # ── 续行：紧贴下一行、横向上落在图标带附近、且不在任何 OCR 行框里的图标 ──
+    #    第 31 题第二行"🥬=( )。"整行只有图标和括号，OCR 一行都没读出来。
+    low = max(c["y"] + c["h"] for c in line_icons)
+    cont: list[dict[str, float]] = []
+    cont_box = (max(0.0, ix0 - 40.0), low + 1.0,
+                min(src.width_pt, ix1 + 40.0),
+                min(float(s.get("y1") or src.height_pt), low + GRAPHIC_EQ_CONT_PT))
+    for c in _ink_comps_pt(src, cont_box, np, cv2):
+        if _is_inline_icon(c) and c["y"] >= low + 1.0:
+            cont.append(c)
+    # ── OCR 行框右边的尾巴：只认与这一行同高的墨，最多 120pt ──
+    tail_x1 = tx0 + tw
+    for c in comps:
+        if c["x"] < tx0 + tw - 1.0 or c["x"] > tx0 + tw + GRAPHIC_EQ_TAIL_PT:
+            continue
+        ov = min(c["y"] + c["h"], ty0 + th) - max(c["y"], ty0)
+        if ov > 0:
+            tail_x1 = max(tail_x1, c["x"] + c["w"])
+    icons = line_icons + cont
+    x0 = max(0.0, min(tx0, min(c["x"] for c in icons)) - 4.0)
+    x1 = min(src.width_pt,
+             max(tx0 + tw, tail_x1, max(c["x"] + c["w"] for c in icons)) + 4.0)
+    y0 = max(0.0, min(c["y"] for c in icons) - 3.0)
+    y1 = min(float(s.get("y1") or src.height_pt),
+             max(c["y"] + c["h"] for c in icons) + 3.0)
+    if y1 - y0 < 20.0 or y1 - y0 > GRAPHIC_EQ_MAX_H_PT:
+        return None
+    if x1 - x0 < GRAPHIC_EQ_SPREAD_PT:
+        return None
+    # 块里不许再罩住别的 OCR 行：那说明它吃到了上一题/下一题的正文。
+    for other in tbs:
+        if other is tb:
+            continue
+        ox0, oy0 = float(other["x"]), float(other["y"])
+        ox1 = ox0 + float(other.get("w") or 0)
+        oy1 = oy0 + float(other.get("h") or 0)
+        iw = min(x1, ox1) - max(x0, ox0)
+        ih = min(y1, oy1) - max(y0, oy0)
+        if iw > 0 and ih > 0 and iw * ih >= 0.5 * max(1.0, (ox1 - ox0) * (oy1 - oy0)):
+            return None
+    return {"rect": (x0, y0, x1, y1), "n_icons": len(icons),
+            "n_rows": 1 + (1 if cont else 0), "anchor": tb, "span": s}
+
+
+def _echo_full_sentence(raw: str, stem: str) -> bool:
+    """这一行里真有一句 ≥15 字的成句（以。？！结尾），而且题干里原样找得到。"""
+    t = re.sub(r"\s+", "", str(raw or ""))
+    t = re.sub(r"^\d{1,3}[、.．]", "", t)
+    for m in re.finditer(r"[^。！？]+[。！？]", t):
+        seg = m.group(0)
+        if len(seg) >= ECHO_SENTENCE_MIN_CHARS and seg in stem:
+            return True
+    return False
+
+
+def _stem_echo_edit(rect: tuple[float, float, float, float],
+                    text_boxes: list[dict[str, Any]],
+                    q_text: str, src=None, k: float = 100 / 72.0
+                    ) -> tuple[tuple[float, float, float, float] | None, str | None]:
+    """整题截图 → 图文分离：切掉题干文字块，只留真正的图形。
+
+    返回 `(新框, None)` / `(原框, None)` / `(None, "stem-screenshot")`。
+    只在【裁框盖住了本题第一句成句题干】且还盖住 ≥2 行时动手 ——
+    这一条把"整题截图"和"带填空的诗歌/题干盒"分开：
+      · 达标A q1：起手句「下面是真真同学…（9分）」在框里 → 整题截图；
+      · 达标A q3：起手句「2.用\画去不正确的字。（8分）」在框上方、没被盖住，
+        框里只是诗歌和作答括号 → 这是真图，不许动。
+    文字块上面或下面必须有 ≥60pt 的干净区域，否则整框不要。
+    切上沿时贴着【文字块下方的第一行墨】切（不是固定留 2pt）：达标B q8
+    词语提示的墨比 OCR 行框低 1px，留 2pt 会让审计的"切边"仍报 53px。
+    """
+    stem = re.sub(r"\s+", "", str(q_text or ""))
+    if not stem:
+        return rect, None
+    first: tuple[float, float, float, float] | None = None
+    first_raw = ""
+    rows: list[tuple[tuple[float, float, float, float], int]] = []
+    for tb in text_boxes or []:
+        t = re.sub(r"\s+", "", str(tb.get("text") or ""))
+        # 行框常带题号（"2.用\画去不正确的字"），题干已经剥掉题号 ——
+        # 不归一化，q3 的起手句就永远匹配不上，第一句会错认成诗歌里的句子。
+        t = re.sub(r"^\d{1,3}[、.．]", "", t)
+        if len(t) < ECHO_ROW_MIN_CHARS or t not in stem:
+            continue
+        bb = (float(tb["x"]), float(tb["y"]),
+              float(tb["x"]) + float(tb.get("w") or 0),
+              float(tb["y"]) + float(tb.get("h") or 0))
+        raw = str(tb.get("text") or "")
+        if (first is None and len(t) >= ECHO_SENTENCE_MIN_CHARS
+                and re.search(r"[。？！]|[（(]\s*[）)]", raw)):
+            first = bb
+            first_raw = raw
+        if _covers(rect, bb) >= ECHO_ROW_COVER_MIN:
+            rows.append((bb, len(t)))
+    if first is None or _covers(rect, first) < ECHO_ROW_COVER_MIN:
+        return rect, None
+    # ⚠️ 起手行还必须是【一整句题干】，不能只是"有括号、够长"：
+    #    两张综合实践卷的公园地图与子题并排（竹林/喷泉/游乐场 + 1.喷泉的西面是…），
+    #    OCR 把地图标签和子题读成同一行，框住了"（ ）"却拼不出一句完整话。
+    #    这两张图的起手行里没有 ≥15 字的成句，而是碎标签 —— 它们是【图】，
+    #    扔了就没法判断东西南北。达标A q1 的「下面是真真同学…的故事。」才是截图。
+    if not _echo_full_sentence(first_raw, stem):
+        return rect, None
+    if len(rows) < ECHO_MIN_ROWS:
+        return rect, None
+    top = min(bb[1] for bb, _n in rows)
+    bottom = max(bb[3] for bb, _n in rows)
+    regions: list[tuple[str, float, float]] = []
+    if top - rect[1] >= ECHO_CLEAN_MIN_PT:
+        regions.append(("above", rect[1], top))
+    if rect[3] - bottom >= ECHO_CLEAN_MIN_PT:
+        regions.append(("below", bottom, rect[3]))
+    if not regions:
+        return None, "stem-screenshot"
+    side, _r0, _r1 = max(regions, key=lambda r: r[2] - r[1])
+    new = list(rect)
+    if side == "below":
+        first_ink = None
+        if src is not None:
+            g = src.gray
+            px0 = max(0, int(rect[0] * k))
+            px1 = min(g.shape[1], int(rect[2] * k))
+            py0 = max(0, int(bottom * k))
+            py1 = min(g.shape[0], int(rect[3] * k) + 1)
+            if px1 > px0 and py1 > py0:
+                counts = (g[py0:py1, px0:px1] < src.ink_thr).sum(axis=1)
+                for i, c in enumerate(counts):
+                    if c >= 2:
+                        first_ink = (py0 + i) / k
+                        break
+        new[1] = max(bottom + 1.0,
+                     (first_ink - 1.0) if first_ink is not None else bottom + ECHO_TRIM_GAP_PT)
+    else:
+        new[3] = top - ECHO_TRIM_GAP_PT
+    if new[3] - new[1] < ECHO_CLEAN_MIN_PT:
+        return None, "stem-screenshot"
+    new_t = (new[0], new[1], new[2], new[3])
+    # 剩下的区域里不许再整行盖住题干 —— 那说明切错了地方，宁可整框不要
+    for bb, _n in rows:
+        if _covers(new_t, bb) >= ECHO_ROW_COVER_MIN:
+            return None, "stem-screenshot"
+    return new_t, "stem-trim"
+
+
+def _extend_edge_ink(rect: tuple[float, float, float, float], src,
+                     k: float, np, side: str, wall_pt: float) -> tuple[float, float, float, float]:
+    """栏界把图切断了：把从框边起【连续有墨】的条带接回来（最多 40pt）。
+
+    只用于图→页边（隔壁栏没有题）的方向；有题的那一栏仍是硬墙。
+    实测：达标B q8 写作格的右框线在 820.1pt，栏界 810.9pt，
+    裁框停在 813.7pt，审计报"右+2795px"（7 行横线 + 竖框线全被切掉 6pt）。
+    ⚠️ 窄条（<60pt）不接：达标A q1 左边 38pt 宽的页边装饰被接宽后
+       长宽比从 1.77 掉到 1.35，绕过了"装订栏"判据，垃圾条留了下来。
+    """
+    if rect[2] - rect[0] < 60.0:
+        return rect
+    g = src.gray
+    h, w = g.shape
+    py0 = max(0, int(rect[1] * k))
+    py1 = min(h, int(rect[3] * k + 0.999))
+    if py1 - py0 < 4 or w <= 0:
+        return rect
+    dark = g[py0:py1] < src.ink_thr
+    if side == "right":
+        start = min(w, int(rect[2] * k + 0.5))
+        stop = min(w, int(min(wall_pt, rect[2] + EDGE_EXTEND_MAX_PT) * k))
+        if stop <= start:
+            return rect
+        cols = np.flatnonzero(dark[:, start:stop].any(axis=0))
+        if cols.size == 0:
+            return rect
+        last = -10
+        end = -1
+        for c in cols:
+            c = int(c)
+            if end < 0:
+                if c > EDGE_EXTEND_GAP_PX + 1:
+                    return rect                 # 框边先是空白：不是这张图的延续
+                end = c
+                last = c
+                continue
+            if c - last > EDGE_EXTEND_GAP_PX + 1:
+                break
+            last = c
+            end = c
+        if end < 0:
+            return rect
+        new_x = (start + end + 1) / k
+        if new_x - rect[2] < 1.0:
+            return rect
+        return (rect[0], rect[1], min(src.width_pt, new_x), rect[3])
+    start = max(0, int(rect[0] * k - 0.5))
+    stop = max(0, int(max(wall_pt, rect[0] - EDGE_EXTEND_MAX_PT) * k))
+    if start <= stop:
+        return rect
+    cols = np.flatnonzero(dark[:, stop:start].any(axis=0))
+    if cols.size == 0:
+        return rect
+    first = -10
+    end = -1
+    for c in cols[::-1]:
+        c = int(c)
+        if end < 0:
+            if (start - stop - 1) - c > EDGE_EXTEND_GAP_PX + 1:
+                return rect
+            end = c
+            first = c
+            continue
+        if first - c > EDGE_EXTEND_GAP_PX + 1:
+            break
+        first = c
+        end = c
+    if end < 0:
+        return rect
+    new_x = (stop + first) / k
+    if rect[0] - new_x < 1.0:
+        return rect
+    return (max(0.0, new_x), rect[1], rect[2], rect[3])
 
 
 def _is_furniture(rect: tuple[float, float, float, float], page_no: int,
@@ -2047,9 +2588,30 @@ def strip_text_inside_figures(qs: list[dict[str, Any]], spans: list[dict[str, An
     return n
 
 
+def apply_graphic_notes(qs: list[dict[str, Any]],
+                        got: dict[int, list[dict[str, Any]]]) -> int:
+    """图形算式的整行原图：收掉 OCR 留下的长空格、补一句"图形见下方原图"。
+
+    为什么不能省：第 31 题的 OCR 题干是"如果            =16,            =16,那么"，
+    两处 12 个空格就是番茄/黄瓜的位置。不补这句，家长会以为系统把题目弄丢了；
+    补了也不冒充"读到了图标"——原图就在下面，孩子看图作答。
+    返回补了提示的题数。产品路径（papers.py）和审计渲染共用这一份，别各写一套。
+    """
+    n = 0
+    for qi, imgs in got.items():
+        if not (0 <= qi < len(qs)) or not any(im.get("graphic") for im in imgs):
+            continue
+        t = re.sub(r"[ \t]{2,}", " ", str(qs[qi].get("text") or "")).strip()
+        if t:
+            qs[qi]["text"] = t + "（本题算式中的图形见下方原图）"
+            n += 1
+    return n
+
+
 def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
                  out_dir: str, report: list[dict[str, Any]] | None = None,
-                 noise: list[dict[str, Any]] | None = None
+                 noise: list[dict[str, Any]] | None = None,
+                 questions: list[dict[str, Any]] | None = None
                  ) -> dict[int, list[dict[str, Any]]]:
     """spans: [{q_index, page, col, y0, y1, x0, x1, text_boxes:[{x,y,w,h}]}]（单位 pt）
     返回 {q_index: [{path,name,page,w_pt,h_pt}]}。
@@ -2081,6 +2643,12 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
         import cv2
     except Exception:                                   # cv2 是硬依赖，缺了也不能拖垮整卷识别
         cv2 = None
+    qr_det = None
+    if cv2 is not None:
+        try:
+            qr_det = cv2.QRCodeDetector()
+        except Exception:
+            qr_det = None
 
     # 被"太小"砍掉的小块先记下来：同一行里它们多半是式子的一部分
     # （括号、运算符），图框长出来一点比"算式少半个括号"划算得多。见 _absorb_row_peers。
@@ -2115,8 +2683,26 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
             prev_bottom[int(_s["q_index"])] = (
                 float(_grp[_i - 1]["y1"]) if _i else 0.0)
 
+    # 图可以往页边伸多远：隔壁栏【有题】就是硬墙；隔壁只是页边/密封线则放开。
+    # （达标B q8 的写作格伸进密封线带 9pt；同一页左栏却绝不能捞过去。）
+    walls: dict[tuple[int, int], tuple[float, float]] = {}
+    _bounds: dict[tuple[int, int], list[float]] = {}
+    for s in spans:
+        key = (int(s.get("page", 1)), int(s.get("col", 0)))
+        b = _bounds.setdefault(key, [float("inf"), 0.0])
+        b[0] = min(b[0], float(s.get("x0") or 0.0))
+        b[1] = max(b[1], float(s.get("x1") or 0.0))
+    for (pg_w, col_w) in _bounds:
+        src_w = sources[pg_w].width_pt if pg_w in sources else _bounds[(pg_w, col_w)][1]
+        left = max([b1 for (p2, c2), (_b0, b1) in _bounds.items()
+                    if p2 == pg_w and c2 < col_w] or [0.0])
+        right = min([b0 for (p2, c2), (b0, _b1) in _bounds.items()
+                     if p2 == pg_w and c2 > col_w] or [float(src_w)])
+        walls[(pg_w, col_w)] = (left, right)
+
     # ── 第一遍：只测量，不裁图。家具判定要看【全部】候选，单题循环里看不到另一页 ──
     cands: list[dict[str, Any]] = []
+    graphic_blocks: dict[int, dict[str, Any]] = {}
     for s in spans:
         src = sources.get(int(s["page"]))
         if src is None or src.gray is None:
@@ -2127,6 +2713,16 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
         k, y0, cx0 = sgn["k"], sgn["y0"], sgn["cx0"]
         band, hole = sgn["band"], sgn["hole"]
         qi, pg = int(s["q_index"]), int(s["page"])
+        # ── 图形算式整行：题干行里夹着字符级大图标 → 整行原样成图（见常量区说明）──
+        gb = None
+        if cv2 is not None:
+            try:
+                gb = _graphic_equation_block(src, s, np, cv2)
+            except Exception:
+                gb = None
+        if gb:
+            graphic_blocks[qi] = gb
+        grect = gb["rect"] if gb else None
         # ── 尺寸门槛：跟着"这一栏有多宽"缩放（见 _gate_scale）──
         col_w = float(s.get("x1") or src.width_pt) - float(s.get("x0") or 0.0)
         gs = _gate_scale(col_w)
@@ -2219,6 +2815,36 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
                                    "why": "stem-bottom-clipped"})
             if rect[2] - rect[0] < 8 or rect[3] - rect[1] < 8:
                 continue
+            # ── L3) 整题截图：文字归题干，图里只留作答格/真图 ─────────────
+            #    达标A q1（5 行故事题干）→ 切完不剩东西，整框丢；
+            #    达标B q8（提示语+词语提示+写作格）→ 切掉顶部文字块，留格子。
+            q_text = ""
+            if questions is not None and 0 <= qi < len(questions):
+                q_text = str(questions[qi].get("text") or "")
+            if q_text:
+                edited, ewhy = _stem_echo_edit(rect, s.get("text_boxes") or [], q_text,
+                                               src=src, k=k)
+                if edited is None:
+                    drop(qi, pg, rect, ewhy or "stem-screenshot")
+                    continue
+                if edited != rect:
+                    rect = edited
+                    if report is not None:
+                        report.append({"q_index": qi, "page": pg, "kept": True,
+                                       "rect": [round(v, 1) for v in rect],
+                                       "why": ewhy})
+            # ── L4) 栏界把框线切断：隔壁没有题时，把连续的墨接回来 ─────────
+            #    只接右侧：左侧没有真实案例，而页边装饰被接宽会绕过装订栏判据。
+            wl, wr = walls.get((pg, int(s.get("col", 0))), (0.0, src.width_pt))
+            grown = _extend_edge_ink(rect, src, k, np, "right", wr)
+            if grown != rect:
+                rect = grown
+                if report is not None:
+                    report.append({"q_index": qi, "page": pg, "kept": True,
+                                   "rect": [round(v, 1) for v in rect],
+                                   "why": "edge-extended"})
+            if rect[2] - rect[0] < 8 or rect[3] - rect[1] < 8:
+                continue
             # ── J) 候选的墨绝大多数在【家具行】里 → 是栏目横幅，不是图 ──────
             #    横幅色块比 OCR 读到的那行字高，上下沿逃过了 wall，膨胀后才连成候选。
             if _wall_ink_share(rect, sgn.get("raw"), sgn.get("wall"),
@@ -2252,6 +2878,11 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
                                    "rect": [round(v, 1) for v in rect],
                                    "why": "margin-touch"})
                     break
+            # ── 图形算式整行已由 gb 接管：落在它里面的碎片不再单独裁 ──────
+            #    第 31 题按普通图形裁出来的就是图标被行框挖断后的两截碎片。
+            if grect is not None and _covers(grect, rect) >= 0.5:
+                drop(qi, pg, rect, "graphic-fragment")
+                continue
             cands.append({
                 "q_index": qi, "page": pg,
                 "strict": strict,
@@ -2265,11 +2896,54 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
                          round(float(s.get("y1") or src.height_pt), 1)],
             })
 
+    # ── 图形算式的整行原图：不参与"这张墨是不是图"的判据 ────────────────
+    #    它本来就同时含文字和图标，text-block / text-cut / 空心框这些尺对它无效。
+    for qi, gb in graphic_blocks.items():
+        s = gb["span"]
+        pg = int(s.get("page", 1))
+        src = sources.get(pg)
+        rect = gb["rect"]
+        if src is None or rect[2] - rect[0] < 8 or rect[3] - rect[1] < 8:
+            continue
+        cands.append({
+            "q_index": qi, "page": pg, "strict": True, "graphic": True,
+            "src": src, "col": int(s.get("col", 0)), "rect": rect,
+            "tbs": s.get("text_boxes") or [],
+            "w_pt": round(rect[2] - rect[0], 1),
+            "h_pt": round(rect[3] - rect[1], 1),
+            "band": [round(float(s.get("x0") or 0), 1),
+                     round(float(s.get("y0") or 0), 1),
+                     round(float(s.get("x1") or src.width_pt), 1),
+                     round(float(s.get("y1") or src.height_pt), 1)],
+        })
+        if report is not None:
+            report.append({"q_index": qi, "page": pg, "kept": True,
+                           "rect": [round(v, 1) for v in rect],
+                           "why": "graphic-equation"})
+
     # ── 第二遍：跨题缝合 → 过滤页上垃圾 → 每题按【面积大到小】限量 → 按阅读顺序编号裁图 ──
     cands = _stitch_across_questions(cands)
     ok: list[dict[str, Any]] = []
     for c in sorted(cands, key=lambda x: (x["page"], x["q_index"], x["rect"][1], x["rect"][0])):
         src = c["src"]
+        if c.get("graphic"):
+            ok.append(c)              # 整行原图：内容型裁图，不过"像不像图"的筛子
+            continue
+        # ── 候选框把一整行【页面家具】罩住了 → 这是页脚卡/二维码/栏目横幅，不是题图 ──
+        #    必须在 margin/furniture 之前：周末作业的页脚卡伸到页边、每页位置又不一样，
+        #    跨页同位置判据（_is_furniture）抓不到它。
+        cover, ftext = _furniture_row_cover(c["rect"], page_boxes.get(c["page"], []))
+        if cover >= FURNITURE_ROW_COVER_MIN:
+            drop(c["q_index"], c["page"], c["rect"], "furniture-text")
+            continue
+        # ── 小框把两整行文字从右边切断 → 文字残片 ──────────────────────
+        if _is_text_cut_strip(c["rect"], page_boxes.get(c["page"], [])):
+            drop(c["q_index"], c["page"], c["rect"], "text-cut")
+            continue
+        # ── 页脚二维码：扫码看讲解的入口，不是题图 ────────────────────────
+        if _is_qr_block(c["rect"], src, DPI_PROBE / 72.0, qr_det):
+            drop(c["q_index"], c["page"], c["rect"], "qr")
+            continue
         if _is_margin_strip(c["rect"], src.width_pt):
             drop(c["q_index"], c["page"], c["rect"], "margin")
             continue                                      # 装订栏 / 侧边栏
@@ -2332,5 +3006,8 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
             "name": os.path.basename(fp), "page": c["page"], "col": c["col"],
             "rect": [round(v, 1) for v in c["rect"]], "band": c["band"],
             "w_pt": c["w_pt"], "h_pt": c["h_pt"],
+            # 图形算式的整行原图：审计看到它含题干是【应该的】——图标只有原图能表达，
+            # 判断题不能拿普通配图的"含题干"尺去量它（见 tests/audit_papers.stem_in_figures）。
+            "graphic": bool(c.get("graphic")),
         })
     return out

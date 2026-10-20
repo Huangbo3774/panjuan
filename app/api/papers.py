@@ -22,8 +22,9 @@ from .store import STORE
 from ..paths import VAR, DATA
 from ..extractor import lines as L
 from ..extractor import ocr as OC
-from ..extractor.figures import find_figures, strip_text_inside_figures
-from ..extractor.rules import extract, flatten_questions
+from ..extractor.figures import (find_figures, strip_text_inside_figures,
+                                 apply_graphic_notes)
+from ..extractor.rules import extract, flatten_questions, mark_image_options
 from ..grading.engine import grade, make_uid
 from ..storage import db
 
@@ -92,7 +93,8 @@ def api_parse(id_str: str) -> dict:
             src = L.open_page_source(kind, "", gp, r["page_sources"], r["files"])
             if src:
                 sources[gp] = src
-        got = find_figures(sources, spans, figures_dir(pid), noise=r.get("noise")) \
+        got = find_figures(sources, spans, figures_dir(pid), noise=r.get("noise"),
+                           questions=qs) \
             if sources else {}
         for qi, imgs in got.items():
             if 0 <= qi < len(qs):
@@ -100,7 +102,16 @@ def api_parse(id_str: str) -> dict:
         # 图里的标注行先被 OCR 拼进题干、又被裁进图里 → 同一句话印两遍
         # （判据与真实反例见 docs 14.12-F）。
         n_res = strip_text_inside_figures(qs, spans, got)
+        n_imgopt = mark_image_options(qs)
+        # ── 图形算式（题干行里夹着番茄/黄瓜这类图标）：OCR 只读到图标之间的字，
+        #    题干会留下十几格的空白；裁图已把【整行原样】切成一张原图挂在题下。
+        #    这里把空白收成一个空格、补一句"图形见原图"——口径与审计渲染共用。
+        n_graphic = apply_graphic_notes(qs, got)
         fig_note = f"，裁出配图 {sum(len(v) for v in got.values())} 张"
+        if n_graphic:
+            fig_note += f"，图形算式原图 {n_graphic} 题"
+        if n_imgopt:
+            fig_note += f"，选项在配图的题 {n_imgopt} 道"
         if n_res:
             fig_note += f"，清掉图内重复文字 {n_res} 行"
         # ── 卷面上【画出来】的图形符号（★＋★＝20 这种）：OCR 只认字，整行会读成

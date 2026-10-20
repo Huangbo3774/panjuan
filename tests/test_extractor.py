@@ -221,6 +221,49 @@ def circled_are_options_in_choice():
 t("选择题里圆圈数字作选项（反例）", circled_are_options_in_choice)
 
 
+def circled_options_written_inline():
+    """正例：选项和题干挤在同一段（真实卷 第三单元综合练习 二、选一选 第 1/2 题）。
+
+    OCR 把它们连成 "…错误的是（ ①30表示… ②5表示… ③6表示…"，从前只认行首圆圈，
+    于是整道题判成 essay 并报"题型可疑"；这里必须拆成 choice + 3 个选项。
+    """
+    lines = ["二、选一选。",
+             "1.根据下图可列出乘法算式6×5=30,下列说法中,错误的是（",
+             "①30表示一共有30支笔",
+             "②5表示每个笔筒中有5支笔",
+             "③6表示每个笔筒中有6支笔"]
+    q = qs(extract(lines))
+    assert len(q) == 1, f"应只 1 题，实际 {len(q)}: {[x['text'] for x in q]}"
+    assert q[0]["qtype"] == "choice", f"应 choice，实际 {q[0]['qtype']}"
+    assert len(q[0]["options"]) == 3, f"应拆出 3 个选项，实际 {q[0]['options']}"
+    assert "①" not in q[0]["text"] and "③" not in q[0]["text"], \
+        f"选项还留在题干里：{q[0]['text']}"
+t("题干内联圆圈选项要拆出来", circled_options_written_inline)
+
+
+def circled_stay_items_in_matching_section():
+    """反例：连线/排序题里的 ①②③ 是条目，内联拆分不能把它们当选项吞掉。"""
+    lines = ["四、排序题",
+             "①最后用帽子盖住鸡蛋顶上的小洞。",
+             "②然后用彩纸做一顶尖尖的小帽子。",
+             "③先在鸡蛋顶部打一个小洞。"]
+    q = qs(extract(lines))
+    assert len(q) == 3, f"应 3 项，实际 {len(q)}"
+    assert all(not x["options"] for x in q), f"条目被当选项：{[x['options'] for x in q]}"
+t("连线/排序的圆圈条目不拆成选项（反例）", circled_stay_items_in_matching_section)
+
+
+def map_label_instruction_is_not_choice():
+    """反例：「把…序号填在上图的括号里」是地图标注，不是选择题，不许挂待校对。"""
+    lines = ["五、小玉绘制了自己家附近的平面图。",
+             "1.根据描述，把建筑物的序号填在上图的括号里。(12分)",
+             "我家住在祥和小区，南面是春风小区。"]
+    q = qs(extract(lines))
+    assert q[0]["qtype"] != "choice", f"地图标注被改成了 choice：{q[0]['qtype']}"
+    assert not q[0].get("review_note"), f"地图标注被标成题型可疑：{q[0].get('review_note')}"
+t("「序号填在图上」不是选择题信号（反例）", map_label_instruction_is_not_choice)
+
+
 def answer_key_not_questions():
     """反例：答案区不能被切成题目（实测英文样本 "参考答案：1.B 2.A" 被切成 7 道假题）。"""
     lines = ["一、选择题", "1. 例子（ ）", "A. a  B. b  C. c  D. d",

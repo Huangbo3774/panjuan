@@ -66,8 +66,11 @@ JUDGE_HINT = ("对的打", "正确的打", "错的打", "判断", "对的画", "
 # 命中后的处理见 _classify：标待校对、提醒对照原卷，不硬改题型（改了反而做不了，
 # 见 audit_papers.answerability 的"选择没选项"）。
 CHOICE_CUE = re.compile(
-    r"填序号|填字母|正确的序号|序号填在|选一选|选择题|单项选择|多项选择|选出|"
+    r"填序号|填字母|正确的序号|选一选|选择题|单项选择|多项选择|选出|"
     r"正确的是|错误的是|不正确的是|不能用.{0,16}表示的是")
+# ⚠️ 不能把「序号填在」当选择题信号：真实卷（综合实践单元 第五大题）原话是
+#   "把建筑物的序号填在上图的括号里" —— 这是在地图上标号，不是挑一个选项。
+#   收进来会把一道画图/标注题永远标成"题型可疑"（实测两份综合实践卷各 1 条）。
 # 英文大题（真实英文样本里 Section A 完全没被认出来，只会认中文序号）
 SECTION_EN_RE = re.compile(r"^(Section|Part|Unit)\s+([A-D])\b[:：]?\s*(.*)$", re.I)
 SECTION_EN_KW = ("choice", "fill", "blank", "judge", "answer", "reading",
@@ -111,7 +114,10 @@ NOISE_ANSWER_REF_RE = re.compile(r"答案\s*P\s*\d+")
 
 # 教辅书的"栏目名"（不是题目，也不该进大题序列）
 STAGE_KW = ("第一步", "第二步", "第三步", "第四步", "知识演练场", "智慧加油站",
-            "基础过关", "能力提升", "拓展延伸", "素养提升", "过关检测", "考点集合")
+            "基础过关", "能力提升", "拓展延伸", "素养提升", "过关检测", "考点集合",
+            # 周末作业(1).pdf 第 4 页：紫色"知识打卡"横幅与绿色"解题妙招"提示框
+            # 都被单独裁成了一张图（只有横幅、没有内容）。它们是栏目家具，不是题图。
+            "解题妙招", "知识打卡")
 
 # 页眉上的扫码批改/AI 伴学广告（王朝霞系教辅每页都印）：
 #   "拍照批改互动讲解" / "智能错题本" / "分钟教材变式练        实际用时："
@@ -403,6 +409,15 @@ def extract(lines: list[str], title: str = "") -> dict[str, Any]:
             cur_q["options"].extend(toks)
             cur_q["source_lines"].append(line)
             continue
+        # 选项一行一个圆圈（真实卷：每个选项独占一行 "①30表示…" "②5表示…"）。
+        # 只有【已经在选择语境里】才收：大题名/题干的选择指令/上一行已经拆出选项，
+        # 否则正文里单独一行的 ①… 仍然留在题干里（连线/排序题另有题号逻辑）。
+        if (cur_q is not None and CIRCLED_OPT_RE.match(line.strip())
+                and not _section_wants_circled(_sec_name(cur_sec))
+                and (cur_q.get("options") or _looks_choice_context(cur_q, _sec_name(cur_sec)))):
+            cur_q["options"].append(line.strip())
+            cur_q["source_lines"].append(line)
+            continue
 
         no, rest = _parse_question_no(line, circled_as_no=_section_wants_circled(cur_sec.get("name", "")))
         if no is not None and cur_q is not None and cur_q.get("no_form") == "plain" \
@@ -414,7 +429,7 @@ def extract(lines: list[str], title: str = "") -> dict[str, Any]:
             #    （"选一选。（1）…（2）…"）它们就是平级的题目，并起来反而少题。
             cur_q["text"] = (cur_q["text"] + " " + rest).strip()
             cur_q["source_lines"].append(line)
-            _split_inline_options(cur_q)
+            _split_inline_options(cur_q, _sec_name(cur_sec))
             continue
         if no is not None and not _looks_like_answer_only(rest):
             # 题号在本大题内【倒退】→ 这是一段新的编号序列（第N天/新一关/漏认的大题标题）。
@@ -425,7 +440,7 @@ def extract(lines: list[str], title: str = "") -> dict[str, Any]:
                 cur_q = None
             push_question(no, rest, cur_sec,
                           "plain" if SUBQ_RE.match(line) is None else "paren")
-            _split_inline_options(cur_q)
+            _split_inline_options(cur_q, _sec_name(cur_sec))
             last_no = no
             numbered_in_sec += 1
             seen_numbered = True
@@ -449,7 +464,7 @@ def extract(lines: list[str], title: str = "") -> dict[str, Any]:
         # "题干 + 选项写在同一行"的情况）
         cur_q["text"] = (cur_q["text"] + " " + line).strip()
         cur_q["source_lines"].append(line)
-        _split_inline_options(cur_q)
+        _split_inline_options(cur_q, _sec_name(cur_sec))
 
     # 兜底：一道题都没切出来时，把整页当一道大题，绝不返回空
     if not any(s["questions"] for s in sections):
@@ -551,6 +566,10 @@ def _section_wants_circled(section_name: str) -> bool:
     return any(k in (section_name or "") for k in CIRCLED_ITEM_SECTIONS)
 
 
+def _sec_name(sec: dict | None) -> str:
+    return str((sec or {}).get("name") or "")
+
+
 CIRCLED_OPT_RE = re.compile(r"[①-⑳]")
 
 
@@ -600,15 +619,66 @@ def _opt_tokens(line: str) -> list[str]:
     return [p for p in parts if OPT_RE.match(p)]
 
 
-def _split_inline_options(q: dict) -> bool:
-    """题干里塞了多组选项时拆出来。"""
+def _looks_choice_context(q: dict, section_hint: str = "") -> bool:
+    """这道题现在是不是处在"要挑一个"的语境里（决定圆圈行算选项还是正文）。"""
+    if re.search(r"选择|选一选|单选|多选", section_hint or ""):
+        return True
+    t = str(q.get("text") or "")
+    return bool(CHOICE_CUE.search(t) or re.search(r"[（(]\s*$", t))
+
+
+def _circled_inline_options(text: str, section_hint: str = "") -> tuple[str, list[str]] | None:
+    """题干里紧跟着 ①…②…③… 的选项，拆成 (题干, 选项列表)；拆不出来返回 None。
+
+    ⚠️ 只拆「题干 + 选项」连在一起的情况（真实卷：第三单元综合练习
+      "…下列说法中,错误的是（ ①30表示… ②5表示… ③6表示…"）。判据三条，缺一不可：
+        · 第一个圆圈前面必须已有题干（head 非空）；
+        · head 以（/( 收尾，或含选择指令，或所在大题名是"选择/选一选" ——
+          正文里引用"①第一点 ②第二点"的段落不该被拆成选项；
+        · 至少两个圆圈，且每个圆圈后都有内容。
+    连线/排序题里的 ①②③ 是条目不是选项，调用方按大题名排除（见 _split_inline_options）。
+    """
+    if _section_wants_circled(section_hint):
+        return None
+    s = (text or "").replace("\u3000", " ").strip()
+    marks = list(CIRCLED_OPT_RE.finditer(s))
+    if len(marks) < 2:
+        return None
+    start = marks[0].start()
+    head = s[:start].strip()
+    if not head:
+        return None
+    choice_section = bool(re.search(r"选择|选一选|单选|多选", section_hint or ""))
+    if not (choice_section or CHOICE_CUE.search(head)
+            or re.search(r"[（(]\s*$", head)):
+        return None
+    # head 必须收在一个"选项该从这里开始"的边界上：空位/冒号/句末。
+    # 反例（综合实践单元 第4题）：OCR 把选项①的图上文字读成 "公园。 商场 公园东北 ②公园…"，
+    # 在 ② 处硬拆会把 ① 吞进题干，孩子看到的选项从 ② 开始 —— 宁可整题不拆。
+    if not re.search(r"[。？！?!：:]\s*$|[（(]\s*$", head):
+        return None
+    parts = [p.strip() for p in re.split(r"(?=[①-⑳])", s[start:]) if p.strip()]
+    if len(parts) < 2:
+        return None
+    return head, parts
+
+
+def _split_inline_options(q: dict, section_hint: str = "") -> bool:
+    """题干里塞了多组选项时拆出来（先 A–H，再圆圈 ①②③）。"""
     found = _opt_tokens(q.get("text") or "")
-    if len(found) < 2:
+    if len(found) >= 2:
+        head = [p.strip() for p in re.split(r"(?=[A-H]\s*[.、．)])",
+                                           q["text"].replace("\u3000", " "))
+                if p.strip() and not OPT_RE.match(p.strip())]
+        q["options"] = (q.get("options") or []) + found
+        q["text"] = " ".join(head).strip()
+        return True
+    if q.get("options"):
         return False
-    head = [p.strip() for p in re.split(r"(?=[A-H]\s*[.、．)])", q["text"].replace("\u3000", " "))
-            if p.strip() and not OPT_RE.match(p.strip())]
-    q["options"] = (q.get("options") or []) + found
-    q["text"] = " ".join(head).strip()
+    circ = _circled_inline_options(q.get("text") or "", section_hint)
+    if not circ:
+        return False
+    q["text"], q["options"] = circ
     return True
 
 
@@ -714,6 +784,29 @@ def _classify(q: dict, section_hint: str = "") -> None:
     # ⚠️ 不能直接赋值：上面已经因为"括号不配对"标过待校对的，会被置信度这一行冲掉，
     # 于是校对页看不到提醒、家长拿着残缺题干让孩子做——正是用户骂的"题做不了"。
     q["needs_review"] = q["confidence"] < 0.7 or bool(q.get("review_note"))
+
+
+def mark_image_options(qs: list[dict]) -> int:
+    """把「题干要求选一个、选项却全在配图里」的题明确标成 image_options。
+
+    必须在配图挂到题目上之后调用（audit / api 的识别链路都在 strip 之后）。
+    这不是把警告改名：有图 = 孩子能看着图写序号，题是能做的；那把尺要抓的是
+    "选项丢了、卷面没法作答"。真正没图又没选项的，仍然由 type_suspects 报出来。
+    """
+    n = 0
+    for q in qs:
+        if q.get("qtype") in ("choice", "judge") or q.get("options") or not q.get("images"):
+            continue
+        text = str(q.get("text") or "")
+        sec = str(q.get("section") or "")
+        if not (CHOICE_CUE.search(text) or CHOICE_CUE.search(sec)):
+            continue
+        q["image_options"] = True
+        q["needs_review"] = True
+        q["review_note"] = ("选项在配图里（已附在题下），按图写序号即可；"
+                            "如原卷另有文字选项，请在校对页补上")
+        n += 1
+    return n
 
 
 def flatten_questions(res: dict[str, Any]) -> list[dict]:

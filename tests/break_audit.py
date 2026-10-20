@@ -24,8 +24,8 @@ AU = os.path.join(ROOT, "tests", "audit_papers.py")
 
 M = [
     Mutation("关·不为 choice 才算可疑（真选择题也被报）", AU,
-             '        if qt == "choice":\n            continue\n',
-             "        if False:\n            continue\n",
+             '        if qt == "choice" or q.get("image_options"):\n',
+             "        if False:\n",
              "题型可疑尺"),
     Mutation("关·只看题干、不看大题名（二、选一选 漏报）", AU,
              '        m = CHOICE_CUE.search(t) or CHOICE_CUE.search(sec)',
@@ -70,6 +70,45 @@ M = [
              '            out.append((qi + 1, t[:20], "题干首行" if bi == 0 else f"第{bi + 1}行"))',
              "            pass",
              "含题干尺"),
+    # ── 图形算式图的含题干豁免 / 手写材料分类 / 漏块尺碎墨下限 ──
+    Mutation("过·图形算式也量含题干（整行原图被误报）", AU,
+             '                 if im.get("rect") and not im.get("graphic")]',
+             '                 if im.get("rect")]',
+             "含题干尺"),
+    Mutation("关·同题有图形算式就整题豁免（普通图漏报）", AU,
+             '        rects = [tuple(im["rect"]) for im in imgs\n'
+             '                 if im.get("rect") and not im.get("graphic")]',
+             '        rects = [] if any(im.get("graphic") for im in imgs) else [\n'
+             '            tuple(im["rect"]) for im in imgs if im.get("rect")]',
+             "含题干尺"),
+    Mutation("关·漏块尺的碎墨面积下限（句号也算漏块）", AU,
+             "            if area < LEAK_MIN_COMP_PX:",
+             "            if area < 0:",
+             "漏块尺"),
+    Mutation("过·漏块尺面积下限卡死真漏块", AU,
+             "LEAK_MIN_COMP_PX = 40", "LEAK_MIN_COMP_PX = 1000",
+             "漏块尺"),
+    Mutation("关·手写材料分类（红笔笔迹算成漏块）", AU,
+             '    clip, leak, bleed, stem_in, residue, na = reclassify_material(\n'
+             '        path, clip, leak, bleed, stem_in, residue)',
+             '    clip, leak, bleed, stem_in, residue, na = apply_material_class(\n'
+             '        "print", clip, leak, bleed, stem_in, residue)',
+             "手写材料"),
+    Mutation("关·手写材料证据转移（不适用清单为空）", AU,
+             '    if kind != "handwritten":\n'
+             '        return clip, leak, bleed, stem_in, residue, {}',
+             '    if True:\n'
+             '        return clip, leak, bleed, stem_in, residue, {}',
+             "手写材料"),
+    # ── 逐页复核目录：旧版页面混进来，会把人眼复核骗到 ──
+    Mutation("关·旧逐页图清理（上一版的 p3 混进本版复核）", AU,
+             '    for f in os.listdir(out_dir):\n        if pat.match(f):',
+             '    for f in os.listdir(out_dir):\n        if False:',
+             "旧逐页图清理"),
+    Mutation("过·旧逐页图清理连别的材料一起删", AU,
+             '    pat = re.compile(r"^" + re.escape(name) + r"_出卷_p\\d+\\.png$")',
+             '    pat = re.compile(r".*")',
+             "旧逐页图清理"),
 ]
 
 if __name__ == "__main__":

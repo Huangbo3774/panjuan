@@ -23,8 +23,10 @@
 """
 from __future__ import annotations
 
+import inspect
 import os
 import re
+import shutil
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -34,16 +36,18 @@ try:
 except Exception:
     pass
 
+import cv2                                                       # noqa: E402
 import numpy as np                                               # noqa: E402
 import pymupdf                                                   # noqa: E402
 
 from app.extractor import lines as L                             # noqa: E402
 from app.extractor.figures import (find_figures, page_source_from_pdf,   # noqa: E402
                                    page_source_from_image,
-                                   strip_text_inside_figures,
+                                   strip_text_inside_figures, apply_graphic_notes,
                                    residue_covered, box_text_patterns,
                                    RESIDUE_KEEP_FIRST_CHARS)
-from app.extractor.rules import (extract, flatten_questions, CHOICE_CUE)  # noqa: E402
+from app.extractor.rules import (extract, flatten_questions, mark_image_options,
+                                 CHOICE_CUE)  # noqa: E402
 from app.layout.options import LayoutOptions                     # noqa: E402
 from app.papers.answer_writer import render_answers_pdf          # noqa: E402
 
@@ -55,6 +59,59 @@ FIG_CUE = re.compile(
     r"如图|看图|右图|左图|下图|上图|上面的图|下面的图|示意图|钟面|数轴|方格|格子图|"
     r"连一连|涂一涂|标一标|在图上|图上的|画一画|照样子|下面各图|这排|这列|观察图片|图片中|"
     r"结合图片|图片上")
+# ── 材料类型（人工分类）──────────────────────────────────────────────
+# 配图这几把尺（切边/漏块/含题干/残渣）回答的是"印刷卷上的图形有没有裁全"。
+# 手写作业照片上，笔画本身就是大面积墨迹，这几把尺没有适用对象：
+#   数学作业.jpeg 是一页红笔手写练习（人眼核对 2026-10-20），5 张"配图"全是
+#   笔迹块，3 条"漏块"是同一行笔迹在框外——不是漏图。
+# 审计照旧把证据列出来，但记在"不适用"里、不计入缺陷：既不静默吞掉警告，
+# 也不把一张手写照片冤枉成裁图缺陷。新加材料默认按印刷卷审，人眼确认手写后再登记。
+MATERIAL_CLASSES = {
+    "数学作业.jpeg": {
+        "kind": "handwritten",
+        "note": "红笔手写练习本照片；配图/切边/漏块类判据不适用（人眼核对 2026-10-20）",
+    },
+}
+
+
+def apply_material_class(kind: str, clip, leak, bleed, stem_in, residue):
+    """手写材料 → 配图类证据转"不适用"，不计缺陷；印刷卷原样返回。
+
+    返回 (clip, leak, bleed, stem_in, residue, na)。na 只装证据、不装判决：
+    报告里照样逐条列出，读者能自己判断，也不会被算进"做不了"。
+    """
+    if kind != "handwritten":
+        return clip, leak, bleed, stem_in, residue, {}
+    na = {"切边": clip, "漏块": leak, "串题": bleed,
+          "含题干": stem_in, "题干残渣": residue}
+    return [], [], [], [], [], na
+
+
+def material_kind(path: str) -> str:
+    """文件名 → 材料类型；未登记的按印刷卷审（默认不许放行）。"""
+    return (MATERIAL_CLASSES.get(os.path.basename(path)) or {}).get("kind") or "print"
+
+
+def reclassify_material(path: str, clip, leak, bleed, stem_in, residue):
+    """audit() 用的一个口子：按文件名判材料类型，再决定证据怎么记。"""
+    return apply_material_class(material_kind(path), clip, leak, bleed,
+                                stem_in, residue)
+
+
+def clear_stale_pages(out_dir: str, name: str) -> int:
+    """渲染前清掉这份材料上一次的逐页图，只认 `<name>_出卷_p<数字>.png`。
+
+    不清会怎样（本轮实测）：达标B 当前只出 2 页，目录里还躺着上一版的 p3；
+    人眼复核把旧 p3 当成本版成品，差点把已经修好的图文分离判成没修。
+    只删本材料的同名页：别的材料的成品、同名的 .jpg/.pdf 都不动。
+    """
+    pat = re.compile(r"^" + re.escape(name) + r"_出卷_p\d+\.png$")
+    n = 0
+    for f in os.listdir(out_dir):
+        if pat.match(f):
+            os.remove(os.path.join(out_dir, f))
+            n += 1
+    return n
 # ⚠️ "路线图 / 平面图 / 统计图"这三个词【可能是题目在讲的知识点】，不是"看着那张图作答"：
 #    "路线图通常是按照上北下南…绘制的""路线图中不需要有（）"——这类题压根没有配图，
 #    把它们报成"缺图"，尺就一直在喊狼来了（实测两份综合实践卷各误报 1—2 条）。
@@ -132,6 +189,13 @@ def clipped_sides(src, rect, page_boxes, pad_pt=6.0, min_px=45, min_run=18,
     return out
 
 
+EDGE_DEAD_PT = 24.0       # 页面最外侧这条带里的是页边花纹/装订线/密封线，不是题目内容
+NEAR_BAND_PT = 6.0        # 裁框内侧多宽算"框内的墨"
+NEAR_RATIO_MIN = 0.5      # 框外的墨至少有一半行要跟框内边缘的墨对齐，才算被切断的延续
+RULE_MIN_W_PT = 40.0      # 1px 高、40pt 以上的横条是印刷横线/答题线，不是图形
+LEAK_MIN_COMP_PX = 40     # 单个连通域小于这个数＝句号/竖弯钩的碎墨，不是被切掉的图形
+
+
 def row_leaks(src, rect, page_boxes, other_crops=(), reach_pt=70.0,
               min_px=45, min_run=3):
     """图框【左右两侧的同一行上】还剩多少非文字墨 —— 中间隔着空白也算漏。
@@ -171,8 +235,50 @@ def row_leaks(src, rect, page_boxes, other_crops=(), reach_pt=70.0,
             c, d = max(int(oy0 * K) - by0, 0), min(int(oy1 * K) - by0, ink.shape[0])
             if b > a and d > c:
                 ink[c:d, a:b] = False
-        n = int(ink.sum())
-        if n < min_px or max((_run_len(row) for row in ink), default=0) < min_run:
+        # 裁框内侧边缘条：判断框外的墨是不是和框内的墨在同一行上接得上。
+        # 三条护栏都来自 26 条真卷警告的逐条取证（var/_leaks_all_v124c.txt）：
+        #  · 页边 32pt 内的墨 = 花纹边/装订线/密封线（周末作业 4 条、第三单元 4 条）；
+        #  · 离框 >10pt 且与框内边缘对不上行的墨 = 邻栏文字/答题横线（q8/q26/q29）；
+        #  · 1px 高、40pt 以上的横条 = 印刷横线，不是被切掉的图形。
+        # 保留的是对得上行的真漏块（q31 的 "=16," 段，ratio 0.56）。
+        ew = max(2, int(NEAR_BAND_PT * K))
+        ex0, ex1 = ((int(x0), int(x0) + ew) if side == "左"
+                    else (int(x1) - ew, int(x1)))
+        ex0, ex1 = max(0, ex0), min(W, ex1)
+        edge_rows = set()
+        if ex1 > ex0:
+            edge_ink = src.gray[by0:by1, ex0:ex1] < src.ink_thr
+            edge_rows = set(np.where(edge_ink.any(axis=1))[0].tolist())
+        n_lab, lab, stats, _ = cv2.connectedComponentsWithStats(ink.astype(np.uint8), 8)
+        keep = np.zeros_like(ink)
+        for i in range(1, n_lab):
+            cx, cy, cw, ch, area = [int(v) for v in stats[i]]
+            # 综合实践单元 第24题右侧 116px 全是这种 11×4/12×4 的碎墨：
+            # 「南面光照较少，故称“阴”。」的句号和竖弯钩比 OCR 行框低 2px，
+            # 是文字不是图。真漏块（第三单元 q31 的 "=16," 段）是 27×9/145px。
+            if area < LEAK_MIN_COMP_PX:
+                continue
+            gx0, gx1 = cx + bx0, cx + bx0 + cw
+            gap = (int(x0) - gx1) if side == "左" else (gx0 - int(x1))
+            # 只看【这一侧】的纸边：左带里的墨从左边缘开始，右带里的墨碰到右边缘。
+            if ((side == "左" and gx0 < EDGE_DEAD_PT * K)
+                    or (side == "右" and gx1 > W - EDGE_DEAD_PT * K)):
+                continue
+            if ch <= 1 and cw >= RULE_MIN_W_PT * K:
+                continue
+            # 竖排密封线/虚线：断成一截截的印刷线，不是被切掉的图。
+            # 达标B q8 实测：写作格右框线 820pt 已收进框，右侧 21pt 处 843pt
+            # 的密封虚线被框内竖框线带着"行对齐"判据，13 截共 424px 全留下。
+            # 真图边界是一条贯穿整框的长线（ch 远大于 60pt），不会被这条误伤。
+            if cw <= 3 and 6 <= ch <= 60 * K and gap > 10 * K:
+                continue
+            if gap > 10 * K and ch:
+                hit = sum(1 for yy in range(ch) if (cy + yy) in edge_rows)
+                if hit / ch < NEAR_RATIO_MIN:
+                    continue
+            keep |= (lab == i)
+        n = int(keep.sum())
+        if n < min_px or max((_run_len(row) for row in keep), default=0) < min_run:
             continue
         out.append((side, n))
     return out
@@ -246,7 +352,8 @@ def type_suspects(qs) -> list[tuple[int, int, str, str]]:
     out: list[tuple[int, int, str, str]] = []
     for i, q in enumerate(qs):
         qt = str(q.get("qtype") or "")
-        if qt == "choice":
+        if qt == "choice" or q.get("image_options"):
+            # 选项图已经挂在题下（mark_image_options 判过有图）→ 不是"选项丢了"。
             continue
         t = str(q.get("text") or "")
         sec = str(q.get("section") or "")
@@ -336,7 +443,12 @@ def stem_in_figures(qs, got, span_by_q) -> list[tuple]:
     for qi, imgs in got.items():
         if not (0 <= qi < len(qs)) or not imgs:
             continue
-        rects = [tuple(im["rect"]) for im in imgs if im.get("rect")]
+        # 图形算式的整行原图【必须】含题干文字：图标只有原图能表达，题干里的
+        # "如果  =16"本来就是残缺的。这类图由 extractor 用"≥3 个大图标 + = +
+        # ≥4 空格缺口"判出来并打上 graphic，不能拿普通配图的含题干尺量它。
+        # 其它图照旧——整题截图没有这些特征，不会被这条豁免放走。
+        rects = [tuple(im["rect"]) for im in imgs
+                 if im.get("rect") and not im.get("graphic")]
         text = str(qs[qi].get("text") or "")
         for bi, b in enumerate(span_by_q.get(qi, {}).get("text_boxes") or []):
             t = str(b.get("text") or "")
@@ -438,6 +550,40 @@ def selftest() -> list[str]:
         fails.append("漏块尺：OCR 已经读到、本来就当文字挖掉的行被算成漏块（误报）")
     if row_leaks(src2, mine, [], other_crops=[(150.0, 110.0, 170.0, 130.0)]):
         fails.append("漏块尺：邻题已经裁走的图被算成这道题的漏块（误报）")
+    # 页边花纹/装订线：贴着纸边的墨再长也不是这道题被切掉的内容。
+    g3 = np.full_like(g2, 255)
+    g3[int(100 * K):int(140 * K), int(20 * K):int(120 * K)] = 40
+    g3[int(110 * K):int(130 * K), 0:int(8 * K)] = 40
+    if row_leaks(PageSource(1, 200.0, 200.0, g3, lambda rect, out: None), mine, []):
+        fails.append("漏块尺：纸边花纹被算成漏块（误报）")
+    # 与框内边缘对不上行：框外的字是邻栏的，不是框里那块图的延续。
+    g4 = np.full_like(g2, 255)
+    g4[int(100 * K):int(112 * K), int(20 * K):int(120 * K)] = 40
+    g4[int(124 * K):int(136 * K), int(150 * K):int(170 * K)] = 40
+    if row_leaks(PageSource(1, 200.0, 200.0, g4, lambda rect, out: None), mine, []):
+        fails.append("漏块尺：框外邻栏文字与框内边缘对不上行，仍被报（误报）")
+    # 1px 印刷横线：框外的答题横线不是被切掉的图形。
+    g5 = np.full_like(g2, 255)
+    g5[int(100 * K):int(140 * K), int(20 * K):int(120 * K)] = 40
+    g5[int(130 * K):int(130 * K) + 1, int(150 * K):int(200 * K)] = 40
+    if row_leaks(PageSource(1, 200.0, 200.0, g5, lambda rect, out: None), mine, []):
+        fails.append("漏块尺：框外 1px 印刷横线被算成漏块（误报）")
+    # 单个连通域 <40px 的碎墨（句号/竖弯钩）不许凑成漏块：六个 5×5px 的点
+    # 合计 150px，已经超过 min_px=45，全靠 LEAK_MIN_COMP_PX 挡住。
+    # 同一位置换成一块 12×12px 的实墨必须报 —— 证明上一句不是"尺坏了"（阴性对照有效）。
+    g6 = np.full_like(g2, 255)
+    g6[int(100 * K):int(140 * K), int(20 * K):int(120 * K)] = 40
+    for j in range(6):
+        x0 = int(121.0 * K)
+        y0 = int((105 + j * 5) * K)
+        g6[y0:y0 + 5, x0:x0 + 5] = 40
+    if row_leaks(PageSource(1, 200.0, 200.0, g6, lambda rect, out: None), mine, []):
+        fails.append("漏块尺：六个句号大的碎墨被算成漏块（误报）")
+    g7 = np.full_like(g2, 255)
+    g7[int(100 * K):int(140 * K), int(20 * K):int(120 * K)] = 40
+    g7[int(115 * K):int(115 * K) + 12, int(121.0 * K):int(121.0 * K) + 12] = 40
+    if not row_leaks(PageSource(1, 200.0, 200.0, g7, lambda rect, out: None), mine, []):
+        fails.append("漏块尺：12×12px 的实墨块没报（面积下限把真漏块也挡住了）")
 
     # 题型可疑尺：选项是图片时 OCR 读不到 A/B/C/D，题型会被判成 fill/essay/judge。
     # 正例＝题干明写"填序号"却非 choice；反例＝乘法算式、判断题、真选择题、普通解答。
@@ -463,6 +609,17 @@ def selftest() -> list[str]:
     ts = type_suspects([q("根据下图写算式。", qt="essay", sec="二、选一选。")])
     if not ts:
         fails.append("题型可疑尺：大题名是「选一选」却没报（这条尺坏了）")
+    # 选项图：有配图时 mark_image_options 要把题标成 image_options，尺不再报"可疑"；
+    # 没配图时必须照报 —— 后者才是"选项真的丢了"。
+    iq = q("下面树叶中不能用2×4表示的是（  ）。(填序号)", qt="fill", blanks=1,
+           imgs=[{"rect": [0.0, 50.0, 200.0, 120.0]}])
+    if mark_image_options([iq]) != 1 or not iq.get("image_options"):
+        fails.append("图片选项：题干要填序号且有配图，却没标成 image_options（这条尺坏了）")
+    if type_suspects([iq]):
+        fails.append("图片选项：已标明选项在配图里，题型可疑尺还在报（误报）")
+    iq2 = q("下面树叶中不能用2×4表示的是（  ）。(填序号)", qt="fill", blanks=1)
+    if mark_image_options([iq2]) or not type_suspects([iq2]):
+        fails.append("图片选项：没有配图也放行 —— 真丢选项的题被藏起来了")
 
     # 题干残渣尺：整行落在【本题】配图框内的字必须报；框外、只压住一半的不许报。
     rq = q("CL            长长", imgs=[{"rect": [0.0, 0.0, 300.0, 200.0]}])
@@ -532,11 +689,60 @@ def selftest() -> list[str]:
            imgs=[{"rect": [0.0, 50.0, 300.0, 120.0]}])
     if not stem_in_figures([s2], {0: s2["images"]}, {0: {"text_boxes": sb}}):
         fails.append("含题干尺：题干里还在的整句被图框住却没报（这条尺坏了）")
+    # 图形算式的整行原图【必须】含题干（图标只有原图能表达）→ 打 graphic 的那张豁免；
+    # 豁免按【图】算，不按题算：同一题里再罩住题干的普通图照报。
+    gl = "3. 如果            =16，            =16，那么"
+    gt = "如果            =16，            =16，那么            =( )。"
+    gb = [{"x": 20, "y": 60, "w": 280, "h": 14, "text": gl}]
+    gq = q(gt, imgs=[{"rect": [0.0, 50.0, 300.0, 120.0], "graphic": True}])
+    if stem_in_figures([gq], {0: gq["images"]}, {0: {"text_boxes": gb}}):
+        fails.append("含题干尺：图形算式整行原图被报成含题干（误报）")
+    gq0 = q(gt, imgs=[{"rect": [0.0, 50.0, 300.0, 120.0]}])
+    if not stem_in_figures([gq0], {0: gq0["images"]}, {0: {"text_boxes": gb}}):
+        fails.append("含题干尺：同一行没打 graphic 时不报（这条尺坏了）")
+    gq2 = q(gt, imgs=[{"rect": [0.0, 200.0, 300.0, 260.0], "graphic": True},
+                      {"rect": [0.0, 50.0, 300.0, 120.0]}])
+    if not stem_in_figures([gq2], {0: gq2["images"]}, {0: {"text_boxes": gb}}):
+        fails.append("含题干尺：普通图罩住题干，却因同题有图形算式图被一起豁免（漏报）")
+    # 手写材料：配图类证据转"不适用"、不计缺陷；印刷卷一律照算。映射丢了也要报。
+    if MATERIAL_CLASSES.get("数学作业.jpeg", {}).get("kind") != "handwritten":
+        fails.append("手写材料：数学作业.jpeg 的分类丢了（红笔笔迹会被算成漏块）")
+    c0, l0, b0, st0, re0, na0 = reclassify_material(
+        os.path.join("samples", "private", "数学作业.jpeg"),
+        [("切",)], [("漏",)], [("串",)], [("含",)], [("渣",)])
+    if (c0 or l0 or b0 or st0 or re0) or na0.get("漏块") != [("漏",)]:
+        fails.append("手写材料：配图类警告没转成不适用证据（会被算进缺陷总数）")
+    c1, l1, b1, st1, re1, na1 = reclassify_material(
+        os.path.join("samples", "private", "别的卷.pdf"),
+        [("切",)], [("漏",)], [], [], [])
+    if c1 != [("切",)] or l1 != [("漏",)] or b1 or st1 or re1 or na1:
+        fails.append("手写材料：印刷卷也被转成不适用（真缺陷被藏起来）")
+    # 直接测 helpers 还不够：audit() 不接这个口子，上面两条照样全绿。查调用点。
+    if "reclassify_material(" not in inspect.getsource(audit):
+        fails.append("手写材料：audit() 没接 reclassify_material（分类只在自检里成立）")
+    # 旧逐页图清理：只删本材料的 p<数字>.png；别的材料、别的扩展名都不动。
+    probe = os.path.join(ROOT, "var", "_selftest_stale")
+    os.makedirs(probe, exist_ok=True)
+    for f in ("甲_出卷_p1.png", "甲_出卷_p10.png", "甲_出卷_p1.jpg",
+              "乙_出卷_p1.png", "甲_blank.pdf"):
+        open(os.path.join(probe, f), "wb").close()
+    n = clear_stale_pages(probe, "甲")
+    left = set(os.listdir(probe))
+    if n != 2 or left != {"乙_出卷_p1.png", "甲_出卷_p1.jpg", "甲_blank.pdf"}:
+        fails.append(f"旧逐页图清理：删了 {n} 个，剩下 {sorted(left)}"
+                     f"（应只删本材料的 p<数字>.png）")
+    for f in left:
+        os.remove(os.path.join(probe, f))
+    os.rmdir(probe)
+    if "clear_stale_pages(" not in inspect.getsource(audit):
+        fails.append("旧逐页图清理：audit() 没接 clear_stale_pages（旧页仍会混进复核目录）")
     return fails
 
 
 def audit(path: str, render=True) -> dict:
     name = os.path.splitext(os.path.basename(path))[0]
+    mat = MATERIAL_CLASSES.get(os.path.basename(path)) or {}
+    handwritten = material_kind(path) == "handwritten"
     r = load(path)
     if not r or not r.get("lines"):
         print(f"\n【{name}】没读到任何文本行（跳过）")
@@ -546,12 +752,18 @@ def audit(path: str, render=True) -> dict:
     spans = L.spans_for_questions(r["ann"], qs, pages=r.get("pages"),
                                   sections=res.get("sections"))
     fig_dir = os.path.join(OUT, "figs", name)
+    # 裁剪件也按"题号+序号"命名，上一版的图会留在同名目录里（实测 q6 有三份，
+    # 只有 21:13 那份是本版）。复核时无法凭文件名分辨，渲染前整目录清掉。
+    shutil.rmtree(fig_dir, ignore_errors=True)
     rep: list = []
-    got = find_figures(r["sources"], spans, fig_dir, report=rep, noise=r.get("noise"))
+    got = find_figures(r["sources"], spans, fig_dir, report=rep, noise=r.get("noise"),
+                       questions=qs)
     for qi, imgs in got.items():
         if 0 <= qi < len(qs):
             qs[qi]["images"] = imgs
     n_res = strip_text_inside_figures(qs, spans, got)
+    apply_graphic_notes(qs, got)
+    n_imgopt = mark_image_options(qs)
 
     by_page: dict[int, list] = {}
     for a in r["ann"]:
@@ -592,12 +804,21 @@ def audit(path: str, render=True) -> dict:
     # 图内标注已由清理步骤从题干删掉，不能再算"含题干"；只报题干里还在的整句。
     stem_in = stem_in_figures(qs, got, span_by_q)
 
+    # 手写材料：配图类判据没有适用对象。证据照列，但不计入缺陷（见 MATERIAL_CLASSES）。
+    clip, leak, bleed, stem_in, residue, na = reclassify_material(
+        path, clip, leak, bleed, stem_in, residue)
+
     bad = answerability(qs)
     dup = duplicates(qs)
     type_bad = type_suspects(qs)
     pages_out = 0
     if render:
         os.makedirs(OUT, exist_ok=True)
+        # ⚠️ 先清掉这份材料上一次留下的逐页图。渲染目录是共用的，题少了/页数缩短时
+        #    旧 PNG 不会被覆盖，人眼复核会把【上一版】的第 3 页当成本版成品
+        #    （本轮实测：达标B 当前出 2 页，目录里还躺着上一版的 p3，整题截图看起来
+        #    "文字还在图里"，差点把已经修好的图文分离判成没修）。
+        clear_stale_pages(OUT, name)
         pdf = os.path.join(OUT, f"{name}_blank.pdf")
         render_answers_pdf(qs, LayoutOptions.from_dict({"show_header": True}), pdf,
                            title=name, mode="blank", figures_dir=fig_dir)
@@ -608,15 +829,26 @@ def audit(path: str, render=True) -> dict:
         d.close()
 
     n_img = sum(len(v) for v in got.values())
+    n_graphic = sum(1 for v in got.values() for im in v if im.get("graphic"))
     cut = [d for d in rep if not d.get("kept")]
     from collections import Counter
     print(f"\n【{name}】源{r['n_pages']}页 · 题{len(qs)} · 配图{n_img}张（带图题{len(got)}）"
           f"· 出卷{pages_out}页 · 待校对{sum(1 for q in qs if q.get('needs_review'))}")
     print(f"  做不了 {len(bad)}　·　做得别扭：切边 {len(clip)} · 漏块 {len(leak)} · 串题 {len(bleed)} "
           f"· 含题干 {len(stem_in)} · 题干残渣 {len(residue)} · 重号 {len(dup)} "
-          f"· 题型可疑 {len(type_bad)}")
+          f"· 题型可疑 {len(type_bad)} · 图片选项 {n_imgopt}"
+          f" · 图形算式图 {n_graphic}（整行原图，不计入含题干）")
     if n_res:
         print(f"    （已清掉图内重复文字 {n_res} 行）")
+    if handwritten:
+        n_na = sum(len(v) for v in na.values())
+        print(f"    材料类型：手写作业（人工分类）—— {mat.get('note')}；"
+              f"不适用证据 {n_na} 条，不计入缺陷")
+        for t, c, rr in na.get("漏块") or []:
+            print(f"    · 不适用·漏块 第 {t} 题 框{rr} 框外 {c}（是笔迹，不是漏图）")
+        for label, rows in na.items():
+            if label != "漏块" and rows:
+                print(f"    · 不适用·{label} {len(rows)} 条（手写材料，不逐条展开）")
     for kind, no, why in bad:
         print(f"    ✗ {kind:6} 第 {no} 题 {why}")
     for sec, no, n in dup:
@@ -637,7 +869,9 @@ def audit(path: str, render=True) -> dict:
     print(f"    砍掉的候选：{dict(Counter(d['why'] for d in cut))}")
     return {"name": name, "bad": bad, "clip": clip, "leak": leak, "bleed": bleed,
             "stem": stem_in, "res": residue, "dup": dup, "type": type_bad,
-            "pages": pages_out, "questions": len(qs)}
+            "imgopt": n_imgopt, "graphic": n_graphic, "pages": pages_out,
+            "questions": len(qs), "kind": ("handwritten" if handwritten else "print"),
+            "na": na}
 
 
 def collect(args: list[str]) -> list[str]:
@@ -667,12 +901,12 @@ def main() -> int:
         return 2
     # 括号里的条数只是【标签】，判决只看 selftest() 返回的 fails ——
     # 加检查时忘了改这个数字，不会让一把坏尺装成好的。
-    print("✓ 审计尺自检通过（34 条正/反对照）")
+    print("✓ 审计尺自检通过（44 条正/反对照）")
     if "--selftest" in sys.argv:        # 只验尺、不看真实材料（变异闸门用）
         return 0
     files = collect(args) or collect([os.path.join(ROOT, "samples", "private")])
     tot = {"bad": 0, "clip": 0, "leak": 0, "bleed": 0, "stem": 0, "res": 0,
-           "dup": 0, "type": 0}
+           "dup": 0, "type": 0, "imgopt": 0, "graphic": 0, "na": 0}
     for f in files:
         try:
             a = audit(f, render=render)
@@ -687,9 +921,15 @@ def main() -> int:
         tot["bad"] += len(a["bad"])
         for k in ("clip", "leak", "bleed", "stem", "res", "dup", "type"):
             tot[k] += len(a[k])
+        tot["imgopt"] += int(a.get("imgopt") or 0)
+        tot["graphic"] += int(a.get("graphic") or 0)
+        tot["na"] += sum(len(v) for v in (a.get("na") or {}).values())
     print(f"\n===== 合计：做不了 {tot['bad']} · 切边 {tot['clip']} · 漏块 {tot['leak']} "
           f"· 串题 {tot['bleed']} · 含题干 {tot['stem']} · 题干残渣 {tot['res']} "
-          f"· 重号 {tot['dup']} · 题型可疑 {tot['type']} =====")
+          f"· 重号 {tot['dup']} · 题型可疑 {tot['type']} "
+          f"· 图片选项 {tot['imgopt']}（选项在配图里，可按图作答）"
+          f" · 图形算式图 {tot['graphic']}（整行原图，不计入含题干）"
+          f" · 手写·不适用 {tot['na']}（仅备查）=====")
     print(f"逐页成品图在 {OUT}")
     return 1 if tot["bad"] else 0
 
