@@ -62,7 +62,7 @@
 
 ### 最省事：免安装版（不用装 Python）
 
-去 [Releases](../../releases) 下载 **`panjuan-v1.2.1-windows.zip`**（附件在页面上标着
+去 [Releases](../../releases) 下载 **`panjuan-v1.2.2-windows.zip`**（附件在页面上标着
 「磐卷 免安装版」——GitHub 的下载链接只认 ASCII，所以文件名是英文的），
 **解压**（别在压缩包里直接双击），
 双击里面的 `PaperForge.exe` —— 浏览器自动打开 `http://127.0.0.1:8000/`，就能拖文件出卷子了。

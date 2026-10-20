@@ -47,8 +47,12 @@ DILATE_PT = 7.0            # 连通域膨胀半径：把"图 + 旁边的箭头/�
 MERGE_GAP_PT = 14.0        # 两个候选框近到这个程度就并成一张图
 ROW_PEER_MIN_OVERLAP = 0.6  # "同一行"的判定：和图框的竖直重叠占短边 60% 以上
 ROW_PEER_MAX_GAP_PT = 40.0  # 同行小块最多隔这么远才并回来（再远就是另一道式子）
-SIDE_STITCH_MIN_Y_SHARE = 0.5   # 横向缝合：竖直重叠至少要占较矮那块的一半
+SIDE_STITCH_MIN_Y_SHARE = 0.5   # 横向缝合：竖直重叠要占【较高】那块的一半（见下）
+SIDE_STITCH_MAX_H_RATIO = 1.5   # 两块高度比上限：真·同一张图的两半 1.004；答题框行:货架 1.70
 SIDE_STITCH_MAX_GAP_PT = 80.0   # 横向缝合：两个并排钟面隔 236pt，不该并
+# 同一题里小框整块落在另一个大框里＝同一张图被裁了两遍（见 _drop_contained）
+CONTAIN_COVER_MIN = 0.90        # 小框面积有 90% 落进大框才算被罩住
+CONTAIN_AREA_RATIO = 1.3        # 大框至少是小框的 1.3 倍面积（两块几乎同大时不互相踢）
 # 一题最多挂几张。3 → 4 的实测依据：四份真实卷里 3 张会挤掉真图
 # （第三单元练习题 第 2 题的三只蘑菇只剩两只），放到 4 之后图数 +3、
 # 打印页数一张没变（14 页 / 3 页照旧）—— 也就是说这 3 张本来就没占地方。
@@ -80,6 +84,12 @@ EDGE_ZONE_PT = 22.0
 # 同批真图（48×73 指南针、239×69 平面图、195×169 房屋图）都不满足"贴边 + 窄长"。
 MARGIN_EDGE_PT = 45.0
 MARGIN_MAX_W_PT = 60.0
+# 齐着【物理页边】的框放宽到 100pt。真实卷证据（九份材料全量扫，见
+# var/_edge_scan.py）：贴左边且宽度 ≤140 的保留候选只有一张 —— 第三单元练习题
+# 第 2 页的 88×125 左栏残片（蓝色"第三单元"侧栏 + 橙色横幅 + 题干碎字）。
+# 它宽 88 > 60、长宽比 125/88=1.42 < 1.5，原来两条判据都差一点，漏了。
+# 真图不会从 0 开始：±3pt 外扩要碰到 x=0，原图必须已经印在页边上。
+MARGIN_FLUSH_W_PT = 100.0
 MARGIN_MIN_ASPECT = 1.5
 # 文字残影判定：容差 = 该行文字框高度 × 这个倍数（容差是"一行高"，不是固定像素，
 # 因为 OCR 行框的偏差量级就是一行高）
@@ -117,8 +127,20 @@ STITCH_MIN_W_RATIO = 0.6       # 两半宽度比值下限：差太多就是两�
 STITCH_MAX_UNION_PT = 240.0        # 缝合后的图最大边长（pt）：超过就是"整页缝一张"了
 # 尺寸门槛的参照栏宽（pt）：A4 竖版两栏时一栏 ≈280pt，MIN_FIG_* 就是在这上面量的
 GATE_REF_COL_PT = 280.0
-# 裁框盖住【本题第一行文字】这么多比例，就算「图里重复了一遍题目」
+# 裁框盖住【本题文字行】这么多比例，就算「图里重复了一遍题目」
 STEM_IN_FIG_COVER = 0.8
+# 只处理【贴着裁框上沿】的那一行：行框顶比裁框顶低不超过 4pt。
+# 真实卷（第三单元练习题 第 2 页第 3 题）裁框顶 436.9、行框顶 436.7；而图
+# 内部自己的标注行（"北""西瓜基地"）上方一定还有图的墨，不会正好贴着裁框顶。
+STEM_TOP_TOL_PT = 4.0
+# 非第一行的额外门槛：行首必须贴着裁框左沿（≤ 24pt）才算题干行。
+# 题干行从正文左边界起排；图自己贴在右上角的标注不是。真实卷三处反例：
+#   综合实践课 第 2 题 "开心公园   北"：行首 423.3，裁框左沿 96.4（差 327pt）
+#   第三单元练习题 第 3 题 "+2+2…"：行首 91.6，裁框左沿 42.4（差 49pt）
+#   第三单元练习题 第 2 题 "加法算式:"：行首 289.9，裁框左沿 84.8（差 205pt）
+# 三处都是图的一部分，旧规则只裁第一行时都没事；放宽到"任意贴顶行"后全被切掉。
+# 正例（该裁）：第三单元达标练习题B 第 1 题读文行，行首 90.7 / 裁框 79.1（差 11.6）。
+STEM_LEFT_TOL_PT = 24.0
 
 # ── 栏目横幅 / 答题框块：不是题图（用户截图里的两种废图）─────────────────
 # 栏目横幅（"第二步 练变式"的橙底白字色块）：OCR 读成文字、被 is_furniture_text
@@ -528,8 +550,11 @@ def _absorb_label_rows(box: list[float], tb_px: list[list[float]], k: float,
 
     ⑤ 碎片例外（治"题干和图注被 OCR 并成一行"）：这种行永远过不了 ②（题干那截
        在图左边几十 pt 外），于是图注跟着被挖没。改成先按行内空白把这行切成碎片，
-       只吸【紧贴图边、宽度 ≤ FRAG_MAX_W_PT、且这一侧还没吸过】的那一片。
+       只吸【贴在图的左右两侧、宽度 ≤ FRAG_MAX_W_PT、且这一侧还没吸过】的那一片。
        整句题干（70–300pt）和"每一侧只吸一片"就是它不吃正文的两道闸。
+       ⚠️ 上下两侧不适用 ⑤：正上方那片多半是正文行被切出来的尾巴。真实卷
+          第三单元练习题 第 2 页第 3 题，题干第二行最左 44.6pt 的碎片距叶子图
+          只有 5.8pt，吸进来后裁框顶从 457.1 抬回 439.9，整行题干又进了图。
 
     实测（四份真实卷全跑一遍）：整条规则只在两处发生作用，两处都是该吸的 ——
     综合实践课.pdf 第 3 页 实践基地平面图（y0 424→407，把"西瓜基地—葡萄基地—草莓基地"
@@ -567,7 +592,14 @@ def _absorb_label_rows(box: list[float], tb_px: list[list[float]], k: float,
                     side = "below"
                 if side is None or side in used_side:
                     continue                              # ① 不贴边 / 这一侧已经吸过一片
-                if frags:                                 # ⑤ 碎片：够短、且至少两个字宽
+                if frags:                                 # ⑤ 碎片：只收左右两侧的图注
+                    # 上下两侧的碎片不算图注。真实卷反例（第三单元练习题 第 2 页第 3 题）：
+                    # 题干第二行"不能用2×4表示的是( ).(填序号)"被 OCR 切成三片，最左一片
+                    # 44.6pt 正好落在叶子图上方 5.8pt 处 → 被当图注吸进来，裁框顶从 457.1
+                    # 一路抬到 439.9，整行题干又进了图里（用户截图"真图蹭到半行题干字"）。
+                    # 图注是标语/气泡，挂在图的左右；正上/正下那是一片正文的尾巴。
+                    if side not in ("left", "right"):
+                        continue
                     if (u[2] - u[0]) > FRAG_MAX_W_PT * k:
                         continue
                     if (u[2] - u[0]) < FRAG_MIN_W_PT * k:
@@ -669,7 +701,10 @@ def _side_adjacent(r1, r2) -> bool:
     """两块是不是【同一行、横向挨得够近】—— 横向缝合的几何判据。"""
     ov = min(r1[3], r2[3]) - max(r1[1], r2[1])
     short = min(r1[3] - r1[1], r2[3] - r2[1])
-    if short <= 0 or ov < SIDE_STITCH_MIN_Y_SHARE * short:
+    tall = max(r1[3] - r1[1], r2[3] - r2[1])
+    if short <= 0 or tall > short * SIDE_STITCH_MAX_H_RATIO:
+        return False
+    if ov < SIDE_STITCH_MIN_Y_SHARE * tall:
         return False
     return max(r1[0] - r2[2], r2[0] - r1[2]) <= SIDE_STITCH_MAX_GAP_PT
 
@@ -685,8 +720,16 @@ def _stitch_side_by_side(cands: list[dict[str, Any]],
     "图片中的字不全"。三块各自都过门槛，所以问题不在门槛，
     在【横向从来没有缝合】（上下方向早就有 _stitch_across_questions 治棋盘）。
 
-    判据要严，两条各挡一类误伤：
-      · 竖直重叠 ≥ 较矮那块的 50% —— 挡"上下本来就是两张图"被并成一张巨框；
+    判据要严，三条各挡一类误伤：
+      · 高度比 ≤ 1.5 —— 同一张图被挖断的两半高度几乎一样（真卷中缝实测 1.004）；
+        而 第三单元练习题 第 2 页第 4 题的答题框行（外扩后 37.7pt 高）和胡萝卜
+        货架（74.4pt 高）比值 1.70，不是一张图。早先没有这条，两块的竖直重叠
+        有 50.7%，刚过 50% 的重叠关 → 并成一张 459×74 的框，左上角就蹭到了
+        "4.(1)一共有多少根胡萝卜?" 那半行题干字（用户截图）。
+      · 竖直重叠 ≥【较高那块】的 50% —— 挡"上下本来就是两张图"被并成一张巨框。
+        早先只比【较矮】那块，31.7pt 的答题框行被货架 100% 罩住，等于没判。
+        重叠加高度比两道一起才把它挡在门外：单看重叠是 50.7%，离阈值只差 0.7 个点，
+        单看比值则差 0.2；两条各留一点余量，不靠一个擦边数字。
       · 水平间隙 ≤ 80pt —— 挡两个并排钟面（实测间隙 236pt）被并成
         一张横跨半页的怪图（那是 test_figures 里现成的反例）。
     并且【只并同一道题的】：跨题并图会把邻题的图吞过来。
@@ -732,6 +775,57 @@ def _stitch_side_by_side(cands: list[dict[str, Any]],
     return out
 
 
+def _drop_contained(cands: list[dict[str, Any]],
+                    report: list | None = None) -> list[dict[str, Any]]:
+    """同一题里，小框整块落在大框里＝同一张图裁了两遍，只留大框。
+
+    真实卷（第三单元练习题.pdf 第 2 页第 5 题）：蘑菇图把顶部那行补回来之后
+    高 109.6pt，右侧答题框（190×67）有 **95.7%** 落在它里面。横向缝合的高度比
+    1.63 已超过 SIDE_STITCH_MAX_H_RATIO=1.5（那条是为"答题框行 + 胡萝卜货架"
+    定的，不能放），于是两块各自出图：第二张只剩答题框那半截，正是用户截图里
+    "多出来一张莫名其妙的图"。
+
+    为什么不是提高高度比：实测放到 1.8 会同时并掉两对不相干的块
+    （综合实践单元 ratio=1.52 gap=10；第三单元另一对 ratio=1.75 gap=-198），
+    而"罩住"是几何关系，不靠调阈值。两块几乎同大时不互踢（面积比要 ≥1.3），
+    免得近似重复的两张真图互相吃掉；跨题的罩住不管（可能真是邻题的图）。
+    """
+    by: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    for c in cands:
+        by.setdefault((int(c["page"]), int(c["q_index"])), []).append(c)
+    out: list[dict[str, Any]] = []
+    for _key, g in sorted(by.items()):
+        keep: list[dict[str, Any]] = []
+        for c in sorted(g, key=lambda x: -((x["rect"][2] - x["rect"][0])
+                                          * (x["rect"][3] - x["rect"][1]))):
+            r = c["rect"]
+            area = max(0.0, r[2] - r[0]) * max(0.0, r[3] - r[1])
+            swallowed = False
+            for k in keep:
+                kr = k["rect"]
+                karea = max(0.0, kr[2] - kr[0]) * max(0.0, kr[3] - kr[1])
+                if area <= 0 or karea < area * CONTAIN_AREA_RATIO:
+                    continue
+                iw = min(r[2], kr[2]) - max(r[0], kr[0])
+                ih = min(r[3], kr[3]) - max(r[1], kr[1])
+                if iw <= 0 or ih <= 0:
+                    continue
+                if iw * ih >= area * CONTAIN_COVER_MIN:
+                    swallowed = True
+                    break
+            if swallowed:
+                if report is not None:
+                    report.append({"q_index": c["q_index"], "page": c["page"],
+                                   "kept": False,
+                                   "rect": [round(v, 1) for v in c["rect"]],
+                                   "why": "contained"})
+                continue
+            keep.append(c)
+        out += keep
+    out.sort(key=lambda x: (x["page"], x["q_index"], x["rect"][1], x["rect"][0]))
+    return out
+
+
 def _size_gate(w_pt: float, h_pt: float, col_w: float) -> tuple[bool, bool]:
     """(这张能不能裁, 它是不是"严格合格")。"""
     s = _gate_scale(col_w)
@@ -760,9 +854,11 @@ def _is_margin_strip(rect: tuple[float, float, float, float], page_w: float) -> 
     """贴页边的窄长条＝装订栏 / 侧边栏，不是题图。"""
     w = rect[2] - rect[0]
     h = rect[3] - rect[1]
-    if w <= MARGIN_MAX_W_PT and (rect[0] <= 2.0 or rect[2] >= page_w - 2.0):
-        # 窄框【齐着物理页边】＝装订线/侧栏被 ±3pt 外扩后顶到边上的那一条。
-        # 真正的题图不会正好从 0 开始（±3pt 外扩也碰不到边），实测三份卷都验证过。
+    if w <= MARGIN_FLUSH_W_PT and (rect[0] <= 2.0 or rect[2] >= page_w - 2.0):
+        # 框【齐着物理页边】＝装订线/侧栏被 ±3pt 外扩后顶到边上的那一条。
+        # 真正的题图不会正好从 0 开始（±3pt 外扩也碰不到边），九份真卷全量验证过。
+        # 60pt 只够挡住干净的装订栏；侧栏色块一旦和横幅/题干碎字连成 88×125
+        # 这种复合块就漏了（真实卷见 MARGIN_FLUSH_W_PT 的注释），所以贴边放宽到 100。
         return True
     if w > MARGIN_MAX_W_PT or h < MARGIN_MIN_ASPECT * w:
         return False
@@ -1047,31 +1143,56 @@ def _stitch_across_questions(cands: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def _clip_stem_row(rect, text_boxes, absorbed_rows=()):
-    """裁框把【本题第一行文字】整行盖住 → 把上沿收到这一行的下沿。
+    """裁框把【贴着上沿的本题文字行】整行盖住 → 把上沿收到这一行的下沿。
 
     照片卷/扫描卷上最常见的"图里又抄了一遍题目"：图就印在题干下面，
     而 OCR 的行框和真正的字常有半行错位（实测综合实践单元(1) 第 24 题：
     行框 155.8–161.3，字的墨却落在 157.7，±3pt 外扩后裁框顶到 154.7），
     于是裁出来的图整行框住了"2. 请为2号无人配送车设计一条行驶路线。"。
 
-    两个"不收"的条件，都是宁可留着重复行也不能把图裁残：
+    ⚠️ 旧版只看【区间第一行】（`min(y)`），所以只治"裁框顶到本题起手句"。
+       真实卷 第三单元练习题 第 2 页第 3 题的裁框从【第二行】开始：
+       起手句 y407.0–427.1 在裁框上方，裁框顶 436.9 正好压住第二行
+       436.7–455.0 → `_covers` 99%，却因为不是第一行而整行留在图里。
+       现在改成"找贴着当前上沿、且被裁框盖住 ≥80% 的行"，一行一行往上收。
+
+    四个"不收"的条件，都是宁可留着重复行也不能把图裁残：
       · 这一行是被规则⑤当【图注】吸回来的（气泡"我面向东。"和题干并成一行那种）；
+      · 这一行的行框顶已经在裁框顶下方超过 4pt —— 图内部自己的标注行，
+        上方一定还有图的墨，不会正好贴着裁框顶；收下去就是切图；
+      · 这一行不是本题第一行，行首又离裁框左沿超过 24pt —— 那是图里/图右的
+        标注（"开心公园 北""+2+2…""加法算式:"），不是从正文左边界起排的题干行；
       · 收完上沿就不够 8pt 高了。
     """
     if not text_boxes:
         return rect
-    top_i = min(range(len(text_boxes)), key=lambda i: float(text_boxes[i]["y"]))
-    if top_i in (absorbed_rows or ()):
-        return rect
-    tb0 = text_boxes[top_i]
-    row0 = (float(tb0["x"]), float(tb0["y"]),
-            float(tb0["x"]) + float(tb0.get("w") or 0),
-            float(tb0["y"]) + float(tb0.get("h") or 0))
-    if _covers(rect, row0) < STEM_IN_FIG_COVER:
-        return rect
-    cut = (rect[0], max(rect[1], row0[3] + 1.0), rect[2], rect[3])
-    if cut[3] - cut[1] < 8 or cut[2] - cut[0] < 8:
-        return rect                                 # 收完就没图了：宁可重复一行题干
+    skip = set(absorbed_rows or ())
+    first_i = min(range(len(text_boxes)), key=lambda i: float(text_boxes[i]["y"]))
+    cut = rect
+    while True:
+        hits = []
+        for i, tb in enumerate(text_boxes):
+            if i in skip:
+                continue
+            row = (float(tb["x"]), float(tb["y"]),
+                   float(tb["x"]) + float(tb.get("w") or 0),
+                   float(tb["y"]) + float(tb.get("h") or 0))
+            if row[1] > cut[1] + STEM_TOP_TOL_PT:
+                continue                              # 行框顶在图里面：是图自己的标注
+            if i != first_i and row[0] > cut[0] + STEM_LEFT_TOL_PT:
+                continue                              # 从图中间起句：图自己的标注
+            if _covers(cut, row) < STEM_IN_FIG_COVER:
+                continue
+            hits.append(row)
+        if not hits:
+            break
+        bottom = max(r[3] for r in hits)
+        new_top = max(cut[1], bottom + 1.0)
+        if new_top <= cut[1]:
+            break
+        cut = (cut[0], new_top, cut[2], cut[3])
+        if cut[3] - cut[1] < 8 or cut[2] - cut[0] < 8:
+            return rect                                 # 收完就没图了：宁可重复一行题干
     return cut
 
 
@@ -1099,6 +1220,8 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
       H) 贴物理页边的窄长条是装订栏 / 侧边栏，不当图。
       I) 紧贴图边、横向又在图范围内的那行文字（被挖掉的图内标签）要吸回裁图范围，
          否则裁出来的图缺最后一行。
+      J) 同一题里被另一个更大候选整个罩住的小框是**同一张图裁了两遍**，丢掉
+        （见 `_drop_contained`；横向缝合按高度比不并的那类重复裁图）。
       另）候选框的墨绝大多数落在"家具行"里（栏目横幅的色块）→ 不是题图；
           由 ≥2 个空心方框＋运算符组成的矮块是【作答位置】→ 不是图。
     """
@@ -1269,6 +1392,9 @@ def find_figures(sources: dict[int, PageSource], spans: list[dict[str, Any]],
 
     # 同一行被文字行挖断的几块并回一张（见 _stitch_side_by_side 的真卷说明）
     ok = _stitch_side_by_side(ok, report)
+
+    # 大框已经把小框整个罩住＝同一张图裁了两遍，只留大框（见 _drop_contained）
+    ok = _drop_contained(ok, report)
 
     # 限量必须【先按面积挑、再按阅读顺序排】。按 y 直接截断会出这种事：
     # 第三单元练习题 第 5 题的 453×109 大图被三个 58×46 的小块挤掉，

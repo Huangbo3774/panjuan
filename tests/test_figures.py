@@ -552,6 +552,32 @@ def page_margin_strip_is_not_a_figure():
     assert any(i["rect"][0] > 200 for i in imgs), f"真图反而没裁到：{[i['rect'] for i in imgs]}"
 
 
+def flush_edge_sidebar_composite_is_not_a_figure():
+    """贴物理页边的复合块（侧栏色块 + 栏目横幅 + 题干碎字）不是图。
+
+    坐标取自真实卷（第三单元练习题.pdf 第 2 页第 1 题）：蓝色"第三单元"侧栏
+    被 ±3pt 外扩顶到 x=0，又和橙色"第二步 练变式"横幅、题干碎字连成
+    88×125 的一坨。宽 88 > MARGIN_MAX_W_PT(60)，长宽比 125/88=1.42 < 1.5，
+    两条旧判据都【差一点】放它过去，用户截图里就是这块 88×125 的左栏残片。
+
+    ⚠️ 直接喂坐标：合成卷里画不出"侧栏贴边 + 横幅 + OCR 碎字连成一块"的
+       真实复合几何，端到端夹具只会造出自证的假绿。
+    """
+    import app.extractor.figures as FG
+    page_w = 595.0
+    assert FG._is_margin_strip((0.0, 142.4, 88.0, 267.2), page_w), \
+        "88×125 左栏残片又会被当成配图裁出来"
+    assert FG._is_margin_strip((507.0, 142.4, 595.0, 267.2), page_w), \
+        "右页边对称的一块（横版卷的右半页）也得挡住"
+
+    # 反例①：同样 88×125，但离页边 20pt —— 不是装订栏/侧栏，得按真图对待
+    assert not FG._is_margin_strip((20.0, 142.4, 108.0, 267.2), page_w), \
+        "把离页边 20pt 的中等块误砍了（真图会丢）"
+    # 反例②：贴页边但太宽 —— 100pt 是"窄条"上限，不是"贴边就砍"
+    assert not FG._is_margin_strip((0.0, 142.4, 150.0, 300.0), page_w), \
+        "贴页边的真图被宽度闸误砍：150×158"
+
+
 def run_multi(path: str):
     """多页版：`run()` 只喂了第 1 页，跨页判据（页上家具）在它里面【永远测不到】。"""
     r = annotated_lines_from_pdf(path)
@@ -917,6 +943,15 @@ def merged_label_row_absorbs_only_the_fragment():
     got4 = FG._absorb_label_rows(list(box), [[30 * k, 6 * k, 148 * k, 17 * k]], k, raw4, np)
     assert got4 == list(box), f"一个字宽的碎片被当图注吸进图里：{[v / k for v in got4]}"
 
+    # 反例③：碎片贴在图的【正上方】—— 那是正文行的尾巴，不是图注。
+    #   真实卷（第三单元练习题 第 2 页第 3 题）：题干第二行被切成三片，最左 44.6pt
+    #   那片距叶子图只有 5.8pt，吸进来后裁框顶 457.1→439.9，整行题干又进了图。
+    #   （行内得有两坨墨才会走"碎片"分支；最左那坨 15pt < 下限，天然不收）
+    raw5 = source([(0, 8, 15, 15), (32, 8, 72, 15)])
+    fig5 = [30 * k, 20 * k, 120 * k, 50 * k]
+    got5 = FG._absorb_label_rows(list(fig5), [[0, 4 * k, 75 * k, 17 * k]], k, raw5, np)
+    assert got5 == list(fig5), f"图正上方的正文碎片被当图注吸进来了：{[v / k for v in got5]}"
+
 
 def _blob(page, x0, y0, x1, y1):
     """一块看得出是图的墨：外框 + 两根内线（不是空心单线框）。"""
@@ -991,6 +1026,23 @@ def page_footer_is_a_wall_not_a_seam():
     wide = [im for im in imgs if im["rect"][1] < 700 and im["rect"][2] > 176]
     assert not wide, f"图往右长进了页脚那行字里：{[i['rect'] for i in wide]}"
 
+    # 直接钉住 _absorb_label_rows 里的墙判据。上面的成品几何在"碎片只收左右两侧"
+    # 之后已经碰不到页脚（页脚在图正下方），单靠成品图测不到这条墙：
+    # 把函数打坏也照样全绿（变异闸门当场报"没抓到"）。
+    # 反例必须成立：不带墙标记的右侧图注要真的吸进来，否则这条尺是空转。
+    import app.extractor.figures as FG
+    real_frag = FG._row_fragments
+    FG._row_fragments = lambda raw, t, k, np: [[303.0, 120.0, 330.0, 140.0]]
+    try:
+        box = [100.0, 100.0, 300.0, 200.0]
+        row = [303.0, 120.0, 330.0, 140.0]
+        walled = FG._absorb_label_rows(box, [row], 1.0, wall_flags=[True])
+        assert walled == box, f"页脚行被当图注吸进图：{walled}"
+        free = FG._absorb_label_rows(box, [row], 1.0, wall_flags=[False])
+        assert free[2] >= 330.0, f"带墙标记的没吸、不带墙的也没吸，这条测不到墙：{free}"
+    finally:
+        FG._row_fragments = real_frag
+
 
 def crop_top_edge_does_not_swallow_the_stem_first_line():
     """裁框盖住"本题第一行"时把上沿收到这一行下面 —— 图里不许再抄一遍题目。
@@ -1022,6 +1074,87 @@ def crop_top_edge_does_not_swallow_the_stem_first_line():
     thin = (200.0, 155.0, 340.0, 165.0)
     assert FG._clip_stem_row(thin, rows) == thin, "把图裁到 8pt 以下，题就没图做了"
     assert FG._clip_stem_row(rect, []) == rect, "没有文字行时不该改动裁框"
+
+
+def crop_top_edge_does_not_swallow_the_stem_second_line():
+    """题干第二行也不许进图 —— 旧版只盯"区间第一行"，第二行正好被裁框盖住时放过。
+
+    真实卷（第三单元练习题.pdf 第 2 页第 3 题 树叶片数）：叶子图的裁框是
+    (53.2, 436.9, 558.1, 522.1)，题干第二行"不能用2×4表示的是( ).(填序号)"
+    的行框是 y436.7–455.0、横向 100% 落在裁框里 —— 旧版 `_clip_stem_row`
+    只看区间最上面那行（L00，在裁框上方 10pt 外），于是整行题干被裁进图里。
+
+    ⚠️ 直接喂真实坐标：行框和字的半行错位在合成 PDF 里复现不出来。
+    """
+    import app.extractor.figures as FG
+    rows = [{"x": 41.3, "y": 407.0, "w": 519.9, "h": 20.1,
+             "text": "3.[自然科普］落叶腐(f)烂后会化作养分,促进植物生长。下面的树叶片数"},
+            {"x": 58.1, "y": 436.7, "w": 276.7, "h": 18.3,
+             "text": "不能用2×4表示的是(       )。(填序号)"},
+            {"x": 63.5, "y": 482.9, "w": 444.1, "h": 18.7, "text": "CL            长长"}]
+    rect = (53.2, 436.9, 558.1, 522.1)
+    cut = FG._clip_stem_row(rect, rows)
+    assert cut[1] >= 456.0, f"题干第二行还框在图里：y0={cut[1]:.1f}，应收到 456"
+    assert cut[0] == rect[0] and cut[2] == rect[2] and cut[3] == rect[3], \
+        f"只许动上沿：{cut}"
+
+    # 反例①：图自己内部的标注行（叶子图里的"CL 长长"）离裁框顶 46pt ——
+    #   它不在"贴着上沿"那一档，一行都不许裁。
+    inside = (53.2, 436.9, 558.1, 522.1)
+    assert FG._clip_stem_row(inside, [rows[2]]) == inside, "把图自己的标注行裁掉了"
+    # 反例②：同一行若已被规则⑤当图注吸回来（气泡/标签），不许裁
+    assert FG._clip_stem_row(rect, rows, [1]) == rect, "把吸回来的图注裁掉了"
+    # 反例③：收完上沿就不到 8pt 图 —— 宁可留这一行题干
+    tiny = (53.2, 436.9, 558.1, 446.0)
+    assert FG._clip_stem_row(tiny, rows) == tiny, "把图裁没了"
+
+
+def crop_top_edge_skips_figure_labels_inside_the_picture():
+    """放宽到"任意贴顶行"之后，图里的标注也被裁掉了 —— 非第一行必须贴左沿。
+
+    旧版只看区间第一行；放宽后这三处的标注行都满足"贴顶 + 被盖住 80%"：
+      · 第三单元练习题 第 2 页 "一共有多少个蘑菇?"：`加法算式:` 与顶层蘑菇同高，
+        裁框上沿 290.8 被它收到 311.9 → 第一排蘑菇全切掉（审计 切边 上+1911px）；
+      · 第三单元练习题 第 1 页 "数一数…"：`+2+2…` 是数轴图自己的刻度标签，
+        裁框 541.3 → 560.2，青蛙和弧线全没了（审计 切边 上+304px）；
+      · 综合实践课 第 2 页公交路线图：右上角 "开心公园   北" 是图注，
+        裁框 267.7 → 301.5，地图上部被削掉。
+
+    共同点：它们都从图【中间】起句（行首离裁框左沿 49 / 205 / 327pt），
+    而真正的题干行从正文左边界起排（正的实测：达标B 第 1 题读文行差 11.6pt）。
+    """
+    import app.extractor.figures as FG
+    # 正例：非第一行、贴左沿 → 该裁（第三单元达标练习题B 第 1 题读文行）
+    b_rows = [{"x": 90.0, "y": 40.0, "w": 300.0, "h": 18.0, "text": "六、一起来为童年纪念册添故事吧！"},
+              {"x": 90.7, "y": 67.7, "w": 334.1, "h": 26.6,
+               "text": "我最喜欢读关于航天的书籍！从火箭升空的原理，到空间站运"}]
+    b_rect = (79.1, 67.6, 432.1, 264.4)
+    cut = FG._clip_stem_row(b_rect, b_rows)
+    assert cut[1] >= 95.3, f"贴左沿的读文行没裁：y0={cut[1]:.1f}，应收到 95.3"
+
+    # 反例①：第三单元 蘑菇题里的 `加法算式:`（行首差 205pt）
+    m_rows = [{"x": 41.7, "y": 264.7, "w": 158.8, "h": 18.8, "text": "2.一共有多少个蘑菇?"},
+              {"x": 289.9, "y": 292.7, "w": 76.7, "h": 18.2, "text": "加法算式:"}]
+    m_rect = (84.8, 290.8, 538.7, 400.4)
+    assert FG._clip_stem_row(m_rect, m_rows) == m_rect, "把顶层蘑菇连着 `加法算式:` 一起切了"
+
+    # 反例②：数轴图的 `+2+2…`（行首差 49pt）
+    n_rows = [{"x": 30.8, "y": 477.8, "w": 260.9, "h": 17.4, "text": "3.数一数，用加法算式记录数的结果。"},
+              {"x": 91.6, "y": 544.6, "w": 210.1, "h": 14.6, "text": "+2+2+2+2+2+2+2+2"}]
+    n_rect = (42.4, 541.3, 324.1, 591.2)
+    assert FG._clip_stem_row(n_rect, n_rows) == n_rect, "把青蛙和数轴弧线切掉了"
+
+    # 反例③：公交路线图右上角的 "开心公园   北"（行首差 327pt）
+    g_rows = [{"x": 96.0, "y": 240.0, "w": 300.0, "h": 18.0, "text": "2.某市新开通了一条公交专线。"},
+              {"x": 423.3, "y": 264.9, "w": 85.7, "h": 16.4, "text": "开心公园   北"}]
+    g_rect = (96.4, 267.7, 509.9, 405.5)
+    assert FG._clip_stem_row(g_rect, g_rows) == g_rect, "把路线图右上角削掉了"
+
+    # 第一行不受左沿限制：达标A 第 1 题的"时间/评价"栏（行首差 37.5pt 也照裁）
+    a_rows = [{"x": 109.4, "y": 117.4, "w": 197.3, "h": 14.4, "text": "③时间：40分钟            评价"}]
+    a_rect = (71.9, 114.4, 396.1, 311.2)
+    cut = FG._clip_stem_row(a_rect, a_rows)
+    assert cut[1] >= 132.8, f"第一行的表格栏没裁：y0={cut[1]:.1f}，应收到 132.8"
 
 
 def short_mark_extension_skips_wordy_boxes():
@@ -1077,12 +1210,13 @@ def row_peers_join_the_crop():
 def side_by_side_pieces_join_one_figure():
     """同一道题、同一行、被【文字行挖断】的几块，其实是一张图。
 
-    真实卷（第三单元练习题.pdf 第 2 页第 1 题）：
-        3 × 21 读作：（ ）        ← 一张"乘数 × 乘数 = 积"的标注图
-    OCR 的行框正好横穿这张图，把中间那行字挖掉之后，图被切成
-    174×125 ＋ 59×47 ＋ 59×47 三块，每块只剩半个式子——
-    用户指着说"图片中的字不全"。三块各自都合格，所以问题不在门槛，
-    在【横向没有缝合】（上下方向早就有 _stitch_across_questions）。
+    真实卷（第三单元练习题.pdf 第 2 页）的标注算式/括号列被 OCR 行框横穿，
+    横向切开后各自成块，每块只剩半个式子——用户指着说"图片中的字不全"。
+    这里用【等高、同题、间隙 10/63pt】的三块把缝合判据钉住；三块各自都过
+    尺寸门槛，所以问题不在门槛，在【横向没有缝合】
+    （上下方向早就有 _stitch_across_questions 治棋盘）。
+
+    ⚠️ 直接喂候选框：合成卷里"OCR 行框正好横穿图"的几何造不出来，硬造是假绿。
     """
     import app.extractor.figures as FG
 
@@ -1091,13 +1225,13 @@ def side_by_side_pieces_join_one_figure():
                 "band": [0.0, 127.6, 595.2, 264.7], "strict": True, "src": None,
                 "tbs": [], "w_pt": rect[2] - rect[0], "h_pt": rect[3] - rect[1]}
 
-    left = cand(4, [0.0, 142.4, 173.6, 267.2])
+    left = cand(4, [60.0, 172.7, 173.6, 219.7])        # 三块等高（47.0/47.1/47.0）
     mid = cand(4, [183.5, 174.8, 242.0, 221.9])
     right = cand(4, [305.2, 172.7, 364.4, 219.7])
     got = FG._stitch_side_by_side([left, mid, right])
     assert len(got) == 1, f"一张标注图被题内切成 {len(got)} 块：{[g['rect'] for g in got]}"
     r = got[0]["rect"]
-    assert r[0] <= 1.0 and r[2] >= 363.0, f"合并后的框没盖住整张图：{r}"
+    assert r[0] <= 61.0 and r[2] >= 363.0, f"合并后的框没盖住整张图：{r}"
     assert got[0]["q_index"] == 4, f"合并后挂错题：{got[0]['q_index']}"
 
     # 反例①：两个并排钟面（间隙 236pt）必须还是两张
@@ -1107,14 +1241,63 @@ def side_by_side_pieces_join_one_figure():
     assert len(g2) == 2, f"两张并排的图被并成一张横跨半页的怪图：{[x['rect'] for x in g2]}"
     # 反例②：同一行、挨得很近，但【属于两道题】→ 不许把邻题的图吞过来
     c = cand(7, [183.5, 174.8, 242.0, 221.9])
-    g3 = FG._stitch_side_by_side([left, c])
+    g3 = FG._stitch_side_by_side([mid, c])
     assert len(g3) == 2, f"跨题并图：邻题的图被并进来了 {[x['rect'] for x in g3]}"
-    # 反例③：同一题、水平也挨着，但【上下分开】（竖直只重叠 25%）→ 那是两张图
-    #   ⚠️ 必须留一点重叠：完全不相交的话，"把重叠阈值从 0.5 调到 0.05"这种破坏
-    #      改不了结果，就不是反例（第一版拿"上下分离 80pt"当反例，闸门当场报没抓到）。
-    d = cand(4, [183.5, 210.0, 242.0, 300.0])
+    # 反例③：同一题、水平也挨着，但【上下分开】（竖直只重叠 25%）→ 那是两张图。
+    #   ⚠️ 两块必须【等高】：让"重叠"这一条单独负责拦它。否则高度比 1.91 也会拦，
+    #      "把重叠阈值从 0.5 调到 0.05"这种破坏改不了结果（第一版拿"上下分离 80pt"
+    #      当反例，闸门当场报没抓到）。
+    d = cand(4, [183.5, 210.0, 242.0, 257.1])
     g4 = FG._stitch_side_by_side([mid, d])
     assert len(g4) == 2, f"上下两张图被并成一张：{[x['rect'] for x in g4]}"
+
+    # 反例④：真实卷 Q4（胡萝卜货架）—— 答题框行外扩后 37.7pt 高、货架 74.4pt 高，
+    #   横向间隙 50.3pt、竖直重叠 50.7%（刚过 50% 的重叠关），高度比 1.97。
+    #   并起来就是用户截图那张"真图蹭到题干字"的 459×74 怪框。
+    row = cand(7, [103.6, 542.0, 267.1, 579.7])
+    shelf = cand(7, [317.4, 516.1, 562.4, 590.5])
+    g5 = FG._stitch_side_by_side([row, shelf])
+    assert len(g5) == 2, f"答题框行和货架被并成一张：{[x['rect'] for x in g5]}"
+    # 反例⑤：老用例里那块 174×125 的"左半张"，其实是左栏残片（侧栏+横幅+碎字），
+    #   高度是右侧 47pt 的两倍多 —— 只许左右并排、不许"矮的贴高的"。
+    junk_l = cand(4, [0.0, 142.4, 173.6, 267.2])
+    g6 = FG._stitch_side_by_side([junk_l, mid])
+    assert len(g6) == 2, f"左栏残片被当成图的一半并进来了：{[x['rect'] for x in g6]}"
+
+
+def contained_duplicate_crop_is_dropped():
+    """同一题里小框整块落在大框里＝同一张图裁了两遍，只留大框。
+
+    真实卷（第三单元练习题.pdf 第 2 页第 5 题）：蘑菇图把顶部那行补回来后
+    453.9×109.6，右侧答题框 190.5×67.1 有 **95.7%** 落在里面。两块高度比
+    1.63 > SIDE_STITCH_MAX_H_RATIO=1.5，横向缝合按规矩不并（那条判据保护的是
+    "答题框行 + 胡萝卜货架"），于是同一张图出了两张，第二张只剩答题框那半截
+    （用户截图 p2_q5_9.png）。这条钉住"罩住就去重"。
+    """
+    import app.extractor.figures as FG
+
+    def cand(qi, rect, page=2):
+        return {"q_index": qi, "page": page, "col": 0, "rect": list(rect),
+                "band": [0.0, 127.6, 595.2, 418.0], "strict": True, "src": None,
+                "tbs": [], "w_pt": rect[2] - rect[0], "h_pt": rect[3] - rect[1]}
+
+    shelf = cand(5, [84.8, 290.8, 538.7, 400.4])
+    answer = cand(5, [347.5, 336.2, 538.0, 403.3])
+    got = FG._drop_contained([answer, shelf])          # 故意把小框放前面
+    assert len(got) == 1, \
+        f"同一张图裁了两遍，还留着 {len(got)} 张：{[g['rect'] for g in got]}"
+    assert got[0]["rect"] == shelf["rect"], \
+        f"留下的不是能把图盖全的那张：{got[0]['rect']}"
+
+    # 反例①：跨题不许去重 —— 邻题的图落在本题大图的坐标范围里也还是邻题的
+    other_q = cand(6, [347.5, 336.2, 538.0, 403.3])
+    assert len(FG._drop_contained([shelf, other_q])) == 2, "跨题去重：邻题的图被吃掉了"
+    # 反例②：只罩住 76% (<90%) —— 两块各自有边，不是同一张图裁重（右沿多出 47pt）
+    off = cand(5, [347.5, 336.2, 585.5, 403.3])
+    assert len(FG._drop_contained([shelf, off])) == 2, "罩住不到 90% 也被当成重复裁图"
+    # 反例③：两块几乎一样大（面积比 1.13 < 1.3）→ 宁可留两张也不许互吃
+    near = cand(5, [90.0, 295.0, 530.0, 395.0])
+    assert len(FG._drop_contained([shelf, near])) == 2, "两张几乎同大的真图被互相吃掉了"
 
 
 def side_stitch_is_wired_into_find_figures():
@@ -1135,19 +1318,28 @@ def side_stitch_is_wired_into_find_figures():
     doc.save(path)
     doc.close()
     calls = []
+    drop_calls = []
     real = FG._stitch_side_by_side
+    real_drop = FG._drop_contained
 
     def spy(cands, report=None):
         calls.append(len(cands))
         return real(cands, report)
 
+    def spy_drop(cands, report=None):
+        drop_calls.append(len(cands))
+        return real_drop(cands, report)
+
     FG._stitch_side_by_side = spy
+    FG._drop_contained = spy_drop
     try:
         run(path)
     finally:
         FG._stitch_side_by_side = real
+        FG._drop_contained = real_drop
     assert calls, "find_figures 根本没调用横向缝合（判据成了死代码）"
     assert sum(calls) >= 1, f"接线了但一道候选都没拿到：{calls}"
+    assert drop_calls, "find_figures 没调用罩住去重（同一张图会裁两遍）"
 
 
 def banner_and_answer_boxes_are_not_figures():
@@ -1309,6 +1501,7 @@ def banner_rule_wiring_end_to_end():
 
 CASES = [
     ("同一行被文字行切断的图要并回一张（第2页标注图）", side_by_side_pieces_join_one_figure),
+    ("同一张图被裁两遍：罩住的小框要丢掉", contained_duplicate_crop_is_dropped),
     ("横向缝合真的接在裁图链路上（接线检查）", side_stitch_is_wired_into_find_figures),
     ("同行被砍的小括号要并回图框（算式不许被截断）", row_peers_join_the_crop),
     ("横版两栏：裁图不许跨栏", two_column_crops_stay_in_their_own_column),
@@ -1323,6 +1516,7 @@ CASES = [
     ("一张图不许被自己那行标签切成上下两块", one_diagram_cut_by_its_own_label_row),
     ("图顶那行标签不许缺（被挖掉的行要吸回来）", clipped_top_label_row_is_absorbed),
     ("页边装订栏不许当配图", page_margin_strip_is_not_a_figure),
+    ("贴页边的侧栏复合块不许当配图（88×125）", flush_edge_sidebar_composite_is_not_a_figure),
     ("每页都印的页脚 logo 不许当配图", repeated_page_furniture_is_not_a_figure),
     ("数轴不许被文字残影规则砍掉（反例）", number_line_survives_text_residual_rule),
     ("文字残影：一行字不许当配图，数轴例外", text_line_residual_is_not_a_figure),
@@ -1338,6 +1532,8 @@ CASES = [
     ("圈小标点不许把换行正文串进图里", short_mark_extension_skips_wordy_boxes),
     ("页脚与扫描 app logo 是墙，不许缝进题图", page_footer_is_a_wall_not_a_seam),
     ("裁框上沿不许吞掉本题起手句（含三个反例）", crop_top_edge_does_not_swallow_the_stem_first_line),
+    ("裁框上沿不许吞掉题干第二行（含三个反例）", crop_top_edge_does_not_swallow_the_stem_second_line),
+    ("裁框上沿不许吞掉图内标注（非第一行须贴左沿）", crop_top_edge_skips_figure_labels_inside_the_picture),
     ("栏目横幅与答题框行不许当配图", banner_and_answer_boxes_are_not_figures),
     ("家具行占比/答题框判据的反例（真图不许砍）", junk_crop_measures_keep_real_figures),
     ("家具行判据接线检查（含丢弃原因）", banner_rule_is_wired_into_find_figures),
