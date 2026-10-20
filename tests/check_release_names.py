@@ -59,21 +59,34 @@ def main() -> int:
 
     if "--online" in sys.argv:
         try:
-            r = subprocess.run(["gh", "release", "view", "--latest", "--json",
+            r = subprocess.run(["gh", "release", "view", "--json",
                                 "tagName,assets", "-q",
                                 '{"tag":.tagName,"assets":[.assets[]|{name,size}]}'],
                                capture_output=True, text=True, encoding="utf-8",
                                errors="replace", cwd=ROOT, timeout=180)
+            if r.returncode != 0:
+                raise RuntimeError((r.stderr or "").strip()[:300]
+                                   or f"gh 退出码 {r.returncode}")
             info = json.loads(r.stdout)
         except Exception as e:
             bad.append(f"--online 取最新 Release 失败：{type(e).__name__}: {e}")
             info = None
         if info:
-            got = {a["name"] for a in info.get("assets", [])}
+            assets = info.get("assets", [])
+            got = {a["name"] for a in assets}
+            sizes = {a["name"]: a.get("size") for a in assets}
             print(f"  最新 Release {info.get('tag')} 的附件：{sorted(got)}")
             for n in allnames:
                 if n not in got:
                     bad.append(f"README 承诺 {n!r}，但 Release 上没有这个附件（实有 {sorted(got)}）")
+                    continue
+                local = os.path.join(ROOT, "dist", n)
+                if os.path.isfile(local):
+                    want = os.path.getsize(local)
+                    if sizes.get(n) != want:
+                        bad.append(f"附件 {n!r} 线上 {sizes.get(n)} 字节，本地包 {want} 字节")
+                    else:
+                        print(f"  {n} 大小一致：{want} 字节")
             if not got:
                 bad.append("最新 Release 一个附件都没有，README 却在让人下载")
     else:
