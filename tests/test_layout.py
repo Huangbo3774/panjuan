@@ -13,7 +13,8 @@ try:
 except Exception:
     pass
 
-from app.layout.columns import detect_columns, group_lines, structure_page   # noqa: E402
+from app.layout.columns import (detect_columns, group_lines, structure_page,   # noqa: E402
+                                _exact_gap_split)
 from app.layout.engine import build_layout, wrap_text                         # noqa: E402
 from app.layout.options import LayoutOptions, MM                              # noqa: E402
 
@@ -62,6 +63,58 @@ t("三栏", lambda: (_ for _ in ()).throw(AssertionError("三栏漏检"))
 t("回归：先合行再分栏必然漏检", lambda: (_ for _ in ()).throw(
     AssertionError("合并后仍留空隙，本用例需重写"))
   if len(detect_columns(group_lines(two_col(), 10), 600)) != 1 else None)
+
+print("\n[双页照片：中缝兜底]")
+def exact_gap_split_picks_the_widest_central_gap():
+    """达标B：两页并排拍成一张 900pt 宽的图。左页里还夹着一条 25pt 的栏内空带，
+    它比中缝更靠前、也够 18pt/30% 的门槛；只许切中缝（37pt、444.5）。"""
+    items = []
+    for i in range(5):
+        y = 80 + i * 40
+        items += [I(30, y, 90, "a"), I(140, y, 120, "b"),
+                  I(280, y, 70, "c"), I(375, y, 51, "d"),
+                  I(463, y, 80, "e"), I(560, y, 110, "f")]
+    cut = _exact_gap_split(items, 900)
+    assert cut == 444.5, f"没切中缝（被左页 25pt 空带抢走了）：{cut}"
+    # 接线：直方图和左边缘法都判不出栏时，detect_columns 必须走这条兜底。
+    # 稀疏夹具会让直方图自己切出六栏，所以这里把两条旧判据固定成"没找到"。
+    import app.layout.columns as C
+    orig = C._bands_from_histogram
+    C._bands_from_histogram = lambda *a, **kw: [{"x0": 0.0, "x1": 900.0}]
+    try:
+        bands = detect_columns(items, 900)
+    finally:
+        C._bands_from_histogram = orig
+    assert len(bands) == 2 and abs(bands[0]["x1"] - 444.5) < 0.6, \
+        f"detect_columns 没走兜底：{bands}"
+t("中缝要找最宽的合格缝（页内空带不许抢）", exact_gap_split_picks_the_widest_central_gap)
+
+def exact_gap_split_rejects_bad_shapes():
+    # 反例①：单栏参差行 —— 外接框互相接上，只有一整段墨 → 不切
+    ragged = [I(40 + (i % 3) * 20, 80 + i * 30, 480 - (i % 3) * 40, "x")
+              for i in range(8)]
+    assert _exact_gap_split(ragged, 900) is None, "参差单栏被劈成两栏"
+    # 反例②：只有左边有内容 → 右边没有第二段墨
+    one_side = [I(40 + i * 20, 80 + i * 30, 120, "x") for i in range(6)]
+    assert _exact_gap_split(one_side, 900) is None, "单边内容也切"
+    # 反例③：缝在页面左边 27%（页面宽 1200）→ 不是中缝
+    edge = [I(20, 80, 80, "a"), I(120, 80, 80, "b"), I(220, 80, 80, "c"),
+            I(360, 80, 60, "d"), I(440, 80, 60, "e"), I(520, 80, 60, "f")]
+    assert _exact_gap_split(edge, 1200) is None, "页边大缝被当中缝"
+    # 反例④：缝在页面右侧 84% → 同样不算中缝
+    edge2 = [I(500, 80, 60, "a"), I(580, 80, 60, "b"), I(660, 80, 60, "c"),
+             I(800, 80, 20, "d"), I(830, 80, 20, "e"), I(860, 80, 20, "f")]
+    assert _exact_gap_split(edge2, 900) is None, "右侧页边缝被当中缝"
+    # 反例⑤：缝只有 10pt（<18pt）
+    short = [I(40, 80, 360, "a"), I(40, 120, 360, "b"), I(40, 160, 360, "c"),
+             I(410, 80, 120, "d"), I(410, 120, 120, "e"), I(410, 160, 120, "f")]
+    assert _exact_gap_split(short, 900) is None, "10pt 小缝也切"
+    # 反例⑥：左边只有 2 个框（<3）→ 不能成栏
+    few = [I(40, 80, 120, "a"), I(40, 120, 120, "b"),
+           I(500, 80, 120, "c"), I(500, 120, 120, "d"),
+           I(500, 160, 120, "e"), I(500, 200, 120, "f")]
+    assert _exact_gap_split(few, 900) is None, "左边 2 个框也切"
+t("中缝兜底的六条反例", exact_gap_split_rejects_bad_shapes)
 
 print("\n[内容守恒 —— 压力测试抓到的真 bug]")
 def no_content_loss():

@@ -100,6 +100,32 @@ M = [
              '    if True:\n'
              '        return clip, leak, bleed, stem_in, residue, {}',
              "手写材料"),
+    # ── 切边尺的家具行豁免（周末作业(1) 绿色"智慧加油站"横幅）──
+    # 这条期望串挑到具体那条对照，不是笼统的"审计尺自检"：
+    # 自检里有 50 条，随便哪条红都不能算"这条判据有尺在量"。
+    Mutation("关·家具行色块整块不挖（横幅圆角底被当成切边）", AU,
+             "    if not furn or not ink.any():\n        return",
+             "    if True:\n        return",
+             "横幅的彩色底被算成被切掉的图"),
+    Mutation("过·家具行色块不看宽度上限（横幅旁边的真图被一起吞掉）", AU,
+             "            if (ov >= 0.5 * (cx1 - cx0)\n"
+             "                    and (cx1 - cx0) <= (tx1 - tx0) + 2 * FURNITURE_BLOCK_PAD_PT):",
+             "            if (ov >= 0.5 * (cx1 - cx0)):",
+             "横幅旁边连着的图块被一起盖掉"),
+    Mutation("过·所有文字行都当家具行（普通文字旁的切边被吞掉）", AU,
+             '        if is_furniture_text(str(tb[4] if len(tb) > 4 else "")):',
+             "        if True:",
+             "横幅色块套到了普通文字上"),
+    # ── 共享图回看（大题头下的选项伪题把图挡在两道之外）──
+    Mutation("关·共享图只回看紧挨着的一道（伪题挡住就误报缺图）", AU,
+             "            for prev in reversed(qs[max(0, i - 3):i]):",
+             "            for prev in reversed(qs[max(0, i - 1):i]):",
+             "共享图挂在两道之前的伪题上"),
+    Mutation("过·共享图跨大题回看（上一大题的图当成这题的）", AU,
+             '                if prev.get("section") != q.get("section"):\n'
+             "                    break",
+             "                if False:\n                    break",
+             "图在上一大题里"),
     # ── 逐页复核目录：旧版页面混进来，会把人眼复核骗到 ──
     Mutation("关·旧逐页图清理（上一版的 p3 混进本版复核）", AU,
              '    for f in os.listdir(out_dir):\n        if pat.match(f):',

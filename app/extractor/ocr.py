@@ -39,6 +39,34 @@ def _get_engine():
     return _engine
 
 
+def _recognize_digit(eng, img) -> tuple[str, float]:
+    """只识别、不检测：白字抠出来后是孤立的一个数字，检测网络找不到它。"""
+    res, _ = eng(img, use_det=False, use_cls=False, use_rec=True)
+    if not res:
+        return "", 0.0
+    row = res[0]
+    if isinstance(row, (list, tuple)) and row:
+        return str(row[0]), float(row[1]) if len(row) > 1 else 0.0
+    return "", 0.0
+
+
+def _add_badges(eng, path: str, out: list[dict[str, Any]]) -> None:
+    """彩色题号徽标补检。失败绝不能让整页 OCR 挂掉。"""
+    try:
+        import cv2
+        import numpy as np
+
+        from .badges import find_badges
+        # cv2.imread 在 Windows 上读不了中文路径；np.fromfile + imdecode 可以
+        bgr = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if bgr is None:
+            return
+        out.extend(find_badges(
+            bgr, out, recognize=lambda im: _recognize_digit(eng, im)))
+    except Exception:
+        return
+
+
 def ocr_image(path: str) -> list[dict[str, Any]]:
     """单张图 → [{text,x,y,w,h,conf}]，坐标是像素、左上原点。"""
     eng = _get_engine()
@@ -56,6 +84,8 @@ def ocr_image(path: str) -> list[dict[str, Any]]:
             "w": round(max(xs) - min(xs), 1), "h": max(round(max(ys) - min(ys), 1), 1),
             "conf": round(conf, 3),
         })
+    # 教辅活页的 1/2/4 这类白字彩色题号检测不到 → 整页并成一道无号题
+    _add_badges(eng, path, out)
     return out
 
 

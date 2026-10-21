@@ -17,10 +17,21 @@ OCR 读到的碎片拼回这一行。拼不回来就【整行放弃】，绝不�
 全部来自真实卷的读数表（E:\\数学卷子\\第三单元练习题.pdf 第 1 页 第 4 题，
 27 个小块的实心度/圆度/顶点数/填充率），不是拍脑袋：
     五角星  实心度 0.82–0.85  圆度 0.62–0.65  顶点 7–10/5/5
-    弯月    实心度 0.69        圆度 0.41        顶点 11/8–10/5–7
+    弯月    实心度 0.69        圆度 0.41        填充 0.21  径向比 0.00  占空 0.83–0.85
     加号    实心度 0.21–0.28  圆度 0.10–0.13   顶点 8/8/8
     括号    高/宽 1.8          实心度 0.34–0.36
     二维码块 实心度 1.00 填充 0.86（→ 正方形，但那一行没有算式 → 整行拒绝）
+
+【弯月为什么不能只靠实心度】
+它和加号都"不凸"，但加号实心度 ≤0.42；和圆、环的区别是【填充率】低（0.21，
+圆盘 0.8+）。最稳的一条是【径向外凸】的分布：弯月只有一段弧，开口那侧扫不到墨，
+径向比（最近/最远）≈0；圆/星各方向的墨都在。这条同时把"一条斜线/一个破折号"
+挡在外面——后者占空只有 0.2 左右，弯月的弧占了 0.83 的圆周。
+
+【花朵的读数来自合成图样，真卷上还没抽到】
+判据是"5–8 个胖角"：实心度 0.90、圆度 0.67、填充 0.66、径向比 0.71、占空 0.62。
+蘑菇（4 瓣，实心度 0.88）和青蛙（2 瓣，0.90）都是整张配图，不是紧凑符号，
+必须留在〔图〕/配图这一侧——它们过不了"5–8 瓣"。
 """
 from __future__ import annotations
 
@@ -51,11 +62,13 @@ CJK_IN_ROW_KILLS = True     # 行里带中文说明 → 那是题目文字，图
 CHARS: dict[str, str] = {
     "star": "★", "circle": "●", "ring": "○", "square": "□",
     "triangle": "△", "diamond": "◆",
+    "moon": "〔弯月〕", "flower": "〔花朵〕",
     "plus": "＋", "minus": "－", "times": "×", "equals": "＝",
     "paren_open": "（", "paren_close": "）",
     "shape": "〔图〕",       # 是个紧凑图形，但不认识：诚实标出来，别猜
 }
-SHAPE_LABELS = ("star", "circle", "ring", "square", "triangle", "diamond", "shape")
+SHAPE_LABELS = ("star", "circle", "ring", "square", "triangle", "diamond",
+                "moon", "flower", "shape")
 
 
 def features(mask, np) -> dict[str, float]:
@@ -126,6 +139,12 @@ def features(mask, np) -> dict[str, float]:
         "cx_off": float(xs.mean() / max(1, w) - 0.5),
         "runs_top": float(_runs(top)), "runs_mid": float(_runs(mid)),
         "lobes": float(lobes),
+        # 径向剖面的两个"形状指纹"（都从同一份 prof 来，不另算一遍）：
+        #   prof_ratio = 最近/最远。弯月开口那侧没有墨 → ≈0；圆/星/方框都 >0.4。
+        #   duty = 半径超过"半高"的角度占比。细尖星 0.38、胖花瓣 0.62、弯月 0.83，
+        #          一条斜线只有 0.2（它根本不是环住的形状）。
+        "prof_ratio": (lo / hi) if hi > 0 else 0.0,
+        "duty": float((prof > (lo + 0.5 * (hi - lo))).mean()) if hi > lo else 0.0,
         # 括号朝哪边开口：弧线【最弯的那一侧】墨最多。用"顶端的 x − 中段的 x"判，
         # 不用质心偏移 —— 质心会被线宽带偏（画粗一点的"）"质心反而偏左，实测翻车）。
         "tip_off": float(_band_x(top) - _band_x(mid)),
@@ -141,7 +160,8 @@ def classify(f: dict[str, float]) -> str | None:
 
     判定顺序是有讲究的：先判"又高又窄"的括号，再判运算符，最后才判形状。
     括号和加号的实心度区间是重叠的（0.21 vs 0.34），靠长宽比分开；
-    五角星和正方形的圆度区间也重叠（0.62 vs 0.78），靠实心度+填充率分开。
+    五角星和正方形的圆度区间也重叠（0.62 vs 0.78），靠实心度+填充率分开；
+    花朵和星都"有 5–6 个角"，胖花瓣（占空 0.62）排在细尖星（0.38）前面。
     """
     if not f:
         return None
@@ -178,6 +198,20 @@ def classify(f: dict[str, float]) -> str | None:
             return "square" if f["top_w"] >= 0.7 else "diamond"
         if sol >= 0.88 and cir >= 0.78:
             return "circle" if fill >= 0.66 else "ring"
+        # 弯月：一段弧围出大半个圆，开口那侧扫不到墨。
+        # 三条一起看才稳：径向比≈0（有开口）、占空≥0.55（是一条长弧，不是一根斜线）、
+        # 填充率≤0.40（弧之间是空的，不是圆盘）。五角星 lobes 5–6，被 lobes≤3 挡掉。
+        if (sol <= 0.80 and fill <= 0.40 and cir <= 0.55 and lobes <= 3
+                and f["top_w"] <= 0.40 and f["prof_ratio"] <= 0.18
+                and f["duty"] >= 0.55):
+            return "moon"
+        # 花朵：5–8 个【胖】角（占空≥0.5，星那种细尖只有 0.38）。
+        # 必须排在星前面——胖花瓣的星角数也会落进 5–6，会被星抢走。
+        # 蘑菇 4 瓣、青蛙 2 瓣过不了瓣数，仍留在配图/〔图〕。
+        if (sol >= 0.85 and cir >= 0.55 and fill >= 0.45
+                and 5 <= lobes <= 8 and f["top_w"] <= 0.60
+                and f["prof_ratio"] >= 0.55 and f["duty"] >= 0.50):
+            return "flower"
         # 五角星：五个/六个角（顶点数或径向峰都算，扫描图上两者会各抽风一次），
         # 且【不凸】——方框/圆盘的实心度 ≥0.88，已经被上面几条挑走了。
         if (lobes in (5, 6) or v3 in (5, 6)) and sol <= 0.88 and cir <= 0.76:

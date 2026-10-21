@@ -20,11 +20,13 @@ from mutate_gate import Mutation, run                    # noqa: E402
 SYM = os.path.join(ROOT, "app", "extractor", "symbols.py")
 TEST = os.path.join(ROOT, "tests", "test_symbols.py")
 
-SHAPE = "十二种形状各画一遍必须认对"
+SHAPE = "十四种形状各画一遍必须认对"
 UNKNOWN = "认不出的墨不许猜"
 LINE = "scan_span 把 ★＋★＝20 还原成一行"
 REFUSE = "四道反例：没等号 / 带中文 / 有认不出的块 / 扫描 logo 一律不重建"
 EQ = "两根杠＝一个等号"
+NAME = "scan_span 把弯月/花朵印成名字"
+NEG = "真卷配图（蘑菇/青蛙）"
 
 M = [
     Mutation("过·汉字笔画不再挡（一个「国」字会被认成方框）", SYM,
@@ -52,6 +54,40 @@ M = [
              '            return "star"',
              '        if False:\n            return "star"',
              SHAPE),
+    Mutation("关·弯月判据摘掉（弯月只能落到 〔图〕）", SYM,
+             '        if (sol <= 0.80 and fill <= 0.40 and cir <= 0.55 and lobes <= 3\n'
+             '                and f["top_w"] <= 0.40 and f["prof_ratio"] <= 0.18\n'
+             '                and f["duty"] >= 0.55):\n'
+             '            return "moon"',
+             '        if False:\n            return "moon"',
+             SHAPE),
+    Mutation("关·花朵判据摘掉（花朵只能落到 〔图〕）", SYM,
+             '        if (sol >= 0.85 and cir >= 0.55 and fill >= 0.45\n'
+             '                and 5 <= lobes <= 8 and f["top_w"] <= 0.60\n'
+             '                and f["prof_ratio"] >= 0.55 and f["duty"] >= 0.50):\n'
+             '            return "flower"',
+             '        if False:\n            return "flower"',
+             SHAPE),
+    Mutation("关·名字没带出行（分类对、印出来还是〔图〕）", SYM,
+             '    "moon": "〔弯月〕", "flower": "〔花朵〕",',
+             '    "moon": "〔图〕", "flower": "〔图〕",',
+             NAME),
+    Mutation("过·花朵判据放宽到 2 瓣（青蛙/蘑菇被当花）", SYM,
+             '        if (sol >= 0.85 and cir >= 0.55 and fill >= 0.45\n'
+             '                and 5 <= lobes <= 8 and f["top_w"] <= 0.60\n'
+             '                and f["prof_ratio"] >= 0.55 and f["duty"] >= 0.50):',
+             '        if (sol >= 0.85 and cir >= 0.55 and fill >= 0.45\n'
+             '                and 2 <= lobes <= 8 and f["top_w"] <= 0.70\n'
+             '                and f["prof_ratio"] >= 0.40 and f["duty"] >= 0.50):',
+             NEG),
+    Mutation("过·弯月三门槛同时放宽（5pt 墨点被当弯月）", SYM,
+             '        if (sol <= 0.80 and fill <= 0.40 and cir <= 0.55 and lobes <= 3\n'
+             '                and f["top_w"] <= 0.40 and f["prof_ratio"] <= 0.18\n'
+             '                and f["duty"] >= 0.55):',
+             '        if (sol <= 0.80 and fill <= 0.45 and cir <= 0.55 and lobes <= 3\n'
+             '                and f["top_w"] <= 0.60 and f["prof_ratio"] <= 0.18\n'
+             '                and f["duty"] >= 0.10):',
+             NEG),
     Mutation("过·行闸门不再要求等号（一排圆点也被拼成算式）", SYM,
              "        if len(shapes) < MIN_SHAPES_PER_ROW or not ops or not has_eq:",
              "        if len(shapes) < MIN_SHAPES_PER_ROW or not ops:",

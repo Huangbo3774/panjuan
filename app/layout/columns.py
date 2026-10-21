@@ -136,6 +136,57 @@ def _bands_from_histogram(items: list[dict], page_w: float, key: str,
     return bands
 
 
+def _exact_gap_split(items: list[dict], page_w: float,
+                     min_gap_pt: float = 18.0, min_side: int = 3) -> float | None:
+    """直方图的桶正好劈在缝上时的兜底：按实际外接框投影找一条完全空的竖缝。
+
+    真实卷（第三单元达标练习题B：两页并排拍成一张 1250×881 的图）：
+    中缝 426–463pt 一条框都没有，但桶宽 37.5pt 把这条缝劈成两半，
+    两半各沾着 7 个框 → 直方图没有一个整桶为空，双页被读成单栏，
+    左右两页同一行拼成一句（题干末尾于是跟着右页的密封线原字）。
+    判据：缝宽 ≥18pt、缝心落在页面中段（30%–70%）、两侧各有 ≥3 个框。
+    只在这里兜底，不动直方图已有的判决。
+    """
+    if not items or not page_w:
+        return None
+    spans: list[tuple[float, float]] = []
+    for it in items:
+        a = max(0.0, float(it.get("x", 0) or 0))
+        b = min(float(page_w), a + max(float(it.get("w", 1) or 1), 1.0))
+        if b > a:
+            spans.append((a, b))
+    if len(spans) < min_side * 2:
+        return None
+    spans.sort()
+    merged = [list(spans[0])]
+    for a, b in spans[1:]:
+        if a <= merged[-1][1] + 0.5:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    # 取【最宽】的合格缝，不是第一条合格缝：双页照片的左页里也可能夹着
+    # 20pt 的栏内空带（实测 900pt 页上在 x=270 正好卡进 30% 门槛）；
+    # 中缝通常是最宽的一条（达标B 37pt）。宽度相同再取更靠页面中线的。
+    best_gap = -1.0
+    best_center: float | None = None
+    for (_a1, b1), (a2, _b2) in zip(merged, merged[1:]):
+        gap = a2 - b1
+        if gap < min_gap_pt:
+            continue
+        center = (b1 + a2) / 2.0
+        if not (0.30 * page_w <= center <= 0.70 * page_w):
+            continue
+        left_n = sum(1 for a, b in spans if b <= b1 + 0.5)
+        right_n = sum(1 for a, b in spans if a >= a2 - 0.5)
+        if left_n < min_side or right_n < min_side:
+            continue
+        if (gap > best_gap + 1e-6
+                or (abs(gap - best_gap) <= 1e-6 and best_center is not None
+                    and abs(center - page_w / 2.0) < abs(best_center - page_w / 2.0))):
+            best_gap, best_center = gap, center
+    return best_center
+
+
 def detect_columns(items: list[dict], page_w: float, min_gap_ratio: float = 0.03,
                    occupancy: float = 0.12, bucket: float | None = None,
                    min_band_share: float = 0.10) -> list[dict]:
@@ -159,6 +210,10 @@ def detect_columns(items: list[dict], page_w: float, min_gap_ratio: float = 0.03
         counts = [sum(1 for i in items if b["x0"] <= i["x"] < b["x1"]) for b in left]
         if min(counts) >= max(3, len(items) * 0.15):
             return left
+    # 直方图分桶正好把中缝劈成两半时，补一次按真实投影找缝（见 _exact_gap_split）。
+    cut = _exact_gap_split(items, page_w)
+    if cut is not None:
+        return [{"x0": 0.0, "x1": cut}, {"x0": cut, "x1": float(page_w)}]
     return bands
 
 

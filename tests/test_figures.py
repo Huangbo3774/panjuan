@@ -1212,6 +1212,132 @@ def crop_top_edge_does_not_swallow_the_stem_second_line():
     assert FG._clip_stem_row(tiny, rows) == tiny, "把图裁没了"
 
 
+def crop_top_edge_cuts_through_the_stem_first_line():
+    """裁框上沿从【本题第一行字的中间】切过（cov 0.67）也要收。
+
+    周末作业(1) p2 第 3 题实测：题干行 553.5–573.1，裁框上沿 560.0 正好切在
+    字中间，`_covers` 只有 0.67，按 80% 的门槛永远收不掉 —— 图顶留着半行题干
+    和题号徽标。这是"贴顶行"判据唯一的例外：只对【本题第一行】降到 0.5。
+
+    ⚠️ 直接喂真实坐标：合成 PDF 里行框和字永远对齐，造不出"从字中间切"。
+    """
+    import app.extractor.figures as FG
+    stem = "3.下面各图中，涂色部分能用分数表示的是（    ）。"
+    rows = [{"x": 60.0, "y": 553.5, "w": 300.0, "h": 19.6, "text": stem},
+            {"x": 60.0, "y": 600.0, "w": 200.0, "h": 12.0, "text": "图里的标注"}]
+    rect = (50.0, 560.0, 400.0, 668.8)
+    cut = FG._clip_stem_row(rect, rows)
+    assert cut[1] >= 574.1, f"被上沿切开的起手句没收：y0={cut[1]:.1f}，应收到 574.1"
+    assert cut[0] == rect[0] and cut[2] == rect[2] and cut[3] == rect[3], \
+        f"只许动上沿：{cut}"
+
+    # 反例①：同一个行框，但【不是第一行】（上面还压着一行题干）→ 不许收。
+    #   它贴左沿、也成句 —— 唯一拦住它的就是"只认第一行"。
+    r2 = [{"x": 60.0, "y": 520.0, "w": 300.0, "h": 16.0, "text": "2.先看左边的图，再填空。"}] + rows
+    assert FG._clip_stem_row(rect, r2) == rect, "例外扩散到了第二行"
+    # 反例②：切开了、也够长，但没有句末标点/空位 → 像图注，不许收
+    r3 = [{"x": 60.0, "y": 553.5, "w": 300.0, "h": 19.6, "text": "涂色部分能用分数表示的是哪一幅图"},
+          rows[1]]
+    assert FG._clip_stem_row(rect, r3) == rect, "没有成句标点的标签行被当成题干"
+    # 反例③：只蹭到行框下沿（cov 0.26 < 0.50）→ 框里没有字，不许削图顶
+    graze = (50.0, 568.0, 400.0, 668.8)
+    assert FG._clip_stem_row(graze, rows) == graze, "覆盖率下限 0.50 没起作用"
+    # 反例④：第一行被切开但不足 8 字（图注"图1"）
+    r4 = [{"x": 60.0, "y": 553.5, "w": 30.0, "h": 19.6, "text": "图1。"}, rows[1]]
+    assert FG._clip_stem_row(rect, r4) == rect, "短图注被当成起手句"
+
+
+def crop_top_edge_narrow_tail_of_a_long_stem_row():
+    """窄图贴在长题干行的右下角：面积覆盖率只有 0.24，框里却真有字。
+
+    真实卷（综合实践单元(1) p2 第 6 题 2 号配送车）：裁框
+    (301.6,154.7,345.8,198.8)，题干行框 155.8–161.3、横向只重叠 34pt。
+    `_covers` 算的是面积占比，于是"只蹭到一点"的反例把这一刀挡住了，
+    成品图顶带着半行"画一画。（6分）"。
+
+    ⚠️ 必须喂像素：判据是"重叠区里有没有墨"，不是面积。
+    """
+    import numpy as np
+    import app.extractor.figures as FG
+
+    class Src:
+        pass
+    src = Src()
+    src.ink_thr = 128
+    src.gray = np.full((420, 560), 255, dtype=np.uint8)
+    k = 100 / 72.0
+    row = {"x": 201.4, "y": 155.8, "w": 134.6, "h": 5.5,
+           "text": "2.请为2号无人配送车设计一条行驶路线。画一画。（6分）"}
+    rect = (301.6, 154.7, 345.8, 198.8)
+    # 只在题干行与裁框的重叠区里点墨（模拟"画一画。（6分）"这半行）
+    y0, y1 = int(156.0 * k), int(161.0 * k)
+    x0, x1 = int(303.0 * k), int(335.0 * k)
+    src.gray[y0:y1, x0:x1] = 0
+    cut = FG._clip_stem_row(rect, [row], src=src, k=k)
+    assert cut[1] >= 162.0, f"窄图顶上的半行题干没收：y0={cut[1]:.1f}"
+
+    # 反例①：同样的行/框，但重叠区是白纸 → 框里没有字，不许削图顶
+    src2 = Src()
+    src2.ink_thr = 128
+    src2.gray = np.full((420, 560), 255, dtype=np.uint8)
+    assert FG._clip_stem_row(rect, [row], src=src2, k=k) == rect, "白纸上也削了图顶"
+
+    # 反例②：不传像素时保持旧行为（面积覆盖率 0.24 不收）
+    assert FG._clip_stem_row(rect, [row]) == rect, "旧调用没有 src 也改了框"
+
+    # 反例③：行框顶已经在裁框顶下方超过 4pt → 是图自己的标注，不收
+    inside = {"x": 201.4, "y": 170.0, "w": 134.6, "h": 5.5,
+              "text": "2.请为2号无人配送车设计一条行驶路线。画一画。（6分）"}
+    assert FG._clip_stem_row(rect, [inside], src=src, k=k) == rect, "图内标注被裁了"
+
+    # 反例④：短标签（"北 东"）即使压到裁框上沿、重叠区真有墨，也不当题干。
+    # 这里把上沿抬到 157.9，让面积覆盖率掉到 0.62（低于 0.8 的主判据），
+    # 只剩新加的"重叠区有墨"这条分支可能命中 —— 必须被"≥8 字"挡住。
+    short = {"x": 301.4, "y": 155.8, "w": 30.0, "h": 5.5, "text": "北 东"}
+    short_rect = (301.6, 157.9, 345.8, 198.8)
+    assert FG._clip_stem_row(short_rect, [short], src=src, k=k) == short_rect, "短图注被当题干"
+    long_row = {"x": 301.4, "y": 155.8, "w": 30.0, "h": 5.5,
+                "text": "2.请为2号无人配送车设计一条行驶路线。"}
+    assert FG._clip_stem_row(short_rect, [long_row], src=src, k=k)[1] > short_rect[1], \
+        "同样的几何、换成题干长句却不收（分支没生效）"
+
+    # 反例⑤：OCR 把题干和图内气泡并成一行（中间夹着一大段空白）。
+    # 真实卷（综合实践单元(1) p1 第 4 题）："…背靠背夹    我面向东。"
+    # 若拿整行去收图顶，孩子头顶和气泡一起被切掉，题目没法答。
+    merged = {"x": 201.4, "y": 155.8, "w": 134.6, "h": 5.5,
+              "text": "4.如右图所示，两名同学玩背靠背夹    我面向东。"}
+    assert FG._clip_stem_row(rect, [merged], src=src, k=k) == rect, \
+        "题干与气泡并成一行时把图顶削了（气泡被切）"
+t("窄图的题干行字尾要收（含四个反例）", crop_top_edge_narrow_tail_of_a_long_stem_row)
+
+
+def text_edge_fragment_is_not_a_figure():
+    """只有多行正文右端字尾的窄条不是配图（附例题的 14×38pt 文字残片）。"""
+    import app.extractor.figures as FG
+    rows = [
+        {"x": 214.8, "y": 211.7, "w": 113.8, "h": 6.2,
+         "text": "山的南面与水的北面光照更    “贵阳”因位于贵山的（"},
+        {"x": 205.9, "y": 222.7, "w": 139.2, "h": 5.5,
+         "text": "充足，故称“阳”；山的北面与水的    而得名，“江阴”因位于长江的"},
+        {"x": 205.9, "y": 232.3, "w": 112.1, "h": 6.3,
+         "text": "南面光照较少，故称“阴”。            )面而得名。"},
+    ]
+    strip = (331.8, 208.7, 345.8, 246.4)
+    assert FG._is_text_edge_fragment(strip, rows), "文字字尾条被当成配图"
+
+    # 反例①：宽 30pt → 已经像一块真图（地图/表格的一列），不砍
+    assert not FG._is_text_edge_fragment((331.8, 208.7, 361.8, 246.4), rows), "宽条被砍"
+    # 反例②：只压着一行 → 不够证明是多行字尾
+    assert not FG._is_text_edge_fragment(strip, rows[:1]), "单行也砍"
+    # 反例③：窄条在行框左边远处 → 不是字尾
+    assert not FG._is_text_edge_fragment((150.0, 208.7, 164.0, 246.4), rows), "左侧独立窄图被砍"
+    # 反例④：行框本身很短（图内标签）→ 不参与证明
+    labels = [{"x": 300.0, "y": 211.0, "w": 30.0, "h": 6.0, "text": "北"},
+              {"x": 300.0, "y": 222.0, "w": 30.0, "h": 6.0, "text": "东"}]
+    assert not FG._is_text_edge_fragment(strip, labels), "短标签凑成了文字残片"
+t("正文右端字尾的窄条不是配图（含四个反例）", text_edge_fragment_is_not_a_figure)
+
+
 def crop_top_edge_skips_figure_labels_inside_the_picture():
     """放宽到"任意贴顶行"之后，图里的标注也被裁掉了 —— 非第一行必须贴左沿。
 
@@ -1308,6 +1434,32 @@ def row_peers_join_the_crop():
     g4 = FG._absorb_row_peers(rect, [above], box)
     assert g4[1] == rect[1], f"上沿被同行小块顶回去了（题干首行会重新框进图）：{g4}"
     assert g4[0] == 10.0, f"这条本该横向并进来却没并：{g4}"
+
+    # 边框条：表格自己的底边被文字洞切断，只剩宽 113.8pt、高 6pt 的一截，
+    # 和表身只压住 0.1pt。这不是"同行小块"，但必须并回来，否则表格缺底边。
+    # 真实卷（综合实践单元(1) p1 第 3 题记录单，审计 切边 下+237px）。
+    table = (81.2, 372.8, 409.8, 462.8)
+    strip = (295.9, 462.7, 409.7, 468.7)
+    flags: list[str] = []
+    g5 = FG._absorb_row_peers(table, [strip], (0, 0, 500, 500), flags)
+    assert abs(g5[3] - 468.7) < 0.01 and flags == ["bottom"], (g5, flags)
+    assert g5[:2] == table[:2] and g5[2] == table[2], f"边框条不许改别的沿：{g5}"
+    # 顶边同理
+    top_strip = (295.9, 366.8, 409.7, 372.9)
+    g6 = FG._absorb_row_peers(table, [top_strip], (0, 0, 500, 500))
+    assert abs(g6[1] - 366.8) < 0.01, f"表格顶边没并回来：{g6}"
+    # 反例①：薄到 1.5pt 的扫描线（不是 3–12pt 的边框条）
+    line = (295.9, 462.7, 409.7, 464.2)
+    assert FG._absorb_row_peers(table, [line], (0, 0, 500, 500)) == table
+    # 反例②：宽度不足图宽 30%（那是一个小图标，不是整条边框）
+    short = (250.0, 462.7, 330.0, 468.7)
+    assert FG._absorb_row_peers(table, [short], (0, 0, 500, 500)) == table
+    # 反例③：离下沿 12pt（>10pt）→ 另一行的一块图，不是这条边框
+    far = (295.9, 474.8, 409.7, 480.8)
+    assert FG._absorb_row_peers(table, [far], (0, 0, 500, 500)) == table
+    # 反例④：伸出图的右沿 60pt → 是邻块的横线，不是表格底边
+    overhang = (350.0, 462.7, 470.0, 468.7)
+    assert FG._absorb_row_peers(table, [overhang], (0, 0, 500, 500)) == table
 
 
 def side_by_side_pieces_join_one_figure():
@@ -1739,6 +1891,19 @@ def text_inside_figures_is_removed_from_stem():
     assert q10[0]["text"].endswith("教学楼 活动室 北 北"), q10[0]["text"]
 
 
+def box_text_patterns_also_tries_without_the_question_number():
+    """行框常带题号（"2.按要求填一填。"），拼好的题干已剥题号：两版都要能匹配。
+
+    只留原样一版时，竖排图那块的行框「3」「21」会匹配不上题干，残留在题干末尾
+    （真实卷 第三单元 p2 第 1 题）；地图题的行尾图注也会因此认不出来。
+    """
+    import app.extractor.figures as FG
+    pats = FG.box_text_patterns("2.按要求填一填。")
+    assert len(pats) == 2, f"只给了一版（去题号那版没了）：{pats}"
+    assert any("2" in p for p in pats), f"原样版丢了：{pats}"
+    assert any("2" not in p for p in pats), f"去题号版丢了：{pats}"
+
+
 def residue_cleanup_is_wired_into_the_pipeline():
     """接线检查：出题接口与审计尺都必须真的调用清理，不能只留一个函数。"""
     for rel in (os.path.join("app", "api", "papers.py"),
@@ -1924,17 +2089,23 @@ def banner_rule_wiring_end_to_end():
 def stem_bottom_clip_is_wired_into_find_figures():
     """接线检查：下沿裁题干这条必须真的跑在 find_figures 里，不是死函数。
 
-    合成一页：图墨 90–225，题干行框 203–221 整行落在图墨上（扫描卷里
-    数轴图下面紧贴题干就是这个样子），±3pt 外扩后裁框下沿 228，行底 221
-    离下沿 7pt —— 正是 q30 的 8.7pt 那一档。函数单测证明判据对；
-    这条证明它被接进链路，且报告里留下 `stem-bottom-clipped`。
+    合成一页：图墨 90–202，外加一根探到 225 的竖笔画（图自己的下探线）；
+    题干行框 203–221 印在【白纸】上、整行落在裁框里（扫描卷里数轴图下面
+    紧贴题干就是这个样子），±3pt 外扩后裁框下沿 228，行底 221 离下沿 7pt ——
+    正是 q30 的 8.7pt 那一档。函数单测证明判据对；这条证明它被接进链路，
+    且报告里留下 `stem-bottom-clipped`。
+
+    ⚠️ 文字行不能压在整块实心墨上：那样上下都是满宽墨，`_row_in_border`
+       会正确地判成"字印在闭合边框里"（周末作业绿框那条），于是不裁。
+       第一版夹具就是实心块盖住文字行，加了这条守卫后当场变红。
     """
     import app.extractor.figures as FG
     from app.extractor.figures import find_figures, PageSource
     import numpy as np
     k = FG.DPI_PROBE / 72.0
     g = np.full((int(300 * k), int(400 * k)), 255, dtype=np.uint8)
-    g[int(90 * k):int(225 * k), int(30 * k):int(300 * k)] = 40     # 图墨（实心块）
+    g[int(90 * k):int(202 * k), int(30 * k):int(300 * k)] = 40     # 图墨（实心块）
+    g[int(202 * k):int(225 * k), int(275 * k):int(290 * k)] = 40   # 图自己下探的笔画
     src = PageSource(1, 400.0, 300.0, g, lambda rect, out: None)
     spans = [{"q_index": 0, "page": 1, "col": 0,
               "y0": 35.0, "y1": 250.0, "x0": 0.0, "x1": 400.0,
@@ -2551,6 +2722,196 @@ def graphic_equation_is_cropped_as_one_original_row():
                 f"第 {j + 1} 题没有图形算式，却被加了说明"
 
 
+def term_diagram_block_is_one_original_picture():
+    """算式各部分名称的竖排图：标签行在、读作行在、中间夹着碎片 → 整块成图。
+
+    真实卷（第三单元练习题 p2 第 1 题）：OCR 只读到「3            21      读作：(
+    」「:」「乘数」，×、7、=、省略号和括号全丢。任何文本重建都拼不出原题，
+    必须整块裁图并给题干加"各部分名称见下方原图"。
+    """
+    import app.extractor.figures as FG
+    src = _gblock_source()
+    stem = {"x": 40.0, "y": 100.0, "w": 330.0, "h": 14.0,
+            "text": "1.乘法是求几个相同(      )的和的简便运算。"}
+    form = {"x": 74.0, "y": 126.0, "w": 352.0, "h": 16.0,
+            "text": "3            21      读作：("}
+    dot = {"x": 74.0, "y": 150.0, "w": 6.0, "h": 12.0, "text": ":"}
+    label = {"x": 60.0, "y": 168.0, "w": 32.0, "h": 16.0, "text": "乘数"}
+    nxt = {"x": 40.0, "y": 198.0, "w": 100.0, "h": 18.0, "text": "第二步 练变式"}
+    span = {"x0": 38.0, "y0": 94.0, "x1": 560.0, "y1": 194.0,
+            "text_boxes": [stem, form, dot, label, nxt]}
+    gb = FG._term_diagram_block(src, span)
+    assert gb and gb.get("kind") == "terms", gb
+    x0, y0, x1, y1 = gb["rect"]
+    assert x0 <= 60.0 and x1 >= 426.0, f"竖排图没盖住标签/读作：{gb['rect']}"
+    assert y0 > 114.0, f"裁框上沿盖进题干行（会被图文分离删掉）：{gb['rect']}"
+    assert y1 < 198.0, f"裁框下沿吃进下一节标题：{gb['rect']}"
+
+    # 反例①：没有独立术语标签（q28 那种「乘数是（ 读作：…」的表格式排布）
+    long_label = {"x": 60.0, "y": 168.0, "w": 260.0, "h": 16.0,
+                  "text": "乘数是（            读作：            还可以写成："}
+    assert not FG._term_diagram_block(
+        src, dict(span, text_boxes=[stem, form, dot, long_label])), \
+        "不是独立标签行也当成竖排图"
+    # 反例②：没有「读作」行
+    no_read = dict(form, text="3            21")
+    assert not FG._term_diagram_block(
+        src, dict(span, text_boxes=[stem, no_read, dot, label])), "没有读作行也当成竖排图"
+    # 反例③：标签离读作太远（>80pt）
+    far = dict(label, y=260.0)
+    assert not FG._term_diagram_block(
+        src, dict(span, text_boxes=[stem, form, dot, far])), "隔了整道题还当竖排图"
+    # 反例④：只有标签和读作两行、中间没有碎片 → 更像普通文字行，不裁
+    assert not FG._term_diagram_block(
+        src, dict(span, text_boxes=[stem, form, label])), "两行也当成竖排图"
+    # 反例⑤：裁框会罩住题干行 → 不裁（否则题干被删成白卷）
+    overlap = dict(form, y=104.0, h=24.0)
+    assert not FG._term_diagram_block(
+        src, dict(span, text_boxes=[stem, overlap, dot, label])), \
+        "裁框罩住题干行也照裁"
+
+
+def term_diagram_is_cropped_and_note_is_added():
+    """接线：find_figures 真的把竖排图整块裁出来，题干只留第一句并补专用说明。
+
+    这里不造 PDF：文字层版式会把「3 × 7 = 21 读作…」按空格切成三栏，
+    造出来的夹具和真实扫描件不是一回事。直接给 find_figures 一份
+    【已经从 OCR 读到的】spans（行框与真实卷一致），量的是接线本身。
+    """
+    import numpy as np
+    from PIL import Image
+    from app.extractor.figures import (find_figures, page_source_from_image,
+                                       apply_graphic_notes, strip_text_inside_figures)
+    path = os.path.join(OUT, "算式各部分名称.png")
+    Image.fromarray(np.full((300, 700), 255, dtype=np.uint8)).save(path)
+    src = page_source_from_image(path, 1)
+    stem = {"x": 40.0, "y": 100.0, "w": 330.0, "h": 14.0,
+            "text": "1.乘法是求几个相同(      )的和的简便运算。"}
+    form = {"x": 74.0, "y": 126.0, "w": 352.0, "h": 16.0,
+            "text": "3            21      读作：("}
+    dot = {"x": 74.0, "y": 150.0, "w": 6.0, "h": 12.0, "text": ":"}
+    label = {"x": 60.0, "y": 168.0, "w": 32.0, "h": 16.0, "text": "乘数"}
+    span = {"q_index": 0, "page": 1, "col": 0, "y0": 94.0, "y1": 194.0,
+            "x0": 38.0, "x1": 560.0,
+            "text_boxes": [stem, form, dot, label]}
+    qs = [{"q_no": 1, "qtype": "fill",
+           "text": "乘法是求几个相同(      )的和的简便运算。 3            21 "
+                   "     读作：( : 乘数"}]
+    got = find_figures({1: src}, [span], OUT, questions=qs)
+    imgs = got.get(0) or []
+    terms = [im for im in imgs if im.get("graphic_kind") == "terms"]
+    assert len(terms) == 1, f"竖排图没接上：{[(i.get('name'), i.get('graphic_kind')) for i in imgs]}"
+    im = terms[0]
+    assert im["w_pt"] >= 300 and im["h_pt"] >= 40, f"竖排图裁得太小：{im['rect']}"
+    assert im["rect"][1] >= 118, f"竖排图把题干行裁进去了：{im['rect']}"
+    strip_text_inside_figures(qs, [span], got)
+    apply_graphic_notes(qs, got)
+    t = str(qs[0].get("text") or "")
+    assert "乘法是求几个相同" in t, t
+    assert "（本题算式的各部分名称见下方原图）" in t, t
+    assert "乘数" not in t and "读作" not in t, f"图内碎片还留在题干里：{t!r}"
+
+
+def match_layout_block_is_one_original_picture():
+    """「连一连」：水果图 + 一圈算式 + 连线空间必须整块成图，不许拆成两块图+一行字。
+
+    真实卷（周末作业(1) p1 第 1 题）：按连通域裁只剩上下两小条水果，
+    7 个算式条目被并进题干 —— 连线两端分在两处，题没法做。
+    """
+    import numpy as np
+    import app.extractor.figures as FG
+    class Src:
+        pass
+    src = Src()
+    src.ink_thr = 128
+    src.width_pt = 300.0
+    src.height_pt = 300.0
+    k = 100 / 72.0
+    src.gray = np.full((int(300 * k), int(300 * k)), 255, dtype=np.uint8)
+    bands = [(80, 70, 200, 90), (20, 110, 260, 125), (40, 140, 260, 170),
+             (40, 260, 260, 275)]        # 最后一条是隔着 90pt 空白的页脚墨带
+    for x0, y0, x1, y1 in bands:
+        src.gray[int(y0 * k):int(y1 * k), int(x0 * k):int(x1 * k)] = 0
+    anchor = {"x": 20.0, "y": 40.0, "w": 100.0, "h": 10.0,
+              "text": "1.想一想，连一连。"}
+    items = {"x": 30.0, "y": 100.0, "w": 120.0, "h": 10.0,
+             "text": "6+6   6个2   6X2   2X6"}
+    span = {"x0": 10.0, "y0": 35.0, "x1": 290.0, "y1": 290.0,
+            "text_boxes": [anchor, items]}
+    gb = FG._match_layout_block(src, span)
+    assert gb and gb.get("kind") == "match", gb
+    x0, y0, x1, y1 = gb["rect"]
+    assert y0 <= 52.0 and y1 >= 172.0, f"没盖住整组连线条目：{gb['rect']}"
+    assert y1 < 240.0, f"页脚那条断开 90pt 的墨带被裁进来：{gb['rect']}"
+    assert x0 <= 20.0 and x1 >= 260.0, f"三行条目没被横向盖全：{gb['rect']}"
+
+    # 反例①：题干里没有「连一连」
+    assert not FG._match_layout_block(
+        src, dict(span, text_boxes=[dict(anchor, text="1.看图填空。"), items])), \
+        "普通题也整块成图"
+    # 反例②：题干本身带空位 → 是要作答的题，不是纯连线版式
+    assert not FG._match_layout_block(
+        src, dict(span, text_boxes=[dict(anchor, text="1.连一连（  ）。"), items])), \
+        "带空位的题也整块成图"
+    # 反例③：锚点下面还有空位 → 后面的文字不能进图
+    assert not FG._match_layout_block(
+        src, dict(span, text_boxes=[anchor, items,
+                                    {"x": 30.0, "y": 200.0, "w": 80.0, "h": 10.0,
+                                     "text": "答案：（    ）"}])), \
+        "下面带空位的题也整块成图"
+    # 反例③b：空位行就落在第一块墨带里 —— 只有"空位"这一条能挡（反例③
+    # 同时被下面"掉出第一块"那条挡住，删掉空位判据它也照样返回 None，尺是空的）
+    assert not FG._match_layout_block(
+        src, dict(span, text_boxes=[anchor, items,
+                                    {"x": 30.0, "y": 130.0, "w": 80.0, "h": 10.0,
+                                     "text": "答案：（    ）"}])), \
+        "第一块里的空位行也整块成图"
+    # 反例④：锚点下面隔着一大段空白还有条目 → 结构不明确，不接管
+    assert not FG._match_layout_block(
+        src, dict(span, text_boxes=[anchor, items,
+                                    {"x": 30.0, "y": 240.0, "w": 120.0, "h": 10.0,
+                                     "text": "6+6   6个2   6X2"}])), \
+        "中间断开也硬缝成一块"
+    # 反例⑤：锚点下面全白（没有图/条目）→ 不裁空白
+    blank = Src()
+    blank.ink_thr = 128
+    blank.width_pt = 300.0
+    blank.height_pt = 300.0
+    blank.gray = np.full((int(300 * k), int(300 * k)), 255, dtype=np.uint8)
+    assert not FG._match_layout_block(
+        blank, dict(span, text_boxes=[anchor])), "白纸上也裁了一块"
+
+
+def match_layout_is_cropped_and_note_is_added():
+    """接线：find_figures 真的把连一连整块裁出，题干只留第一句并补专用说明。"""
+    import app.extractor.figures as FG
+    src = _src_from_bands(400, 300, [(60, 70, 330, 95, 40),
+                                     (30, 110, 370, 130, 40),
+                                     (40, 150, 360, 190, 40)])
+    anchor = {"x": 30.0, "y": 40.0, "w": 150.0, "h": 12.0,
+              "text": "1.想一想，连一连。"}
+    items = {"x": 40.0, "y": 105.0, "w": 200.0, "h": 12.0,
+             "text": "6+6   6个2   6X2   2X6"}
+    span = {"q_index": 0, "page": 1, "col": 0, "x0": 20.0, "x1": 380.0,
+            "y0": 35.0, "y1": 250.0, "text_boxes": [anchor, items]}
+    qs = [{"q_no": 1, "qtype": "fill",
+           "text": "想一想，连一连。\n6+6   6个2   6X2   2X6"}]
+    got = FG.find_figures({1: src}, [span], OUT, questions=qs)
+    imgs = got.get(0) or []
+    match = [im for im in imgs if im.get("graphic_kind") == "match"]
+    assert len(match) == 1, \
+        f"连一连没接上：{[(i.get('name'), i.get('graphic_kind')) for i in imgs]}"
+    im = match[0]
+    assert im["w_pt"] >= 300.0 and im["h_pt"] >= 100.0, f"整块裁得太小：{im['rect']}"
+    assert im["rect"][1] >= 52.0, f"把题干第一句裁进图里：{im['rect']}"
+    FG.strip_text_inside_figures(qs, [span], got)
+    FG.apply_graphic_notes(qs, got)
+    t = str(qs[0].get("text") or "")
+    assert "连一连" in t, t
+    assert "6+6" not in t, f"图里的条目还留在题干里：{t!r}"
+    assert "照着原图连线" in t, t
+
+
 def echo_full_sentence_needs_a_real_sentence_in_the_stem():
     """整题截图判据：被框住的起手行必须是一句 ≥15 字、题干里原样存在的成句。"""
     import app.extractor.figures as FG
@@ -2616,6 +2977,194 @@ def stem_screenshot_trim_keeps_only_the_figure():
     assert 140 <= top[3] < 150 and top[1] == 20, f"上沿/下沿切错：{top}"
 
 
+def short_text_blocks_are_not_whole_question_screenshots():
+    """L0 只认高块；气泡/说明框这类矮块不许整框丢（含三档边界）。
+
+    真实卷（综合实践单元 q20/q22/q23）：39–99pt 的文字块右边并排着方格图；
+    按"整题截图"丢掉，方格图/地图也一起没了。达标A q1 的整题截图 177pt。
+    """
+    import app.extractor.figures as FG
+    assert FG._is_whole_question_screenshot((16.4, 161.9, 361.6, 339.2)), \
+        "达标A 的整题截图没被认成高块"
+    assert not FG._is_whole_question_screenshot((204.4, 55.6, 363.7, 94.4)), \
+        "39pt 的说明气泡被当成整题截图"
+    assert not FG._is_whole_question_screenshot((474.4, 348.4, 818.8, 447.2)), \
+        "99pt 的图文同排块被当成整题截图"
+    assert not FG._is_whole_question_screenshot((0, 0, 300, 119.9)), \
+        "门槛下沿的矮块被当成整题截图"
+    assert FG._is_whole_question_screenshot((0, 0, 300, 120.0)), \
+        "门槛上沿的高块没被认成整题截图"
+
+
+def whole_question_screenshot_is_dropped_before_the_stem_row_is_clipped():
+    """接线检查：整题截图要在裁掉起手行【之前】判。
+
+    真实卷（达标A 第 1 题）：裁框 [16.4,161.9,…] 把起手行 164.9–181.4 框住；
+    `_clip_stem_row` 先把上沿削到 182.4，轮到 `_stem_echo_edit` 时只剩拼音和
+    答案格碎片，选不到起手句 → 整题截图留了下来，图里重复一遍故事题干。
+    这里合成同一结构：题干四行都印在答案格截图里，上下都没有 60pt 干净区。
+    """
+    import numpy as np
+    import app.extractor.figures as FG
+    from app.extractor.figures import find_figures, PageSource
+    k = FG.DPI_PROBE / 72.0
+    w, h = 300, 330
+    g = np.full((int(h * k), int(w * k)), 255, dtype=np.uint8)
+
+    def line(x0, y0, x1, y1):
+        g[int(y0 * k):int(y1 * k) + 1, int(x0 * k):int(x1 * k) + 1] = 20
+
+    # 起手行必须【顶在裁框上沿】才会被 `_clip_stem_row` 削掉 —— 真实卷是
+    # 框 161.9、行 164.9（差 3pt）；这里让图框上沿（外扩后 23.6）离行顶 3.4pt。
+    # 图要够高（≥120pt）才走 L0：达标A 的整题截图实测 177pt，矮块另有处理。
+    gx0, gy0, gx1, gy1 = 30, 30, 260, 200
+    # 左页边装饰线：真实卷是它在起手行左侧撑住裁框上沿（行框只挖 30–260 的墨）。
+    # 起点 30 → 外扩后的框顶 24，离起手行 27 只差 3pt，`_clip_stem_row` 才会削它。
+    line(24, 30, 26, gy1)
+    line(gx0, gy0, gx1, gy0 + 2)
+    line(gx0, gy1 - 2, gx1, gy1)
+    line(gx0, gy0, gx0 + 2, gy1)
+    line(gx1 - 2, gy0, gx1, gy1)
+    for x in range(gx0 + 40, gx1, 40):
+        line(x, gy0, x + 2, gy1)
+    for y in range(gy0 + 20, gy1, 20):
+        line(gx0, y, gx1, y + 2)
+
+    def crop(rect, out):
+        with open(out, "wb") as f:
+            f.write(b"\0" * 400)
+    src = PageSource(1, float(w), float(h), g, crop)
+    tb = [{"x": 30, "y": 27, "w": 230, "h": 14,
+           "text": "1.下面是真真同学准备分享的故事。"},
+          {"x": 30, "y": 58, "w": 230, "h": 14,
+           "text": "养了一只可爱的小狗，它的（    ）叫点点。"},
+          {"x": 30, "y": 80, "w": 230, "h": 14,
+           "text": "好的时候，它会在（    ）的花园里尽情（    ）。"},
+          {"x": 30, "y": 102, "w": 230, "h": 14, "text": "玩耍。"},
+          {"x": 30, "y": 124, "w": 230, "h": 14,
+           "text": "它特别喜欢在（    ）里跑来跑去。"},
+          {"x": 30, "y": 146, "w": 230, "h": 14,
+           "text": "每次看到（    ）就摇尾巴。"},
+          {"x": 30, "y": 168, "w": 230, "h": 14, "text": "我们都很喜欢它。"}]
+    q_text = ("下面是真真同学准备分享的故事。养了一只可爱的小狗，它的（    ）叫点点。"
+              "好的时候，它会在（    ）的花园里尽情（    ）。玩耍。"
+              "它特别喜欢在（    ）里跑来跑去。每次看到（    ）就摇尾巴。"
+              "我们都很喜欢它。")
+    qs = [{"q_no": 1, "qtype": "fill", "text": q_text}]
+    spans = [{"q_index": 0, "page": 1, "col": 0, "y0": 20.0, "y1": 280.0,
+              "x0": 0.0, "x1": 300.0, "text_boxes": tb}]
+    rep = []
+    got = find_figures({1: src}, spans, OUT, report=rep, questions=qs)
+    assert not got.get(0), f"整题截图没在削题干行之前丢掉：{got.get(0)}；report={rep}"
+    assert any(d.get("why") == "stem-screenshot" for d in rep if not d.get("kept")), \
+        f"没走整题截图判据：{rep}"
+
+
+def partially_covered_stem_rows_block_the_clean_region():
+    """裁框横向切掉一截的题干行也算文字块：干净区从它下沿量（达标A q1）。
+
+    真实卷：起手行 164.9–181.4 覆盖 0.87，故事行 216.7–233.3 只覆盖 0.71
+    （行框 177–437，裁框右沿 361.6），末行 277.9–295.9 覆盖 0.74。
+    旧版只按 ≥0.80 的行量文字块，把下面 43pt 的同一道练习当"干净区"，
+    切一刀留下半截截图；现在 0.71/0.74 的行也占位，上下都没有 60pt → 整框丢。
+    """
+    import app.extractor.figures as FG
+    q_text = ("下面是真真同学准备分享的故事。拼一拼，写一写。（9分）"
+              "养了一只可爱的小狗，它的叫点点。好的时候，它会在花园里尽情玩耍。")
+    rows = [{"x": 20, "y": 22, "w": 260, "h": 14,
+             "text": "下面是真真同学准备分享的故事。"},
+            {"x": 20, "y": 38, "w": 260, "h": 14,
+             "text": "拼一拼，写一写。（9分）"},
+            # 这两行宽 380、裁框只到 300：横向被切掉一截（覆盖 0.74）。
+            {"x": 20, "y": 150, "w": 380, "h": 16,
+             "text": "养了一只可爱的小狗，它的叫点点。"},
+            {"x": 20, "y": 170, "w": 380, "h": 16,
+             "text": "好的时候，它会在花园里尽情玩耍。"}]
+    got, why = FG._stem_echo_edit((20, 20, 300, 200), rows, q_text)
+    assert got is None and why == "stem-screenshot", \
+        f"横向切半的题干行没挡住干净区，截图又被留下来了：{got} {why}"
+    # 反例：同样的行完整落在框里（文字块在上半部）→ 下方 114pt 干净区仍在，只切文字块
+    fit = [rows[0], rows[1],
+           dict(rows[2], y=54, w=260), dict(rows[3], y=70, w=260)]
+    got2, why2 = FG._stem_echo_edit((20, 20, 300, 200), fit, q_text)
+    assert why2 == "stem-trim" and got2 is not None, \
+        f"完整落在框里的文字块反而不切了：{got2} {why2}"
+
+
+def number_line_below_a_stem_row_is_not_a_screenshot():
+    """先收下沿的题干行，再判整题截图（第三单元练习题 q29 数轴）。
+
+    真实卷：裁框 [69.7,343.3,513.5,430.7]；数轴刻度行 378.6–398.7 在框里，
+    题干指令行 403.3–422.0 整行贴着框底。先由 `_clip_stem_row_bottom` 把
+    下沿收到 402.3，`_stem_echo_edit` 就看不到"框底还有一整句"，不会把数轴
+    当整题截图丢掉。顺序反了（先判截图、后收下沿）正是这次的回归。
+    """
+    import app.extractor.figures as FG
+    tb = [{"x": 70.0, "y": 340.0, "w": 160.0, "h": 14.0,
+           "text": "2.画一画,填一填。"},
+          {"x": 248.6, "y": 378.6, "w": 266.8, "h": 20.1,
+           "text": "9101112131415161718192021"},
+          {"x": 77.1, "y": 403.3, "w": 486.3, "h": 18.7,
+           "text": "青蛙1次跳4格,兔子1次跳(      )个4格。兔子跳1次的距离是青蛙的"}]
+    q_text = ("画一画,填一填。9101112131415161718192021青蛙1次跳4格,"
+              "兔子1次跳(      )个4格。兔子跳1次的距离是青蛙的（ ）倍。")
+    rect = (69.7, 343.3, 513.5, 430.7)
+    cut = FG._clip_stem_row_bottom(rect, tb, ())
+    assert cut[3] < 410.0, f"下沿没收到题干行上面：{cut}"
+    kept, why = FG._stem_echo_edit(cut, tb, q_text)
+    assert kept == cut and why is None, f"数轴被当成整题截图了：{kept} {why}"
+    # 反例：顺序反过来（先判截图）→ 数轴整张丢，正是这次修掉的真卷缺陷
+    shot, why2 = FG._stem_echo_edit(rect, tb, q_text)
+    assert shot is None and why2 == "stem-screenshot", \
+        f"夹具没重现「先判截图会丢数轴」：{shot} {why2}"
+
+
+def screenshot_fragments_are_dropped_with_the_screenshot():
+    """整题截图被丢后，截图里的答题格碎片不许单独出图（达标A q1）。
+
+    真实卷：86×46 的 "míng zi" 答题格纵向 100% 落在截图里、右沿多出 2.9pt；
+    截图还在时它由 `_drop_contained` 吃掉，截图先丢后它就成了没头没尾的图。
+    """
+    import app.extractor.figures as FG
+    shot = (16.4, 161.9, 361.6, 339.2)
+    cands = [
+        {"page": 1, "q_index": 0, "rect": (318.1, 202.9, 403.9, 249.2)},
+        {"page": 1, "q_index": 0, "rect": (20.0, 380.0, 200.0, 440.0)},
+        {"page": 1, "q_index": 0, "rect": (500.0, 200.0, 600.0, 260.0)},
+        {"page": 1, "q_index": 0, "rect": (16.4, 161.9, 361.6, 339.2),
+         "graphic": True},
+    ]
+    rep = []
+    got = FG._drop_shot_fragments(cands, {(1, 0): [shot]}, rep)
+    rects = [c["rect"] for c in got]
+    assert (318.1, 202.9, 403.9, 249.2) not in rects, "截图里的答题格碎片没丢"
+    assert len(got) == 3, f"误伤了别的图：{rects}"
+    assert any(d.get("why") == "contained" for d in rep), "没留下 contained 记录"
+
+
+def page_edge_scan_band_is_not_a_figure():
+    """贴物理页边、又矮又宽的【空白】灰带＝扫描压痕；页顶的真图不许砍。"""
+    import app.extractor.figures as FG
+    src = _src_from_bands(440, 653, [(0, 627, 437, 652, 210)])
+    assert FG._is_page_edge_band((0, 627, 437, 653), src), "页边压痕没认出来"
+    assert not FG._is_page_edge_band((20, 300, 420, 330), src), "页中间的图被当成压痕"
+    assert not FG._is_page_edge_band((0, 590, 437, 653), src), "53pt 高的图被当成压痕"
+    assert not FG._is_page_edge_band((0, 627, 60, 653), src), "窄条被当成压痕"
+    # 反例⑤：贴页顶、又矮又宽，但有实笔画 —— 是地图/表格，不是压痕。
+    # 真实卷（综合实践单元(1) p1 第 6 题、p2 第 19 题）就是这样被误砍的。
+    real = _src_from_bands(440, 653, [(200, 5, 330, 35, 30)])
+    assert not FG._is_page_edge_band((200, 5, 330, 35), real), "页顶的真图被当成压痕"
+    spans = [{"q_index": 0, "page": 1, "col": 0, "y0": 560.0, "y1": 653.0,
+              "x0": 0.0, "x1": 437.0,
+              "text_boxes": [{"x": 40, "y": 610, "w": 200, "h": 12,
+                              "text": "3.看图列式。"}]}]
+    rep = []
+    got = FG.find_figures({1: src}, spans, OUT, report=rep)
+    assert not got.get(0), f"页边压痕被当成配图：{got.get(0)}；report={rep}"
+    assert any(d.get("why") == "page-edge" for d in rep if not d.get("kept")), \
+        f"没走页边压痕判据：{rep}"
+
+
 def edge_ink_extension_reconnects_a_cut_border():
     """栏界把图框线切断 → 只接【从框边起连续有墨】的条带；窄条不接。"""
     import numpy as np
@@ -2643,6 +3192,1137 @@ def edge_ink_extension_reconnects_a_cut_border():
     src3 = src_with([(30, 40, 125, 60)])
     out4 = FG._extend_edge_ink((60, 30, 125, 70), src3, k, np, "left", 20.0)
     assert 28 <= out4[0] <= 31, f"左侧连续墨没接回来：{out4}"
+
+
+def _src_from_bands(w: float, h: float, bands):
+    """按 (x0,y0,x1,y1,灰度) 画一张探测图；crop 写一个够大的假文件让裁图保留。"""
+    import numpy as np
+    import app.extractor.figures as FG
+    k = FG.DPI_PROBE / 72.0
+    g = np.full((int(h * k), int(w * k)), 255, dtype=np.uint8)
+    for x0, y0, x1, y1, v in bands:
+        g[int(y0 * k):int(y1 * k), int(x0 * k):int(x1 * k)] = v
+
+    def crop(rect, out):
+        with open(out, "wb") as f:
+            f.write(b"\0" * 400)
+    return FG.PageSource(1, float(w), float(h), g, crop)
+
+
+def map_label_tokens_keep_the_stem_body():
+    """地图标签行：只认行首短图注，题干正文（含括号空位）必须原样留下。
+
+    真实卷（综合实践单元(1) p2 第 1 题）OCR 把地图标签和题干拼成一行；
+    整行删掉会丢题干，整行留下又和图里的标签重复。
+    """
+    import app.extractor.figures as FG
+    assert FG._leading_label_tokens(
+        "莲池      假山            2.莲池在凉亭的（     )面，在") == ["莲池", "假山"]
+    assert FG._leading_label_tokens(
+        "喷泉      游乐场            是（    )。(4分)") == ["喷泉", "游乐场"]
+    # 反例①：纯正文行（无人配送车旁）哪怕有空格也不是图注
+    assert FG._leading_label_tokens("画出1号无人配送车的行驶路线。(6分）") == []
+    # 反例②：行首长词（>4 字）不是图注
+    assert FG._leading_label_tokens("无人配送车      画出路线。(6分）") == []
+    # 反例③：标签后面没有正文 → 不摘，免得整行被当图注删光
+    assert FG._leading_label_tokens("东北      喷泉      游乐场") == []
+    # 反例④：剩下的正文里没有数字/标点 → 更像地图注记，不动
+    assert FG._leading_label_tokens(
+        "东北      喷泉      游乐场      凉亭      假山风景") == []
+    # 反例⑤：只剩一对括号/标点也不够正文（否则整行图注会被删光）
+    assert FG._leading_label_tokens("东北      喷泉      （    )") == []
+
+
+def diagram_label_shape_has_hard_counter_examples():
+    """图注形状只认"短、无句读、不是题号"；真题干的反例一条都不许过。"""
+    import app.extractor.figures as FG
+    assert FG._diagram_label_like("①十里堡站")
+    assert FG._diagram_label_like("呼家楼金台路?")
+    assert FG._diagram_label_like("教学楼      (  ↑      综合楼   体育馆")
+    assert FG._diagram_label_like("★光明小学大门▲祥和小区出口")
+    # 反例①：带空作答位的题干
+    assert not FG._diagram_label_like("龙龙面向（       )。")
+    # 反例②：有逗号的整句
+    assert not FG._diagram_label_like("体育课上，同学们一开始面向北站立")
+    # 反例③：题号起手
+    assert not FG._diagram_label_like("3.下面是北京地铁部分线路示意图。")
+    # 反例④：只有数字/方位、没有汉字（8513 这类门牌号是图的一部分，但形状分不清）
+    assert not FG._diagram_label_like("85018502 8506 8507 8512")
+    # 反例⑤：一整排短标签（总长超过上限）是图例/正文行，不是单个图注
+    assert not FG._diagram_label_like(
+        "教学楼 综合楼 体育馆 艺术楼 图书馆 实验楼 报告厅 运动场 升旗台"), \
+        "超过 24 字的整排图例被当成图注"
+
+
+def map_labels_in_option_rows_are_trimmed():
+    """选项行伸进图框：图里那截地名从选项里摘掉，真选项和带逗号的正文不动。"""
+    import app.extractor.figures as FG
+    boxes = [
+        {"x": 212.0, "y": 122.0, "w": 116.0, "h": 7.0,
+         "text": "①十里堡站            呼家楼金台路?"},
+        {"x": 212.0, "y": 133.0, "w": 116.0, "h": 7.0,
+         "text": "②大望路站            金台夕照○国贸大望路"},
+        {"x": 212.0, "y": 143.0, "w": 28.0, "h": 7.0,
+         "text": "③呼家楼站"},
+        {"x": 212.0, "y": 155.0, "w": 140.0, "h": 7.0,
+         "text": "④从公园东门出发，一直向西走到书店"},
+        {"x": 180.0, "y": 165.0, "w": 60.0, "h": 7.0,
+         "text": "⑤公园"},
+    ]
+    opts = [b["text"] for b in boxes]
+    qs = [{"q_no": 3, "text": "下面是北京地铁部分线路示意图。",
+           "options": list(opts)}]
+    span = {"q_index": 0, "page": 1, "col": 0, "y0": 110.0, "y1": 175.0,
+            "x0": 0.0, "x1": 400.0, "text_boxes": boxes}
+    got = {0: [{"rect": [292.0, 120.0, 359.0, 152.0]}]}
+    n = FG.strip_text_inside_figures(qs, [span], got)
+    assert qs[0]["options"][:3] == ["①十里堡站", "②大望路站", "③呼家楼站"], \
+        f"选项里的图注没摘：{qs[0]['options']}"
+    # 反例①：选项带完整句子（逗号）→ 一个字都不许少
+    assert qs[0]["options"][3] == "④从公园东门出发，一直向西走到书店"
+    # 反例②：选项整行在图的左边（没伸进图框）→ 不动
+    assert qs[0]["options"][4] == "⑤公园"
+    assert n == 2, f"只该改两条选项，实际 {n} 条"
+
+
+def diagram_row_straddling_the_crop_is_not_stem():
+    """裁框上沿切进图注行 64%：这一行在图里也有，不能再当题干。"""
+    import app.extractor.figures as FG
+    boxes = [
+        {"x": 28.8, "y": 139.4, "w": 126.5, "h": 6.3,
+         "text": "3.小朋友们在操场上辨认方向，请帮他们补全记录单。"},
+        {"x": 55.0, "y": 150.2, "w": 104.1, "h": 7.5,
+         "text": "小亮的记录单            小丽的记录单"},
+        {"x": 39.1, "y": 167.3, "w": 137.3, "h": 6.9,
+         "text": "教学楼      (  ↑      综合楼   体育馆     ↑    艺术楼"},
+    ]
+    qs = [{"q_no": 3, "text":
+           "小朋友们在操场上辨认方向，请帮他们补全记录单。 "
+           "小亮的记录单            小丽的记录单\n"
+           "教学楼 ( ↑ 综合楼 体育馆 ↑ 艺术楼"}]
+    span = {"q_index": 0, "page": 1, "col": 0, "y0": 135.0, "y1": 210.0,
+            "x0": 0.0, "x1": 250.0, "text_boxes": boxes}
+    got = {0: [{"rect": [33.7, 169.8, 181.6, 207.5]}]}
+    n = FG.strip_text_inside_figures(qs, [span], got)
+    text = qs[0]["text"]
+    assert "教学楼" not in text and "艺术楼" not in text, f"跨框图注还在：{text!r}"
+    # 上面的两行只露出图框外，不按图注删（图上并没有完整重复这两行）
+    assert "小亮的记录单" in text
+    assert "请帮他们补全记录单" in text
+    assert n == 1
+    # 反例：同样的几何，但那一行是带逗号的题干 → 不许当图注删
+    assert not FG._diagram_row_hit(
+        (39.1, 167.3, 176.4, 174.2),
+        "教学楼里同学们正在上课，请写出他们的方向。",
+        (33.7, 169.8, 181.6, 207.5))
+
+
+def first_stem_line_only_loses_its_map_labels():
+    """起手句保护只挡整行删除：行尾那截伸进图里的图注仍要摘掉。"""
+    import app.extractor.figures as FG
+    boxes = [{"x": 28.8, "y": 204.7, "w": 119.8, "h": 7.2,
+              "text": "4.如右图所示，两名同学玩背靠背夹    我面向东。"}]
+    qs = [{"q_no": 4, "text": "如右图所示，两名同学玩背靠背夹    我面向东。"}]
+    span = {"q_index": 0, "page": 1, "col": 0, "y0": 200.0, "y1": 230.0,
+            "x0": 0.0, "x1": 250.0, "text_boxes": boxes}
+    got = {0: [{"rect": [118.0, 201.7, 176.5, 226.8]}]}
+    FG.strip_text_inside_figures(qs, [span], got)
+    text = qs[0]["text"]
+    assert "我面向东" not in text, f"行尾图注没摘：{text!r}"
+    assert "两名同学玩背靠背夹" in text, f"起手句被删残：{text!r}"
+    # 行框带题号、题干已剥题号：替换段必须来自题干，不许把 "4." 抄回来
+    assert not text.startswith("4."), f"行框题号被抄进题干：{text!r}"
+    # 反例①：图在正文左边（标签不该从右边摘）→ 原样不动
+    qs2 = [{"q_no": 4, "text": "如右图所示，两名同学玩背靠背夹    我面向东。"}]
+    got2 = {0: [{"rect": [5.0, 201.7, 100.0, 226.8]}]}
+    FG.strip_text_inside_figures(qs2, [span], got2)
+    assert "我面向东" in qs2[0]["text"], "图在左边也把行尾摘了"
+    # 反例②：尾巴是带逗号的正文（不是图注）→ 不摘
+    qs3 = [{"q_no": 4, "text": "4.如右图所示，两名同学玩背靠背夹    我面向东，然后转身向东走。"}]
+    span3 = dict(span, text_boxes=[dict(boxes[0],
+                 text="4.如右图所示，两名同学玩背靠背夹    我面向东，然后转身向东走。")])
+    FG.strip_text_inside_figures(qs3, [span3], got)
+    assert "然后转身向东走" in qs3[0]["text"], f"带逗号的正文被当图注摘了：{qs3[0]['text']!r}"
+    # 反例③：空白缝落在作答括号里（第三单元练习题 p1 第 1 题）→ 不许把 ")个" 摘走
+    qs4 = [{"q_no": 1, "text": "1.一共有(       )个"}]
+    span4 = {"q_index": 0, "page": 1, "col": 0, "y0": 120.0, "y1": 160.0,
+             "x0": 0.0, "x1": 250.0,
+             "text_boxes": [{"x": 29.5, "y": 128.5, "w": 131.5, "h": 17.8,
+                             "text": "1.一共有(       )个"}]}
+    got4 = {0: [{"rect": [133.8, 125.5, 196.7, 155.6]}]}
+    FG.strip_text_inside_figures(qs4, [span4], got4)
+    assert qs4[0]["text"] == "1.一共有(       )个", \
+        f"作答括号里的空白被当成图注缝：{qs4[0]['text']!r}"
+
+
+def figure_top_grows_over_a_cut_table_row():
+    """裁框上沿从表格行中间切过：整行连同表头并进图里（含三个反例）。"""
+    import app.extractor.figures as FG
+    boxes = [
+        {"x": 28.8, "y": 139.4, "w": 126.5, "h": 6.3,
+         "text": "3.小朋友们在操场上辨认方向，请帮他们补全记录单。"},
+        {"x": 55.0, "y": 150.2, "w": 104.1, "h": 7.5,
+         "text": "小亮的记录单            小丽的记录单"},
+        {"x": 62.6, "y": 158.9, "w": 88.8, "h": 6.9,
+         "text": "体育馆            （东）综合楼"},
+        {"x": 39.1, "y": 167.3, "w": 137.3, "h": 6.9,
+         "text": "教学楼      (  ↑            综合楼       体育馆            ↑            艺术楼"},
+    ]
+    got = FG._grow_over_cut_label_rows((33.7, 169.8, 181.6, 207.5), boxes)
+    assert abs(got[1] - 150.2) < 0.6, f"表头没并进图框：{got}"
+    assert got[0] == 33.7 and got[2] == 181.6 and got[3] == 207.5, f"不该动别的沿：{got}"
+    # 反例①：切点那行是带逗号的正文 → 一行都不并
+    sent = [dict(boxes[3], text="教学楼，综合楼，体育馆，艺术楼")]
+    assert FG._grow_over_cut_label_rows((33.7, 169.8, 181.6, 207.5), sent)[1] == 169.8
+    # 反例②：图注行伸出框外（是正文/邻栏）→ 不并
+    wide = [dict(boxes[3], w=260.0)]
+    assert FG._grow_over_cut_label_rows((33.7, 169.8, 181.6, 207.5), wide)[1] == 169.8
+    # 反例③：表头离切点太远（隔着一行正文）→ 只并切点那一行
+    far = [dict(boxes[1], y=130.0), dict(boxes[2], y=145.0), boxes[3]]
+    assert abs(FG._grow_over_cut_label_rows(
+        (33.7, 169.8, 181.6, 207.5), far)[1] - 167.3) < 0.6
+
+
+def label_grow_is_wired_into_find_figures():
+    """接线检查：向上并整行图注这一步真的跑在 find_figures 里。"""
+    import app.extractor.figures as FG
+    src = _src_from_bands(200, 200, [(20, 60, 120, 140, 40)])
+    spans = [{"q_index": 0, "page": 1, "col": 0, "y0": 50.0, "y1": 160.0,
+              "x0": 0.0, "x1": 200.0,
+              "text_boxes": [{"x": 20, "y": 55, "w": 130, "h": 6,
+                              "text": "1.看图填空。"}]}]
+    real = FG._grow_over_cut_label_rows
+    calls = []
+
+    def spy(rect, boxes):
+        calls.append(tuple(rect))
+        return (rect[0], rect[1] - 10.0, rect[2], rect[3])
+
+    FG._grow_over_cut_label_rows = spy
+    rep = []
+    try:
+        got = FG.find_figures({1: src}, spans, OUT, report=rep)
+    finally:
+        FG._grow_over_cut_label_rows = real
+    imgs = got.get(0) or []
+    assert calls and imgs, f"并整行图注根本没跑：calls={calls}, rep={rep}"
+    assert imgs[0]["rect"][1] <= calls[0][1] - 9.0, \
+        f"上沿没落进输出框：{imgs[0]['rect']} vs {calls[0]}"
+    assert any(x.get("why") == "label-grow" for x in rep), \
+        f"报告里没留下 label-grow：{rep}"
+
+
+def leading_map_labels_on_a_continuation_line_are_trimmed():
+    """续行行首落在图里、行尾伸到图外：摘行首地名，正文必须留（含两个反例）。"""
+    import app.extractor.figures as FG
+    boxes = [
+        {"x": 53.8, "y": 44.9, "w": 103.9, "h": 6.2,
+         "text": "喷泉      游乐场            是（    )。(4分)"},
+        {"x": 53.8, "y": 57.1, "w": 123.6, "h": 7.2,
+         "text": "莲池      假山            2.莲池在凉亭的（     )面，在"},
+        {"x": 53.8, "y": 67.2, "w": 119.5, "h": 5.8,
+         "text": "凉亭            假山的（     )面。(4分)"},
+    ]
+    qs = [{"q_no": 2,
+           "text": "莲池在凉亭的（     )面，在 凉亭            假山的（     )面。(4分)"}]
+    span = {"q_index": 0, "page": 2, "col": 0, "y0": 40.0, "y1": 80.0,
+            "x0": 0.0, "x1": 200.0, "text_boxes": boxes}
+    got = {0: [{"rect": [25.1, 30.7, 108.6, 80.9]}]}
+    n = FG.strip_text_inside_figures(qs, [span], got)
+    text = qs[0]["text"]
+    assert "凉亭            假山" not in text, f"行首图注没摘：{text!r}"
+    assert text.count("凉亭") == 1, f"正文里的凉亭被删了：{text!r}"
+    assert "假山的（     )面" in text, f"正文被删残：{text!r}"
+    assert n >= 1
+    # 反例①：这一行整体在图左边（行首不在图里）→ 一行都不摘
+    qs2 = [{"q_no": 2, "text": "莲池在凉亭的（     )面，在 凉亭            假山的（     )面。(4分)"}]
+    got2 = {0: [{"rect": [120.0, 30.7, 190.0, 80.9]}]}
+    FG.strip_text_inside_figures(qs2, [span], got2)
+    assert "凉亭            假山" in qs2[0]["text"], "图在右边却把行首摘了"
+    # 反例②：行首没有 2 个空格的标签（单空格是正常正文）→ 不摘
+    qs3 = [{"q_no": 2, "text": "莲池在凉亭的（     )面，在 凉亭 假山的（     )面。(4分)"}]
+    span3 = dict(span, text_boxes=[dict(boxes[2], text="凉亭 假山的（     )面。(4分)")])
+    FG.strip_text_inside_figures(qs3, [span3], got)
+    assert "凉亭 假山" in qs3[0]["text"], "正常正文被当图注摘了"
+
+
+def cross_question_graze_trims_the_upper_figure():
+    """上一题的图底蹭进下一题的图几个点：只收上题底沿（含三个反例）。"""
+    import copy
+    import app.extractor.figures as FG
+    base = [
+        {"q_index": 3, "page": 1, "rect": (33.7, 150.2, 181.6, 207.5)},
+        {"q_index": 4, "page": 1, "rect": (118.0, 201.7, 176.5, 226.8)},
+    ]
+    rep = []
+    got = FG._trim_cross_question_graze(copy.deepcopy(base), rep)
+    assert abs(got[0]["rect"][3] - 201.2) < 0.6, f"上题底沿没收：{got[0]['rect']}"
+    assert got[1]["rect"] == (118.0, 201.7, 176.5, 226.8), f"下题不该动：{got[1]['rect']}"
+    assert any(x.get("why") == "cross-graze" for x in rep), f"报告没留痕：{rep}"
+    # 反例①：重叠 20pt（共享图/大段重叠）→ 不动
+    deep = copy.deepcopy(base)
+    deep[0]["rect"] = (33.7, 150.2, 181.6, 221.7)
+    assert FG._trim_cross_question_graze(deep, None)[0]["rect"][3] == 221.7
+    # 反例②：同一题的两块 → 不动
+    same = copy.deepcopy(base)
+    same[1]["q_index"] = 3
+    assert FG._trim_cross_question_graze(same, None)[0]["rect"][3] == 207.5
+    # 反例③：横向只擦到一点边 → 不动
+    narrow = copy.deepcopy(base)
+    narrow[1]["rect"] = (175.0, 201.7, 230.0, 226.8)
+    assert FG._trim_cross_question_graze(narrow, None)[0]["rect"][3] == 207.5
+    # 反例④：底沿刚并进来的是一条表格边框（border_strip）→ 不是邻题人头，不许削
+    strip = copy.deepcopy(base)
+    strip[0]["border_strip"] = True
+    assert FG._trim_cross_question_graze(strip, None)[0]["rect"][3] == 207.5, \
+        "表格底边被当成邻题人头削掉了"
+
+
+def cross_graze_trim_is_wired_into_find_figures():
+    """接线检查：跨题蹭边收回这一步真的跑在 find_figures 里。"""
+    import app.extractor.figures as FG
+    src = _src_from_bands(200, 200, [(20, 60, 120, 140, 40)])
+    spans = [{"q_index": 0, "page": 1, "col": 0, "y0": 50.0, "y1": 160.0,
+              "x0": 0.0, "x1": 200.0,
+              "text_boxes": [{"x": 20, "y": 55, "w": 130, "h": 6,
+                              "text": "1.看图填空。"}]}]
+    real = FG._trim_cross_question_graze
+    calls = []
+
+    def spy(cands, report):
+        calls.append(len(cands))
+        for c in cands:
+            c["rect"] = (c["rect"][0], c["rect"][1], c["rect"][2], c["rect"][3] - 4.0)
+            if report is not None:
+                report.append({"q_index": c["q_index"], "page": c["page"],
+                               "kept": True, "rect": list(c["rect"]),
+                               "why": "cross-graze"})
+        return cands
+
+    FG._trim_cross_question_graze = spy
+    rep = []
+    try:
+        got = FG.find_figures({1: src}, spans, OUT, report=rep)
+    finally:
+        FG._trim_cross_question_graze = real
+    imgs = got.get(0) or []
+    assert calls and imgs, f"跨题蹭边收回根本没跑：calls={calls}, rep={rep}"
+    assert any(x.get("why") == "cross-graze" for x in rep), \
+        f"报告里没留下 cross-graze：{rep}"
+
+
+def side_text_split_stops_before_the_stem_body():
+    """地图在左、题干被 OCR 拼在右：沿图注与正文间最宽空白收右沿。
+
+    含反例：纯正文行（无人配送车旁的解题说明）不许据此切框 ——
+    实测会沿着说明文字切掉右侧方格图（q22/q23）。
+    """
+    import numpy as np
+    import app.extractor.figures as FG
+    k = FG.DPI_PROBE / 72.0
+    g = np.full((int(120 * k), int(250 * k)), 255, dtype=np.uint8)
+    g[int(15 * k):int(90 * k), int(10 * k):int(95 * k)] = 60      # 地图
+    g[int(20 * k):int(40 * k), int(100 * k):int(118 * k)] = 60    # 指北针
+    for yy in (20, 40, 60, 80):
+        g[int(yy * k):int((yy + 8) * k), int(130 * k):int(150 * k)] = 30
+        g[int(yy * k):int((yy + 8) * k), int(160 * k):int(220 * k)] = 30
+    src = FG.PageSource(1, 250.0, 120.0, g, lambda rect, out: None)
+    boxes = [
+        {"x": 40.0, "y": 20.0, "w": 190.0, "h": 8.0,
+         "text": "东北           1.喷泉的西面是（     )，东面"},
+        {"x": 40.0, "y": 40.0, "w": 190.0, "h": 8.0,
+         "text": "喷泉      游乐场            是（     )。(4分)"},
+        {"x": 40.0, "y": 60.0, "w": 190.0, "h": 8.0,
+         "text": "莲池      假山            2.莲池在凉亭的（     )面，在"},
+        {"x": 40.0, "y": 80.0, "w": 190.0, "h": 8.0,
+         "text": "凉亭              假山的（     )面。(4分)"},
+    ]
+    out = FG._split_side_text_figure((5.0, 10.0, 230.0, 100.0), boxes, src, np, k)
+    assert out is not None, "地图＋题干同排没切开"
+    # 正文从 129.6 起：右沿必须停在它左边，且不能把指北针/地图削掉
+    assert out[2] <= 131.0, f"右沿切进题干正文：{out}"
+    assert out[2] >= 118.0, f"右沿切进图里，指北针被削：{out}"
+    assert out[0] == 5.0 and out[3] == 100.0, f"不该动左/下沿：{out}"
+    # 反例：同样的几何，但 OCR 行是纯正文（没有行首图注）→ 一刀都不许切
+    pure = [dict(b, x=92.0, text="画出1号无人配送车的行驶路线。(6分）")
+            for b in boxes]
+    assert FG._split_side_text_figure(
+        (5.0, 10.0, 230.0, 100.0), pure, src, np, k) is None, \
+        "纯正文行也据此切框（q22/q23 的方格图就是这样被削掉的）"
+
+
+def sliver_text_rows_are_trimmed_only_with_a_gap():
+    """裁框上下沿只切到一行字的 1–2pt：行外先空出空白才收，贴着图的不动。"""
+    import numpy as np
+    import app.extractor.figures as FG
+    k = FG.DPI_PROBE / 72.0
+    g = np.full((int(200 * k), int(200 * k)), 255, dtype=np.uint8)
+    g[int(10 * k):int(25.5 * k), int(30 * k):int(170 * k)] = 30   # 上一行字
+    g[int(30 * k):int(90 * k), int(30 * k):int(170 * k)] = 60     # 图
+    g[int(96.5 * k):int(108 * k), int(30 * k):int(170 * k)] = 30  # 下一行字
+    src = FG.PageSource(1, 200.0, 200.0, g, lambda rect, out: None)
+    boxes = [{"x": 30.0, "y": 10.0, "w": 140.0, "h": 16.0,
+              "text": "1.喷泉的西面是（ )，东面是（ )。"},
+             {"x": 30.0, "y": 96.0, "w": 140.0, "h": 16.0,
+              "text": "2.莲池在凉亭的（ )面，在假山的（ )面。"}]
+    out = FG._trim_sliver_text_rows((20.0, 20.0, 180.0, 100.0), boxes, src, np, k)
+    assert abs(out[1] - 26.5) < 0.6, f"上沿没收出半个字：{out}"
+    assert abs(out[3] - 95.5) < 0.6, f"下沿没收出半个字：{out}"
+
+    # 反例：图墨一直贴到下一行字（中间没有空白）→ 下沿不许收，否则会削掉图
+    g2 = g.copy()
+    g2[int(30 * k):int(96.5 * k), int(30 * k):int(170 * k)] = 60
+    src2 = FG.PageSource(1, 200.0, 200.0, g2, lambda rect, out: None)
+    out2 = FG._trim_sliver_text_rows((20.0, 20.0, 180.0, 100.0), boxes, src2, np, k)
+    assert out2[3] == 100.0, f"图墨贴着字也把下沿收了：{out2}"
+
+    # 起于框左沿之外的正文行：切得深一点（50% 行高）也要收
+    # 真卷：综合实践单元(1) p1 第 5 题，下一题起手句 x=205.4、图框 x=206.5，
+    # 被切 2.7/5.5pt；按 45% 判会漏，图底留一条黑边。
+    g3 = g.copy()
+    g3[int(30 * k):int(90 * k), int(30 * k):int(170 * k)] = 60
+    g3[int(92.5 * k):int(108 * k), int(20 * k):int(190 * k)] = 30  # 行从框左沿外起
+    src3 = FG.PageSource(1, 200.0, 200.0, g3, lambda rect, out: None)
+    deep = [{"x": 18.0, "y": 92.0, "w": 172.0, "h": 16.0,
+             "text": "5.小君想先参观书法馆。根据下面的路线图，他从大门进入后，"}]
+    out3 = FG._trim_sliver_text_rows((20.0, 20.0, 180.0, 100.0), deep, src3, np, k)
+    assert abs(out3[3] - 91.5) < 0.6, f"从框左沿外伸进来的半行没收：{out3}"
+
+    # 反例：同样切 50%，但这行整行都在框里（图注）→ 仍按 45% 判，不许收
+    inside = [{"x": 30.0, "y": 92.0, "w": 140.0, "h": 16.0,
+               "text": "5.小君想先参观书法馆。根据下面的路线图，他从大门进入后，"}]
+    out4 = FG._trim_sliver_text_rows((20.0, 20.0, 180.0, 100.0), inside, src3, np, k)
+    assert out4[3] == 100.0, f"框内 50% 的标注也照收：{out4}"
+
+    # 反例：从框左沿外伸进来，但图墨贴着字 → 不收（不能削图）
+    g4 = g3.copy()
+    g4[int(30 * k):int(92.5 * k), int(30 * k):int(170 * k)] = 60
+    src4 = FG.PageSource(1, 200.0, 200.0, g4, lambda rect, out: None)
+    out5 = FG._trim_sliver_text_rows((20.0, 20.0, 180.0, 100.0), deep, src4, np, k)
+    assert out5[3] == 100.0, f"贴墨也把外伸行收了：{out5}"
+
+
+def seal_strip_at_page_edge_is_clipped():
+    """页边竖排密封线：同一列 ≥4 个 margin 单字 → 裁框右沿收到这列左边。
+
+    真实卷（综合实践单元(1) p2 第 22/23 题）：裁框为了保住方格图右沿伸到
+    363.7，把「…请勿…答」那列竖排字也裁了进来。用已丢弃的 margin 单字框
+    反推左缘，比按“离页边多少 pt”硬切稳。
+    """
+    import app.extractor.figures as FG
+    seal = [(392.0, 60.0, 397.0, 65.0), (392.0, 80.0, 397.0, 85.0),
+            (392.0, 100.0, 397.0, 105.0), (392.0, 112.0, 397.0, 117.0)]
+    out = FG._clip_seal_strip((50.0, 50.0, 400.0, 120.0), seal, 400.0)
+    assert out == (50.0, 50.0, 391.0, 120.0), f"密封线没裁掉：{out}"
+    # 反例①：只有三个框 → 不够成一列。真实卷 综合实践单元(1) p1 第 5 题：
+    # 图右沿的「北 / 东 / 大门」正好三个，按 3 个算就会切掉「大门」的「门」。
+    trio = [(392.0, 60.0, 397.0, 65.0), (393.0, 62.0, 398.0, 67.0),
+            (392.0, 100.0, 397.0, 105.0)]
+    assert FG._clip_seal_strip((50.0, 50.0, 400.0, 120.0), trio, 400.0) == \
+        (50.0, 50.0, 400.0, 120.0), "三个图标签也当密封列"
+    # 反例②：裁框伸过了字列左缘，但只压住字的 1/5（没真正盖住）→ 不动
+    aside = [(385.0, 60.0, 390.0, 65.0), (385.0, 80.0, 390.0, 85.0),
+             (385.0, 100.0, 390.0, 105.0), (385.0, 112.0, 390.0, 117.0)]
+    assert FG._clip_seal_strip((50.0, 50.0, 386.0, 120.0), aside, 400.0) == \
+        (50.0, 50.0, 386.0, 120.0), "没盖住也照切"
+    # 反例③：这列小字在页面中间（正文注释）→ 不是页边密封线
+    mid = [(200.0, 60.0, 205.0, 65.0), (200.0, 80.0, 205.0, 85.0),
+           (200.0, 100.0, 205.0, 105.0), (200.0, 112.0, 205.0, 117.0)]
+    assert FG._clip_seal_strip((50.0, 50.0, 400.0, 120.0), mid, 400.0) == \
+        (50.0, 50.0, 400.0, 120.0), "正文里的一列小字也照切"
+    # 反例④：切完不足 12pt → 宁可留着，不交一条窄条
+    assert FG._clip_seal_strip((385.0, 50.0, 400.0, 120.0), seal, 400.0) == \
+        (385.0, 50.0, 400.0, 120.0), "切完只剩窄条也照切"
+
+
+def seal_column_accepts_real_glyph_sizes_and_rejects_scatter():
+    """达标B 的密封字实测 6.5–13.7pt 宽：卡 10pt 会把整列滤到只剩 1 个框。
+    反例是一列真正散开的图标签（各 3 个，凑不成一条线），以及真实卷
+    综合实践单元(1) p1 右侧那串地图标签 —— 它们 x 挤成一列，但纵向最大
+    空档 76pt（页高 287 的 26%），不是「密封线」而是散落的图注。"""
+    import app.extractor.figures as FG
+    wide = [(388.0, 20.0 + i * 18.0, 400.0, 32.0 + i * 18.0) for i in range(6)]
+    assert len(FG._seal_column(wide, 400.0, 200.0)) == 6, "12pt 宽的密封字没被认成一列"
+    out = FG._clip_seal_strip((50.0, 10.0, 402.0, 140.0), wide, 400.0)
+    assert out == (50.0, 10.0, 387.0, 140.0), f"12pt 密封列没裁掉：{out}"
+    scatter = ([(392.0, 10.0 + i * 20.0, 400.0, 22.0 + i * 20.0) for i in range(3)]
+               + [(200.0, 10.0 + i * 20.0, 208.0, 22.0 + i * 20.0) for i in range(3)])
+    assert FG._seal_column(scatter, 400.0) == [], "散开的图标签被凑成一列"
+    assert FG._clip_seal_strip((50.0, 10.0, 402.0, 140.0), scatter, 400.0) == \
+        (50.0, 10.0, 402.0, 140.0), "散开的图标签也照切"
+    # 真密封列（达标B 实测）：8 个字、y 98–528、最大空档 62pt / 页高 634
+    real = [(850.0, 98.0 + i * 61.5, 864.0, 110.0 + i * 61.5) for i in range(8)]
+    assert len(FG._seal_column(real, 900.0, 634.0)) == 8, "真密封列被纵向判据筛掉"
+    # 反例：综合实践单元(1) p1 右侧地图标签（x 327–355，y 37–227，最大空档 76pt）
+    labels = [(331.0, 37.0, 342.0, 43.0), (332.0, 54.5, 343.0, 60.0),
+              (344.0, 128.2, 354.0, 133.7), (329.0, 138.5, 339.0, 142.6),
+              (346.0, 214.8, 351.0, 220.6), (327.0, 217.9, 343.0, 224.9),
+              (345.6, 218.9, 355.4, 225.1), (338.0, 226.6, 349.0, 232.8)]
+    assert FG._seal_column(labels, 370.0, 287.0) == [], "散落的地图标签被当成密封列"
+
+
+def seal_dashed_rule_is_found_and_cut():
+    """密封字左边那条页顶到页底的竖虚线：按逐像素列认，切在它左边。
+
+    反例：实线框边（覆盖率 100%）、正文栏（行距 30pt 的大空隙）、
+    只有一小段的短线 —— 都不许认成密封虚线。
+    """
+    import numpy as np
+    import app.extractor.figures as FG
+    k = FG.DPI_PROBE / 72.0
+
+    def page(draw):
+        g = np.full((int(200 * k), int(200 * k)), 255, dtype=np.uint8)
+        draw(g)
+        return FG.PageSource(1, 200.0, 200.0, g, lambda rect, out: None)
+
+    def dashed(g, x=182, y0=10, y1=190, on=4, off=3):
+        xa, xb = int(x * k), int((x + 1.0) * k)
+        y = y0
+        while y < y1:
+            g[int(y * k):int(min(y + on, y1) * k), xa:max(xa + 1, xb)] = 40
+            y += on + off
+
+    src = page(dashed)
+    rx = FG._seal_rule_x((20.0, 10.0, 200.0, 140.0), src, 186.0, k)
+    assert rx is not None and abs(rx - 182.0) < 1.2, f"竖虚线没找到：{rx}"
+    seal = [(186.0, 20.0 + i * 18.0, 198.0, 32.0 + i * 18.0) for i in range(6)]
+    out = FG._clip_seal_strip((20.0, 10.0, 200.0, 140.0), seal, 200.0, src=src, k=k)
+    assert abs(out[2] - 181.0) < 1.2, f"没切在虚线左边：{out}"
+    # 压在虚线上、左移 11pt 的密封单字：要整字切掉（达标B 的「线/答」）
+    stray = [(170.0, 50.0, 181.0, 62.0)]
+    out2 = FG._clip_seal_strip((20.0, 10.0, 200.0, 140.0), seal + stray, 200.0,
+                               src=src, k=k)
+    assert out2[2] <= 169.5, f"压在虚线左边的密封单字没切掉：{out2}"
+    # 反例①：实线（覆盖率 100%）
+    src_solid = page(lambda g: g.__setitem__(
+        (slice(int(10 * k), int(190 * k)), slice(int(182 * k), int(183 * k))), 40))
+    assert FG._seal_rule_x((20.0, 10.0, 200.0, 140.0), src_solid, 186.0, k) is None, \
+        "实线框边被当成密封虚线"
+    # 反例②：正文栏（一行行字，行距 30pt 的大空隙）
+    def body(g):
+        for y in (12, 42, 72, 102, 132, 162):
+            g[int(y * k):int((y + 12) * k), int(182 * k):int(183 * k)] = 40
+    assert FG._seal_rule_x((20.0, 10.0, 200.0, 140.0), page(body), 186.0, k) is None, \
+        "正文栏被当成密封虚线"
+    # 反例③：只有 20pt 长的一小段虚线
+    src_short = page(lambda g: dashed(g, y0=90, y1=110))
+    assert FG._seal_rule_x((20.0, 10.0, 200.0, 140.0), src_short, 186.0, k) is None, \
+        "短线被当成贯通密封虚线"
+
+
+def footer_is_never_absorbed_as_a_bottom_label_row():
+    """达标B 两页并排的页脚："第 3 页   共 4 页   200" 会被 _looks_like_label_row
+    认成三段短标签（真实踩过：裁框往下吃到 623pt）。家具行必须先被挡住；
+    反例用真图注 "？个  ?根  ？元  ?根"：它必须仍然被吸进来。"""
+    import app.extractor.figures as FG
+    rect = (20.0, 20.0, 180.0, 100.0)
+    footer = [{"x": 20.0, "y": 96.0, "w": 140.0, "h": 12.0,
+               "text": "第 3 页   共 4 页   200"}]
+    assert FG._extend_bottom_label_row(rect, footer) == rect, "页脚被当图注吸进裁框"
+    label = [{"x": 20.0, "y": 96.0, "w": 140.0, "h": 12.0,
+              "text": "？个  ?根  ？元  ?根"}]
+    out = FG._extend_bottom_label_row(rect, label)
+    assert out[3] == 110.0, f"真图注没被吸进来：{out}"
+
+
+def side_split_stem_cleanup_keeps_the_body():
+    """图文同排收窄后：题干里只摘行首图注，正文一个字都不许少。"""
+    import app.extractor.figures as FG
+    boxes = [
+        {"x": 40.0, "y": 20.0, "w": 180.0, "h": 8.0,
+         "text": "东北           1.喷泉的西面是（     )，东面"},
+        {"x": 40.0, "y": 40.0, "w": 180.0, "h": 8.0,
+         "text": "喷泉      游乐场            是（     )。(4分)"},
+        {"x": 40.0, "y": 60.0, "w": 180.0, "h": 8.0,
+         "text": "莲池      假山            2.莲池在凉亭的（     )面，在"},
+        {"x": 40.0, "y": 80.0, "w": 180.0, "h": 8.0,
+         "text": "凉亭              假山的（     )面。(4分)"},
+    ]
+    qs = [{"q_no": 1, "text":
+           "东北         1.喷泉的西面是（    )，东面是（    )。(4分) "
+           "喷泉      游乐场            是（    )。(4分) "
+           "莲池      假山            2.莲池在凉亭的（    )面，在 "
+           "凉亭              假山的（    )面。(4分)"}]
+    span = {"q_index": 0, "page": 1, "col": 0, "y0": 10.0, "y1": 100.0,
+            "x0": 0.0, "x1": 260.0, "text_boxes": boxes}
+    got = {0: [{"rect": [5.0, 10.0, 129.6, 100.0], "side_split": True}]}
+    n = FG.strip_text_inside_figures(qs, [span], got)
+    t = str(qs[0]["text"])
+    assert n == 4, f"只摘了 {n} 行的图注（应为 4 行）：{t!r}"
+    assert "东北" not in t, f"行首图注没摘：{t!r}"
+    assert "1.喷泉的西面" in t and "2.莲池在凉亭的" in t and "假山的" in t, \
+        f"题干正文被删残：{t!r}"
+
+
+def side_split_is_wired_into_find_figures():
+    """接线检查：find_figures 真的调用图文同排切分、输出 side_split，并跳过接宽。
+
+    图表几何由上一条直接量；这条只验接线 —— 把切分换成记账的壳子，
+    看它有没有被叫到、标志有没有传到输出、右侧接宽有没有被跳过。
+    """
+    import app.extractor.figures as FG
+    src = _src_from_bands(200, 200, [(20, 60, 120, 140, 40)])
+    spans = [{"q_index": 0, "page": 1, "col": 0, "y0": 50.0, "y1": 160.0,
+              "x0": 0.0, "x1": 200.0,
+              "text_boxes": [{"x": 20, "y": 55, "w": 130, "h": 6,
+                              "text": "1.看图填空。"}]}]
+    real_split = FG._split_side_text_figure
+    real_ext = FG._extend_edge_ink
+    ext_calls = []
+
+    def spy_split(rect, boxes, src_, np_, k_):
+        return (rect[0], rect[1], rect[0] + 80.0, rect[3])
+
+    def spy_ext(*a, **kw):
+        ext_calls.append(a[0])
+        return a[0]
+
+    FG._split_side_text_figure = spy_split
+    FG._extend_edge_ink = spy_ext
+    rep = []
+    try:
+        got = FG.find_figures({1: src}, spans, OUT, report=rep)
+    finally:
+        FG._split_side_text_figure = real_split
+        FG._extend_edge_ink = real_ext
+    imgs = got.get(0) or []
+    assert imgs, f"夹具没裁出图，接线测不到：{rep}"
+    im = imgs[0]
+    assert im.get("side_split"), f"切分标志没传到输出：{im}"
+    assert im["rect"][2] < 110.0, f"右沿没用收窄后的框：{im['rect']}"
+    assert not ext_calls, f"收窄过后又往右接宽了（题干首字会被裁进来）：{ext_calls}"
+    assert any(x.get("why") == "side-text-split" for x in rep), \
+        f"报告里没留下 side-text-split：{rep}"
+
+
+def final_edge_trim_is_wired_into_find_figures():
+    """接线检查：最后那刀“上下沿半个字 / 密封线”真的跑在 find_figures 里。"""
+    import app.extractor.figures as FG
+    src = _src_from_bands(200, 200, [(20, 60, 120, 140, 40)])
+    spans = [{"q_index": 0, "page": 1, "col": 0, "y0": 50.0, "y1": 160.0,
+              "x0": 0.0, "x1": 200.0,
+              "text_boxes": [{"x": 20, "y": 55, "w": 130, "h": 6,
+                              "text": "1.看图填空。"}]}]
+    real = FG._trim_sliver_text_rows
+    calls = []
+
+    def spy(rect, boxes, src_, np_, k_):
+        calls.append(tuple(rect))
+        return (rect[0], rect[1], rect[2] - 15.0, rect[3] - 5.0)
+
+    FG._trim_sliver_text_rows = spy
+    rep = []
+    try:
+        got = FG.find_figures({1: src}, spans, OUT, report=rep)
+    finally:
+        FG._trim_sliver_text_rows = real
+    imgs = got.get(0) or []
+    assert calls and imgs, f"最后这刀根本没跑：calls={calls}, rep={rep}"
+    assert abs(imgs[0]["rect"][2] - (calls[0][2] - 15.0)) < 1.0, \
+        f"修边结果没落到输出框：{imgs[0]['rect']} vs {calls[0]}"
+    assert any(x.get("why") == "edge-trim" for x in rep), \
+        f"报告里没留下 edge-trim：{rep}"
+
+
+def text_edge_drop_is_wired_into_find_figures():
+    """接线检查：最终形状复检也会丢"窄条字尾"。
+
+    候选阶段框还宽 31.9pt（含页边空白），修边后只剩 14pt，两层判据必须都在；
+    这里让候选宽 40pt、修边后宽 10pt，只有最终复检能抓到。
+    """
+    import app.extractor.figures as FG
+    src = _src_from_bands(400, 200, [(150, 60, 190, 140, 40)])
+    spans = [{"q_index": 0, "page": 1, "col": 0, "y0": 50.0, "y1": 160.0,
+              "x0": 0.0, "x1": 400.0,
+              "text_boxes": [{"x": 20, "y": 45, "w": 130, "h": 6,
+                              "text": "1.看图填空。"}]}]
+    real_trim = FG._trim_sliver_text_rows
+    real_edge = FG._is_text_edge_fragment
+    seen = []
+
+    def trim(rect, boxes, src_, np_, k_):
+        return (rect[0], rect[1], rect[2] - 40.0, rect[3])
+
+    def edge(rect, boxes):
+        seen.append(tuple(rect))
+        return (rect[2] - rect[0]) < 20.0
+
+    FG._trim_sliver_text_rows = trim
+    FG._is_text_edge_fragment = edge
+    rep = []
+    try:
+        got = FG.find_figures({1: src}, spans, OUT, report=rep)
+    finally:
+        FG._trim_sliver_text_rows = real_trim
+        FG._is_text_edge_fragment = real_edge
+    imgs = got.get(0) or []
+    assert seen, f"最终复检根本没跑：rep={rep}"
+    assert not imgs, f"修边后才露出的窄条字尾留成了图：{imgs}"
+    assert any(x.get("why") == "text-edge" for x in rep), \
+        f"报告里没留下 text-edge：{rep}"
+
+
+def seal_strip_clip_is_wired_into_find_figures():
+    """接线检查（真函数）：页边密封字列必须在找到图之后被裁掉。
+
+    候选阶段可能已经切过一次，但后面的修边/缝合会把右沿重新推回密封字上
+    （真实卷 q22 就是这样：候选切完，接宽又长回去）。这里让修边把右沿推回
+    398（盖住 x 392–397 的密封字），只有【最终那刀】还能把它收回 391 ——
+    把最终裁切关掉，右沿会停在 398，测试必须变红。
+    """
+    import app.extractor.figures as FG
+    src = _src_from_bands(400, 200, [(30, 60, 398, 140, 40)])
+    spans = [{"q_index": 0, "page": 1, "col": 0, "y0": 50.0, "y1": 160.0,
+              "x0": 0.0, "x1": 400.0,
+              "text_boxes": [{"x": 20, "y": 45, "w": 180, "h": 6,
+                              "text": "1.看图填空。"}]}]
+    noise = [{"x": 392.0, "y": y, "w": 5.0, "h": 5.0, "page": 1}
+             for y in (30.0, 60.0, 90.0, 120.0, 150.0, 180.0)]
+    real_trim = FG._trim_sliver_text_rows
+
+    def widen(rect, boxes, src_, np_, k_):
+        return (rect[0], rect[1], min(398.0, rect[2] + 12.0), rect[3])
+
+    FG._trim_sliver_text_rows = widen
+    rep = []
+    try:
+        got = FG.find_figures({1: src}, spans, OUT, report=rep, noise=noise)
+    finally:
+        FG._trim_sliver_text_rows = real_trim
+    imgs = got.get(0) or []
+    assert imgs, f"夹具没裁出图：{rep}"
+    assert 380.0 <= imgs[0]["rect"][2] <= 391.5, \
+        f"右沿没收在密封字左边：{imgs[0]['rect']}"
+    assert any(x.get("why") in ("seal-trim", "edge-trim") for x in rep), \
+        f"报告里没留下裁密封线的记录：{rep}"
+
+
+def _blank_page_source(size_pt=200):
+    """纯白页：只量几何，不让"接缝上有没有墨"混进这几条判据。"""
+    import numpy as np
+    from app.extractor.figures import PageSource, DPI_PROBE
+    k = DPI_PROBE / 72.0
+    n = int(size_pt * k)
+    g = np.full((n, n), 255, dtype=np.uint8)
+    return PageSource(1, size_pt, size_pt, g, lambda rect, out: None)
+
+
+def figure_split_along_the_same_left_edge_is_stitched():
+    """题界斜穿共享地图：上下两块同左沿、纵向交叠 → 缝回一张。
+
+    真实卷（综合实践单元(1) p2 第三大题）：84×50 的公园地图被第 1、2 题的分界
+    切成 84×39 + 44×17 两块。上半块被 text-cut 当成"切断文字"丢掉，第 1 题
+    一张图都没有，第 2 题只剩一小条；常规缝合又因"两半宽窄差一倍"拒绝。
+    """
+    import app.extractor.figures as FG
+    src = _blank_page_source()
+
+    def cand(qi, rect):
+        return {"q_index": qi, "page": 1, "col": 0, "src": src, "rect": rect,
+                "w_pt": rect[2] - rect[0], "h_pt": rect[3] - rect[1],
+                "tbs": [], "band": [0, 0, 200, 200]}
+
+    rep = []
+    out = FG._stitch_across_questions(
+        [cand(0, (10.0, 10.0, 94.0, 49.0)), cand(1, (10.0, 45.0, 54.0, 62.0))], rep)
+    assert len(out) == 1, f"同左沿的上下两块没缝回一张：{[c['rect'] for c in out]}"
+    assert out[0]["q_index"] == 0, "缝合后应挂到靠前那道题"
+    assert [round(v, 1) for v in out[0]["rect"]] == [10.0, 10.0, 94.0, 62.0], out[0]["rect"]
+    assert rep and rep[-1]["why"] == "side-shared", rep
+
+    # 正例②：上块只是上一题区间末尾的一条，绝大部分图身落在下一题区间 ——
+    # 缝完必须改挂下一题。真实卷（第三单元练习题 p4 第 4 题）：4×4 圆点阵的
+    # 第一行落在上一题区间里，缝完挂在上一题，下一题"在图上圈一圈"却没有图。
+    def cand_band(qi, rect, band):
+        d = cand(qi, rect)
+        d["band"] = band
+        return d
+
+    out_band = FG._stitch_across_questions([
+        cand_band(0, (10.0, 140.0, 94.0, 155.0), [0, 0, 200, 155]),
+        cand_band(1, (10.0, 148.0, 94.0, 250.0), [0, 155, 200, 300]),
+    ])
+    assert len(out_band) == 1, f"圆点阵没有缝回一张：{out_band}"
+    assert out_band[0]["q_index"] == 1, "缝完仍挂在上一题（下一题没图）"
+    assert [round(v, 1) for v in out_band[0]["rect"]] == [10.0, 140.0, 94.0, 250.0], \
+        out_band[0]["rect"]
+    # 反例⑤（改挂）：两半在自己区间里一样多 → 仍挂靠前那道（既有行为）
+    out_eq = FG._stitch_across_questions([
+        cand_band(0, (10.0, 140.0, 94.0, 155.0), [0, 0, 200, 195]),
+        cand_band(1, (10.0, 148.0, 94.0, 250.0), [0, 195, 200, 300]),
+    ])
+    assert out_eq[0]["q_index"] == 0, "区间一样多时改挂了（与旧行为不一致）"
+
+    # 正例③：上块底沿正好压在自己区间下沿，下块和它隔了 12.4pt（>常规 2pt）——
+    # 仍是同一张地图的下半截。真实卷（综合实践单元(1) p2 第 1 题公园地图）。
+    out_gap = FG._stitch_across_questions([
+        cand_band(0, (64.0, 70.4, 249.0, 152.8), [0, 0, 300, 152.8]),
+        cand_band(1, (64.0, 165.2, 149.9, 179.4), [0, 152.8, 300, 300]),
+    ])
+    assert len(out_gap) == 1, f"地铁图上下的 12.4pt 缝没补：{out_gap}"
+    assert [round(v, 1) for v in out_gap[0]["rect"]] == [64.0, 70.4, 249.0, 179.4], \
+        out_gap[0]["rect"]
+
+    # 反例⑤b：缝宽 20pt（>15pt）→ 两张图，不缝
+    out_gap2 = FG._stitch_across_questions([
+        cand_band(0, (64.0, 70.4, 249.0, 152.8), [0, 0, 300, 152.8]),
+        cand_band(1, (64.0, 172.8, 149.9, 187.0), [0, 152.8, 300, 300]),
+    ])
+    assert len(out_gap2) == 2, f"缝宽 20pt 的两张图被缝成一张：{out_gap2}"
+    # 反例⑤c：下块高 40pt（>30pt 薄片档）→ 是一张完整的图，不是缺的下半截
+    out_gap3 = FG._stitch_across_questions([
+        cand_band(0, (64.0, 70.4, 249.0, 152.8), [0, 0, 300, 152.8]),
+        cand_band(1, (64.0, 165.2, 149.9, 205.2), [0, 152.8, 300, 300]),
+    ])
+    assert len(out_gap3) == 2, f"40pt 高的独立图被缝进地图：{out_gap3}"
+    # 反例⑤d：上块底沿离自己区间下沿还有 10pt（没被题界切开）→ 不缝
+    out_gap4 = FG._stitch_across_questions([
+        cand_band(0, (64.0, 70.4, 249.0, 152.8), [0, 0, 300, 162.8]),
+        cand_band(1, (64.0, 165.2, 149.9, 179.4), [0, 162.8, 300, 300]),
+    ])
+    assert len(out_gap4) == 2, f"没贴区间下沿的两块仍被缝：{out_gap4}"
+
+    # 反例①：左沿差 10pt（真·两张图）。常规分支也会因宽窄差一倍拒绝，
+    # 只有把"同左沿"这条删掉才会缝 —— 变异闸门要抓的就是这一条。
+    out2 = FG._stitch_across_questions(
+        [cand(0, (10.0, 10.0, 94.0, 49.0)), cand(1, (20.0, 45.0, 64.0, 80.0))])
+    assert len(out2) == 2, f"左沿差 10pt 的两块被缝成一张：{[c['rect'] for c in out2]}"
+
+    # 反例②：纵向只贴 1pt 边、几乎不交叠（两半高度都超过薄片档，不走薄片缝）。
+    out3 = FG._stitch_across_questions(
+        [cand(0, (10.0, 10.0, 94.0, 49.0)), cand(1, (10.0, 48.0, 94.0, 90.0))])
+    assert len(out3) == 2, f"只贴 1pt 边的两张图被缝成一张：{[c['rect'] for c in out3]}"
+
+    # 反例③：同一道题的碎片由补洞合并管，这里不许动。
+    out4 = FG._stitch_across_questions(
+        [cand(0, (10.0, 10.0, 94.0, 49.0)), cand(0, (10.0, 45.0, 54.0, 62.0))])
+    assert len(out4) == 2, "同题碎片被跨题缝合吞了"
+
+    # 反例④：缝合后超过尺寸上限（不是一张图，是整页）。
+    out5 = FG._stitch_across_questions(
+        [cand(0, (10.0, 10.0, 94.0, 49.0)), cand(1, (10.0, 45.0, 54.0, 280.0))])
+    assert len(out5) == 2, "超过尺寸上限的两块仍被缝成一张"
+
+    # 反例⑤：后一块太窄（<前一块 35%），是图注/小图标，不是地图缺的下半块。
+    out6 = FG._stitch_across_questions(
+        [cand(0, (10.0, 10.0, 94.0, 49.0)), cand(1, (10.0, 45.0, 24.0, 62.0))])
+    assert len(out6) == 2, f"过窄的下半块仍被缝进地图：{[c['rect'] for c in out6]}"
+
+
+def text_frame_with_two_full_rows_is_not_a_figure():
+    """带花边的文字框（整行正文 + 细边框 + 小装饰）不是配图。
+
+    真实卷（综合实践单元(1) p2 第 3 题）："路线一…/路线二…"两行填空指示印在
+    圆角蓝框里，OCR 行框装不住边框，覆盖率 80.9% 够不着 text-block 的 85%，
+    整块被裁成图从题干里删掉。反例：框里还有一栋实心楼、表格内线、只有一行字、
+    一框小图标、尺寸不像文字框 —— 都必须是真图。
+    """
+    import numpy as np
+    import app.extractor.figures as FG
+    k = FG.DPI_PROBE / 72.0
+
+    ROUTE_TXT = ["路线一：从学校出发，先向东走到书店。",
+                 "路线二：先向南走到公园，再向西到学校。"]
+
+    def build(rows=2, with_frame=True, extra=None, box_px=None,
+              sz=(200, 200), texts=None):
+        g = np.full((int(sz[1] * k), int(sz[0] * k)), 255, dtype=np.uint8)
+        bx0, by0, bx1, by1 = box_px or (10, 10, 170, 110)
+        if with_frame:
+            g[by0:by0 + 2, bx0:bx1] = 40
+            g[by1 - 2:by1, bx0:bx1] = 40
+            g[by0:by1, bx0:bx0 + 2] = 40
+            g[by0:by1, bx1 - 2:bx1] = 40
+        tb = []
+        tb_txt = list(texts) if texts is not None else ROUTE_TXT[:rows]
+        for i in range(rows):
+            y0 = by0 + 20 + i * 35
+            # 只有一行字时把这一行画高一点，让"框外墨占比"这条先放行，
+            # 才能单独量"≥2 行"这条判据（否则挡住它的是占比，不是行数）。
+            ink_h, box_h = (30, 34) if rows == 1 else (16, 22)
+            g[y0 + 2:y0 + 2 + ink_h, bx0 + 24:bx0 + 140] = 40
+            tb.append([bx0 + 20, y0, bx0 + 144, y0 + box_h])
+        if rows >= 2:
+            tb.append([bx0 + 20, by0 + 88, bx0 + 30, by0 + 98])   # 右下角小花
+            tb_txt.append("")                    # OCR 也会给小花一行，文本对齐不能错位
+            g[by0 + 88:by0 + 98, bx0 + 20:bx0 + 30] = 40
+        if extra == "building":
+            g[by0 + 52:by0 + 60, bx0 + 20:bx0 + 90] = 40
+        elif extra == "table":
+            g[by0 + 47:by0 + 48, bx0 + 30:bx0 + 130] = 40
+        elif extra == "icons":
+            for j in range(8):
+                g[by0 + 14:by0 + 27, bx0 + 120 + j * 6:bx0 + 126 + j * 6] = 40
+                g[by0 + 86:by0 + 99, bx0 + 40 + j * 6:bx0 + 46 + j * 6] = 40
+        return g, tb, tb_txt, (bx0, by0, bx1, by1)
+
+    g, tb, tx, box = build()
+    assert FG._is_text_frame_block(list(box), g < 128, tb, k, np, tb_txt=tx), \
+        "两行正文+细框被当成图"
+
+    # 记录表：两行都是长标签但【没有句读】，哪怕字够多、框也够，也必须是图。
+    # 真实卷（综合实践单元(1) p1 第 3 题）整张记录表曾被这条规则删掉。
+    g, tb, tx, box = build(rows=2, texts=["一操场- (东) ( 操场一一",
+                                          "艺术楼- (南) ( 艺术楼一一"])
+    assert not FG._is_text_frame_block(list(box), g < 128, tb, k, np, tb_txt=tx), \
+        "记录表的标签行被当成整句正文"
+
+    # 有句读但太短（不到 12 字）→ 也证不出是整句正文，保留成图。
+    g, tb, tx, box = build(rows=2, texts=["路线一：向东。", "路线二：向南。"])
+    assert not FG._is_text_frame_block(list(box), g < 128, tb, k, np, tb_txt=tx), \
+        "短句也被当成整句正文"
+
+    # 两行里只有一行是整句 → 证不出是文字框，保留成图。
+    g, tb, tx, box = build(rows=2, texts=[ROUTE_TXT[0], "艺术楼     教学楼"])
+    assert not FG._is_text_frame_block(list(box), g < 128, tb, k, np, tb_txt=tx), \
+        "只有一行整句也判文字框"
+
+    # 调用方没给 OCR 原文 → 证不出是文字框，保留成图（绝不拿几何硬猜）。
+    g, tb, _, box = build()
+    assert not FG._is_text_frame_block(list(box), g < 128, tb, k, np), \
+        "没有 OCR 原文也判文字框"
+
+    g, tb, tx, box = build(extra="building")
+    assert not FG._is_text_frame_block(list(box), g < 128, tb, k, np, tb_txt=tx), \
+        "框里还有实心楼却仍判文字框"
+
+    g, tb, tx, box = build(extra="table")
+    assert not FG._is_text_frame_block(list(box), g < 128, tb, k, np, tb_txt=tx), \
+        "表格内线被当成边框"
+
+    g, tb, tx, box = build(rows=1)
+    assert not FG._is_text_frame_block(list(box), g < 128, tb, k, np, tb_txt=tx), \
+        "只有一行字也判文字框"
+
+    g, tb, tx, box = build(extra="icons")
+    assert not FG._is_text_frame_block(list(box), g < 128, tb, k, np, tb_txt=tx), \
+        "一框小图标被当成文字框"
+
+    # 尺寸：302pt 宽已经超过文字框上限（60–260pt），哪怕形状全对也不是文字框。
+    # 文字画满整个框，确保挡住它的是尺寸而不是"框外墨占比"。
+    g = np.full((int(200 * k), int(400 * k)), 255, dtype=np.uint8)
+    bx0, by0, bx1, by1 = 10, 10, 430, 110
+    g[by0:by0 + 2, bx0:bx1] = 40
+    g[by1 - 2:by1, bx0:bx1] = 40
+    g[by0:by1, bx0:bx0 + 2] = 40
+    g[by0:by1, bx1 - 2:bx1] = 40
+    tb = []
+    for i in range(2):
+        y0 = by0 + 20 + i * 35
+        g[y0 + 2:y0 + 18, 34:390] = 40
+        tb.append([30, y0, 400, y0 + 22])
+    assert not FG._is_text_frame_block([bx0, by0, bx1, by1], g < 128, tb, k, np,
+                                       tb_txt=ROUTE_TXT), "超宽框仍判文字框"
+
+
+def figure_preamble_questions_are_folded_into_the_next_question():
+    """图前面的无题号伪题要折进真题：图并给真题、图例并进题干、伪题消失。
+
+    真实卷（综合实践单元(1) p2）第四节/第五节：地图标注和 ①②③④ 图例被切成
+    两道 q_no=None 的伪题，前端自动编成"第 1 题"，真正的第 1 题又在下面 ——
+    同一大题两道 1。反例：有空的真题、正文引导语、没有图的、下一题也没题号的、
+    跨大题的，一律不许折。
+    """
+    import app.extractor.figures as FG
+
+    Q16 = "85018502 8506 8507 8512 8513 肉 东北"
+    Q20 = "①春风小区 ②人民广场 ③长风商城 ④体育馆"
+    IMG_A = [{"rect": [28.7, 132.0, 180.1, 176.5], "page": 2}]
+    IMG_B = [{"rect": [246.8, 24.4, 345.8, 57.7], "page": 2}]
+
+    qs = [
+        {"q_no": None, "section": "四、应急", "text": Q16, "images": list(IMG_A)},
+        {"q_no": 1, "section": "四、应急", "text": "1.酒店5层有（ ）个安全出口。", "images": []},
+        {"q_no": None, "section": "五、小玉", "text": Q20, "images": list(IMG_B)},
+        {"q_no": 1, "section": "五、小玉", "text": "1.根据描述，把序号填在上图。", "images": []},
+        {"q_no": 2, "section": "五、小玉", "text": "2.在上图中画出路线。"},
+    ]
+    got = {0: qs[0]["images"], 2: qs[2]["images"]}
+    spans = [{"q_index": i} for i in range(5)]
+    n = FG.fold_figure_preamble_questions(qs, got, spans)
+    assert n == 2, n
+    assert len(qs) == 3, [q.get("q_no") for q in qs]
+    assert qs[0]["text"].startswith("1.酒店5层"), qs[0]["text"]
+    assert [im["rect"] for im in qs[0]["images"]] == [IMG_A[0]["rect"]]
+    assert qs[0]["text"].strip() == "1.酒店5层有（ ）个安全出口。", "数字图注必须丢"
+    assert qs[1]["text"].startswith(Q20), qs[1]["text"]
+    assert qs[1]["text"].endswith("1.根据描述，把序号填在上图。"), "图例后面要接真题"
+    assert [im["rect"] for im in qs[1]["images"]] == [IMG_B[0]["rect"]]
+    assert sorted(got) == [0, 1], got
+    assert [int(s["q_index"]) for s in spans] == [0, 1, 2], spans
+
+    def fold_one(entries, g=None, sp=None):
+        return FG.fold_figure_preamble_questions(entries, g, sp)
+
+    def pair(text, q1=1, imgs=None, sec0="四", sec1="四", nxt_imgs=None):
+        return [{"q_no": None, "section": sec0, "text": text,
+                 "images": list(IMG_A if imgs is None else imgs)},
+                {"q_no": q1, "section": sec1, "text": "1.真题。",
+                 "images": list(nxt_imgs or [])}]
+
+    # 反例①：正文引导语（不是图注）→ 保留成独立题。
+    a = pair("观察下面的地图，回答问题：")
+    assert fold_one(a) == 0 and len(a) == 2, "正文引导语被折进下一题"
+
+    # 反例②：下一题也没有题号 → 可能是同组小问，不能折。
+    a = pair(Q16, q1=None)
+    assert fold_one(a) == 0 and len(a) == 2, "下一题没题号也折"
+
+    # 反例③：这道伪题没有图 → 不折（可能是正常的无编号题）。
+    a = pair(Q16, imgs=[])
+    assert fold_one(a) == 0 and len(a) == 2, "没有图也折"
+
+    # 反例④：带空位 → 可能是真题，不折。
+    a = pair("8501 8502 8506 （ ）（ ）")
+    assert fold_one(a) == 0 and len(a) == 2, "带空位的题被折"
+
+    # 反例⑤：跨大题 → 图不能借给下一大题。
+    a = pair(Q16, sec0="四", sec1="五")
+    assert fold_one(a) == 0 and len(a) == 2, "跨大题也折"
+
+    # 反例⑥：只有一个圈号（正文里的①）→ 不是图例。
+    a = pair("①春风小区在学校的东面。")
+    assert fold_one(a) == 0 and len(a) == 2, "正文里的单个圈号被当图例"
+
+    # 只有 q 上挂图、没传 got/spans 也要能折（重映射是可选参数）。
+    a = pair(Q16)
+    assert fold_one(a) == 1 and len(a) == 1, "不带 got/spans 时折不动"
+
+
+def shared_figure_trims_the_next_questions_leading_labels():
+    """共享图只挂第一题：第二题自己没有图，续行行首照样压在同一张图上。
+
+    真实卷（综合实践单元(1) p2 第三大题）：第 2 题的续行 OCR 成
+    "凉亭            假山的（ )面。(4分)"，行首"凉亭"是地图标签，
+    正文是"假山的（ )面"。只摘行首标签，正文一个字不许动。
+    """
+    import app.extractor.figures as FG
+    qs = [
+        {"text": "喷泉的西面是（      )，东面\n是（    )。(4分)"},
+        {"text": "莲池在凉亭的（     )面，在 凉亭            假山的（     )面。(4分)"},
+    ]
+    spans = [
+        {"q_index": 0, "page": 2, "col": 0, "text_boxes": [
+            {"x": 87.1, "y": 33.8, "w": 89.8, "h": 6.3,
+             "text": "东北           1.喷泉的西面是（      )，东面"},
+            {"x": 53.8, "y": 44.9, "w": 103.9, "h": 6.2,
+             "text": "喷泉      游乐场            是（    )。(4分)"},
+            {"x": 53.8, "y": 57.1, "w": 123.6, "h": 7.2,
+             "text": "莲池      假山            2.莲池在凉亭的（     )面，在"},
+        ]},
+        {"q_index": 1, "page": 2, "col": 0, "text_boxes": [
+            {"x": 53.8, "y": 67.2, "w": 119.5, "h": 5.8,
+             "text": "凉亭            假山的（     )面。(4分)"},
+        ]},
+    ]
+    got = {0: [{"rect": [25.1, 30.7, 109.3, 80.9]}]}
+    n = FG.strip_text_inside_figures(qs, spans, got)
+    assert n >= 1, "第二题续行的行首地名没被摘掉"
+    assert qs[1]["text"] == "莲池在凉亭的（     )面，在 假山的（     )面。(4分)", qs[1]["text"]
+
+    # 反例①：图在另一页 —— 不能借来当"行首压在图里"的几何证据。
+    qs2 = [{"text": "莲池在凉亭的（     )面，在 凉亭            假山的（     )面。(4分)"}]
+    spans2 = [{"q_index": 0, "page": 3, "col": 0, "text_boxes": [
+        {"x": 53.8, "y": 67.2, "w": 119.5, "h": 5.8,
+         "text": "凉亭            假山的（     )面。(4分)"}]}]
+    got2 = {9: [{"rect": [25.1, 30.7, 109.3, 80.9]}]}      # 图挂在第 2 页
+    assert FG.strip_text_inside_figures(qs2, spans2, got2) == 0, "另一页的图被借来删字"
+    assert qs2[0]["text"].startswith("莲池在凉亭的"), qs2[0]["text"]
+
+    # 反例②：行首和后文只隔一个空格 —— 那是正文里的词，不是图注。
+    qs3 = [{"text": "莲池在凉亭的（     )面，在 凉亭 假山的（     )面。(4分)"}]
+    spans3 = [{"q_index": 0, "page": 2, "col": 0, "text_boxes": [
+        {"x": 53.8, "y": 67.2, "w": 119.5, "h": 5.8,
+         "text": "凉亭 假山的（     )面。(4分)"}]}]
+    assert FG.strip_text_inside_figures(qs3, spans3, got) == 0, "单空格的行首正文被删"
+    assert qs3[0]["text"] == "莲池在凉亭的（     )面，在 凉亭 假山的（     )面。(4分)", qs3[0]["text"]
+
+    # 反例③：整行都落在邻图里，但没有"行尾伸出图外"的证据 —— 邻图只借几何给
+    # "行首压在图里"这一条，不许拿它整行删字（宁可留重复，不许把题干改残）。
+    qs4 = [{"text": "莲池在凉亭的（     )面。 凉亭"}]
+    spans4 = [
+        {"q_index": 0, "page": 2, "col": 0, "text_boxes": [
+            {"x": 53.8, "y": 67.2, "w": 10.0, "h": 6.0, "text": "凉亭"}]},
+        {"q_index": 9, "page": 2, "col": 0, "text_boxes": []},
+    ]
+    got4 = {9: [{"rect": [25.1, 30.7, 109.3, 80.9]}]}
+    assert FG.strip_text_inside_figures(qs4, spans4, got4) == 0, "邻图把整行标签删了"
+    assert qs4[0]["text"].endswith("凉亭"), qs4[0]["text"]
+
+
+def cut_glyph_at_the_crop_edge_is_completed():
+    """裁框从字中间切过：框外这一笔要接完；空白外沿、长横线一律不接。
+
+    真实卷（综合实践单元(1) p1 第 4 题）：OCR 把图内标签"乐乐 龙龙"当正文行
+    擦掉大半，候选框右沿停在 176.5pt，第二个"龙"只剩左边一竖；打印出来标签
+    缺字，孩子分不出谁是谁。窄图够不到 60pt 的整栏接图门槛，需要单独这一条。
+    """
+    import numpy as np
+    import app.extractor.figures as FG
+    k = FG.DPI_PROBE / 72.0
+    g = np.full((int(260 * k), int(260 * k)), 255, dtype=np.uint8)
+    # 图内标签的第二笔：x 175.1–179.3，字高 6pt；框右沿 176.5 正落在中间
+    g[int(216.7 * k):int(223.0 * k), int(175.1 * k):int(179.3 * k)] = 40
+    src = FG.PageSource(1, 260.0, 260.0, g, lambda rect, out: None)
+    rect = (118.0, 201.7, 176.5, 226.8)
+    out = FG._extend_cut_glyph(rect, src, k, np, "right", 240.0)
+    assert 179.2 <= out[2] <= 179.6, f"半个字没接完：{out}"
+    assert out[:2] == rect[:2] and out[3] == rect[3], f"不该动其它边：{out}"
+    # 反例①：框外先是空白（正常外沿）→ 一刀都不许接
+    blank = (118.0, 201.7, 186.0, 226.8)
+    assert FG._extend_cut_glyph(blank, src, k, np, "right", 240.0) == blank, \
+        "空白外沿被当成切字"
+    # 反例②：切到的是一根 1pt 高的框线（高度不像字）→ 不接
+    g2 = np.full_like(g, 255)
+    g2[int(210.0 * k):int(210.9 * k), int(175.5 * k):int(179.0 * k)] = 40
+    src2 = FG.PageSource(1, 260.0, 260.0, g2, lambda rect, out: None)
+    line = (118.0, 205.0, 176.5, 215.0)
+    assert FG._extend_cut_glyph(line, src2, k, np, "right", 240.0) == line, \
+        "框线被接成图"
+    # 反例③：墨一直连到 6pt 上限（长横线/整行字）→ 不接
+    g3 = np.full_like(g, 255)
+    g3[int(208.0 * k):int(214.0 * k), int(175.0 * k):int(190.0 * k)] = 40
+    src3 = FG.PageSource(1, 260.0, 260.0, g3, lambda rect, out: None)
+    long_run = (118.0, 205.0, 176.5, 215.0)
+    assert FG._extend_cut_glyph(long_run, src3, k, np, "right", 240.0) == long_run, \
+        "连到上限的长墨被接进图里"
+    # 反例④：右侧栏界就在 178pt，接完会越栏 → 放弃
+    assert FG._extend_cut_glyph(rect, src, k, np, "right", 178.0) == rect, \
+        "越栏界接宽"
+
+
+def glyph_extension_is_wired_into_find_figures():
+    """接线检查：候选阶段真的调用切字接边，且结果落到最终输出框。
+
+    直接测 `_extend_cut_glyph` 只证明函数本身对；把调用删掉（`glyph = rect`）
+    它照样全绿。这里用 spy 把右沿 +12pt，输出必须真的跟着变宽。
+    """
+    import app.extractor.figures as FG
+    src = _src_from_bands(400, 200, [(30, 60, 380, 140, 40)])
+    spans = [{"q_index": 0, "page": 1, "col": 0, "y0": 50.0, "y1": 160.0,
+              "x0": 0.0, "x1": 400.0,
+              "text_boxes": [{"x": 20, "y": 45, "w": 180, "h": 6,
+                              "text": "1.看图填空。"}]}]
+    real = FG._extend_cut_glyph
+    calls = []
+
+    def spy(rect, src_, k_, np_, side, limit):
+        calls.append(tuple(rect))
+        return (rect[0], rect[1], rect[2] + 12.0, rect[3])
+
+    FG._extend_cut_glyph = spy
+    rep = []
+    try:
+        got = FG.find_figures({1: src}, spans, OUT, report=rep)
+    finally:
+        FG._extend_cut_glyph = real
+    imgs = got.get(0) or []
+    assert calls and imgs, f"切字接边根本没跑：calls={calls}, rep={rep}"
+    assert imgs[0]["rect"][2] >= 390.0, \
+        f"切字接边的结果没落到输出框：{imgs[0]['rect']} vs {calls[0]}"
+    assert any(x.get("why") == "glyph-extended" for x in rep), \
+        f"报告里没留下 glyph-extended：{rep}"
 
 
 CASES = [
@@ -2681,6 +4361,10 @@ CASES = [
     ("裁框下沿不许吞掉本题末行题干（含九个反例）", crop_bottom_edge_does_not_swallow_the_stem_last_line),
     ("下沿裁题干接线检查（真实裁图链路）", stem_bottom_clip_is_wired_into_find_figures),
     ("裁框上沿不许吞掉题干第二行（含三个反例）", crop_top_edge_does_not_swallow_the_stem_second_line),
+    ("裁框上沿从起手句中间切过也要收（含四个反例）",
+     crop_top_edge_cuts_through_the_stem_first_line),
+    ("窄图的题干行字尾要收（含四个反例）", crop_top_edge_narrow_tail_of_a_long_stem_row),
+    ("正文右端字尾的窄条不是配图（含四个反例）", text_edge_fragment_is_not_a_figure),
     ("裁框上沿不许吞掉图内标注（非第一行须贴左沿）", crop_top_edge_skips_figure_labels_inside_the_picture),
     ("栏目横幅与答题框行不许当配图", banner_and_answer_boxes_are_not_figures),
     ("家具行占比/答题框判据的反例（真图不许砍）", junk_crop_measures_keep_real_figures),
@@ -2690,6 +4374,8 @@ CASES = [
     ("多行文字残影不许当配图（含反例与接线）", text_covered_block_is_not_a_figure),
     ("合并后长出来的文字块要按最终框复检（含反例）", merged_text_block_is_rechecked),
     ("图内重复文字要从题干里删掉（含反例）", text_inside_figures_is_removed_from_stem),
+    ("行框题号归一化：带题号与去题号两版都试",
+     box_text_patterns_also_tries_without_the_question_number),
     ("题干残渣清理接线检查", residue_cleanup_is_wired_into_the_pipeline),
     ("题顶紧贴的小太阳要随图裁进来（含九个反例）", top_growth_pulls_a_small_icon_above_the_question),
     ("太阳上沿接线检查（真实文字层）", sun_above_the_figure_is_kept_end_to_end),
@@ -2702,9 +4388,56 @@ CASES = [
      graphic_equation_block_is_one_original_row),
     ("图形算式接线：真 PDF 上整行成图、题干加说明（含反例）",
      graphic_equation_is_cropped_as_one_original_row),
+    ("算式各部分名称的竖排图要整块成图（含五个反例）", term_diagram_block_is_one_original_picture),
+    ("竖排图接线：整块裁图并补专用说明", term_diagram_is_cropped_and_note_is_added),
+    ("连一连的匹配版式要整块成图（含五个反例）", match_layout_block_is_one_original_picture),
+    ("匹配版式接线：整块裁图并补专用说明", match_layout_is_cropped_and_note_is_added),
     ("整题截图的成句判据（含反例）", echo_full_sentence_needs_a_real_sentence_in_the_stem),
     ("整题截图只留图：切掉题干文字块（含五个反例）", stem_screenshot_trim_keeps_only_the_figure),
+    ("整题截图只认高块，气泡/说明框不许整框丢（含三档边界）",
+     short_text_blocks_are_not_whole_question_screenshots),
+    ("整题截图要在削题干行之前丢（接线检查）",
+     whole_question_screenshot_is_dropped_before_the_stem_row_is_clipped),
+    ("横向切半的题干行也占干净区（整题截图不许留半截）",
+     partially_covered_stem_rows_block_the_clean_region),
+    ("数轴图：先收下沿题干行再判截图（含顺序反例）",
+     number_line_below_a_stem_row_is_not_a_screenshot),
+    ("整题截图的答题格碎片要跟着丢（含三个反例）",
+     screenshot_fragments_are_dropped_with_the_screenshot),
+    ("页边扫描压痕不许当配图（含四条反例）", page_edge_scan_band_is_not_a_figure),
     ("栏界切断的框线要接回来（含三个反例）", edge_ink_extension_reconnects_a_cut_border),
+    ("地图短标签只摘行首图注，题干正文不动（含四个反例）", map_label_tokens_keep_the_stem_body),
+    ("图文同排切分停在正文之前（含纯正文反例）", side_text_split_stops_before_the_stem_body),
+    ("裁框只切到半个字：上下沿要收（含贴墨反例）", sliver_text_rows_are_trimmed_only_with_a_gap),
+    ("页边竖排密封线要裁掉（含四个反例）", seal_strip_at_page_edge_is_clipped),
+    ("密封字按真实字号认列，散落地图标签不许当列", seal_column_accepts_real_glyph_sizes_and_rejects_scatter),
+    ("密封字左边那条竖虚线要找到并切在它左边（含四个反例）", seal_dashed_rule_is_found_and_cut),
+    ("页脚不许被当成图注吸进裁框（含真图注反例）", footer_is_never_absorbed_as_a_bottom_label_row),
+    ("图文同排收窄后题干只摘图注（正文必须留）", side_split_stem_cleanup_keeps_the_body),
+    ("图文同排切分接线检查（含跳过接宽）", side_split_is_wired_into_find_figures),
+    ("最后修边接线检查（edge-trim）", final_edge_trim_is_wired_into_find_figures),
+    ("密封线裁切接线检查（edge-trim）", seal_strip_clip_is_wired_into_find_figures),
+    ("窄条字尾复检接线检查（text-edge）", text_edge_drop_is_wired_into_find_figures),
+    ("图注形状判据（含正反样例）", diagram_label_shape_has_hard_counter_examples),
+    ("选项行伸进图框：图里的短标签要摘掉（含四个反例）", map_labels_in_option_rows_are_trimmed),
+    ("整行跨在图框里的图注不算题干（含反例）", diagram_row_straddling_the_crop_is_not_stem),
+    ("题干首行只丢图注、正文必须留（含三个反例）", first_stem_line_only_loses_its_map_labels),
+    ("裁框从表格行中间切过：整行连表头并进图（含三个反例）", figure_top_grows_over_a_cut_table_row),
+    ("并整行图注接线检查（label-grow）", label_grow_is_wired_into_find_figures),
+    ("跨题图只蹭进几个点：收上题底沿（含三个反例）", cross_question_graze_trims_the_upper_figure),
+    ("跨题蹭边收回接线检查（cross-graze）", cross_graze_trim_is_wired_into_find_figures),
+    ("续行行首落在图里：只摘地名、正文要留（含两个反例）",
+     leading_map_labels_on_a_continuation_line_are_trimmed),
+    ("共享图被题界切成两块：同左沿要缝回一张（含五个反例）",
+     figure_split_along_the_same_left_edge_is_stitched),
+    ("带花边的文字框不是配图（含九个反例）", text_frame_with_two_full_rows_is_not_a_figure),
+    ("图前伪题折进下一题（含六个反例）",
+     figure_preamble_questions_are_folded_into_the_next_question),
+    ("共享图后一题没有自己的图：续行行首地名也要摘（含三个反例）",
+     shared_figure_trims_the_next_questions_leading_labels),
+    ("裁框从字中间切过：框外这一笔要接完（含四个反例）",
+     cut_glyph_at_the_crop_edge_is_completed),
+    ("切字接边接线检查（glyph-extend）", glyph_extension_is_wired_into_find_figures),
 ]
 for name, fn in CASES:
     t(name, fn)

@@ -45,6 +45,49 @@ def _is_margin_tab(t: str) -> bool:
     return not re.search(r"[0-9０-９（）()。、，,.．!！?？:：;；—…]", t)
 
 
+# 密封线竖排字：OCR 常把每个字读成一个独立框，单字既不匹配 MARGIN_BOILER
+# （"弥"不是"弥封"），也有一点落在 45pt 带外。照片材料的右边缘尤其常见：
+# 达标B 第 4 页整列「弥 封 湾 线 内 请 勿 弥 答 题」就有几个字在 45–62pt 处，
+# 于是"请勿"混进最后一题的题干末尾。判据不是放宽页边，而是"这一列字本身"。
+SEALING_CHARS = set("密封线内请勿答题弥湾")
+SEALING_COLUMN_EDGE_PT = 100.0
+
+
+def _sealing_column_ids(items: list[dict[str, Any]], page_w: float) -> set[int]:
+    """靠近页边、竖着排成一列、且只由密封线用字组成的单字框 → 整列丢弃。
+
+    三条同时成立：每个框 ≤3 个字且只含密封线用字；整框在页边 100pt 内；
+    同一 x 带（中心相差 ≤24pt）至少 4 个框。少一条都不丢 ——
+    正文里竖排的"数/学"或答案区的"√"不会被当成密封线。
+    """
+    cand: list[dict[str, Any]] = []
+    for it in items:
+        t = re.sub(r"\s+", "", str(it.get("text") or ""))
+        if not t or len(t) > 3 or any(ch not in SEALING_CHARS for ch in t):
+            continue
+        x0, x1 = float(it["x"]), float(it["x"]) + float(it.get("w") or 0)
+        if not (x1 <= SEALING_COLUMN_EDGE_PT or x0 >= page_w - SEALING_COLUMN_EDGE_PT):
+            continue
+        cand.append(it)
+    drop: set[int] = set()
+    used: set[int] = set()
+    for a in cand:
+        if id(a) in used:
+            continue
+        cx = float(a["x"]) + float(a.get("w") or 0) / 2.0
+        col = [b for b in cand if abs((float(b["x"]) + float(b.get("w") or 0) / 2.0) - cx)
+               <= 24.0]
+        if len(col) < 4:
+            continue
+        chars = {ch for b in col for ch in re.sub(r"\s+", "", str(b.get("text") or ""))}
+        if len(chars) < 3:
+            continue
+        for b in col:
+            drop.add(id(b))
+            used.add(id(b))
+    return drop
+
+
 def drop_margin_items(items: list[dict[str, Any]], page_w: float
                       ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """把整条落在页边装订带里、且是装订栏/侧边栏字样的条目挑出来。
@@ -60,7 +103,13 @@ def drop_margin_items(items: list[dict[str, Any]], page_w: float
     """
     keep: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
+    # 密封线整列先摘：单字框可能散落在 45–100pt 处，只靠 in_edge 会漏一半，
+    # 漏掉的那几个（"请/勿"）就会被拼进最后一题的题干末尾。
+    seal = _sealing_column_ids(items, page_w)
     for it in items:
+        if id(it) in seal:
+            dropped.append(it)
+            continue
         t = str(it.get("text") or "").strip()
         x0, x1 = float(it["x"]), float(it["x"]) + float(it.get("w") or 0)
         in_edge = x1 <= MARGIN_ZONE_PT or x0 >= page_w - MARGIN_ZONE_PT
@@ -496,19 +545,38 @@ def lines_from_image(path: str, dpi_probe: int = 100) -> dict[str, Any]:
     if not ok:
         return {"lines": [], "ann": [], "pages": [], "ocr_conf": 0,
                 "needs_review": True, "error": why}
-    items = O.ocr_image(path)
+    raw = O.ocr_image(path)
     sc = 72.0 / dpi_probe                      # 照片按"1px = 1px@dpi_probe"当页面，换成 pt
     items = [{**it, "x": it["x"] * sc, "y": it["y"] * sc,
-              "w": it["w"] * sc, "h": it["h"] * sc} for it in items]
-    w = max((it["x"] + it["w"] for it in items), default=1) + 1
-    ann, bands = _ordered_items(items, w)
+              "w": it["w"] * sc, "h": it["h"] * sc} for it in raw]
+    # ⚠️ 页面宽高必须取【图片本身】，不能取 OCR 框的最大右缘：
+    #    手机拍的作业右边常留白，OCR 一个框都读不到最右侧的密封线，
+    #    用框缘当页宽会把整条密封线算成"页面中间"的字，45pt 页边规则全部失效。
+    #    达标B 第 4 页 1250×881px ⇒ 900×634pt，密封线在 838–860pt 一带。
+    w_pt, h_pt = 0.0, 0.0
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            im_w, im_h = im.size
+        w_pt, h_pt = im_w * sc, im_h * sc
+    except Exception:
+        pass
+    if w_pt <= 1:
+        w_pt = max((it["x"] + it["w"] for it in items), default=1) + 1
+        h_pt = max((it["y"] + it["h"] for it in items), default=1)
+    # 照片路线以前完全没做页边过滤（PDF 路线有），密封线竖排字于是直接进正文。
+    items, margin = drop_margin_items(items, w_pt)
+    ann, bands = _ordered_items(items, w_pt)
     for a in ann:
         a["page"] = 1
     return {"lines": [a["text"] for a in ann], "ann": ann,
             "pages": [{"page": 1, "route": "ocr", "lines": len(ann),
-                       "width_pt": w, "height_pt": max((a["y"] + a["h"] for a in ann), default=1),
-                       "columns": len(bands), "bands": bands}],
-            "ocr_conf": round(sum(i["conf"] for i in items) / len(items), 3) if items else 0,
+                       "width_pt": w_pt, "height_pt": h_pt,
+                       "columns": len(bands), "bands": bands,
+                       "margin_dropped": len(margin)}],
+            "noise": [{"x": m["x"], "y": m["y"], "w": m.get("w", 0), "h": m.get("h", 0),
+                       "page": 1} for m in margin],
+            "ocr_conf": round(sum(i["conf"] for i in raw) / len(raw), 3) if raw else 0,
             "needs_review": False, "errors": []}
 
 

@@ -18,6 +18,7 @@ from mutate_gate import Mutation, run                    # noqa: E402
 
 RULES = os.path.join(ROOT, "app", "extractor", "rules.py")
 LINES = os.path.join(ROOT, "app", "extractor", "lines.py")
+BADGES = os.path.join(ROOT, "app", "extractor", "badges.py")
 TEST = os.path.join(ROOT, "tests", "test_extractor.py")
 
 M = [
@@ -84,10 +85,32 @@ M = [
              "        in_edge = x1 <= MARGIN_ZONE_PT or x0 >= page_w - MARGIN_ZONE_PT",
              "        in_edge = x0 <= MARGIN_ZONE_PT or x1 >= page_w - MARGIN_ZONE_PT",
              "贴边正文行尾不许被当装订栏（反例）"),
+    Mutation("关·照片右缘密封线整列（请勿混进题干）", LINES,
+             "    seal = _sealing_column_ids(items, page_w)",
+             "    seal = set()",
+             "照片边缘密封线整列要摘掉（含两个反例）"),
+    Mutation("旧·照片页宽取 OCR 框右缘（密封线落到页面中间）", LINES,
+             "        w_pt, h_pt = im_w * sc, im_h * sc",
+             "        w_pt, h_pt = 0.0, 0.0",
+             "照片路线用真实页宽且接上页边过滤"),
+    Mutation("关·照片路线不接页边过滤", LINES,
+             "    items, margin = drop_margin_items(items, w_pt)",
+             "    items, margin = items, []",
+             "照片路线用真实页宽且接上页边过滤"),
     Mutation("关·括号补全（残缺空位）", RULES,
              "    text, fixed = repair_blanks(text)",
              "    text, fixed = text, 0",
              "补括号真的接在成题链路上"),
+    Mutation("关·多行题干行尾的开括号不补（第 3 题永远只有「（」）", RULES,
+             '    if "\\n" in text:\n'
+             '        text, line_fixed = re.subn(r"[（(][ \\t]*(?=\\n)", "（    ）", text)',
+             "    if False:\n"
+             "        text, line_fixed = text, 0",
+             "多行题干：行尾空位要补齐"),
+    Mutation("关·小问 (2) 不另起一行（和上一行拼成一句）", RULES,
+             "    sep = \"\\n\" if (_is_item_row(line) or _starts_subq(line)) else \" \"",
+             "    sep = \"\\n\" if _is_item_row(line) else \" \"",
+             "多行题干：行尾空位要补齐"),
     Mutation("过·括号补全不看行首是不是汉字", RULES,
              '            elif out and re.match(r"[\\u4e00-\\u9fff]", ("".join(out)).rstrip()[-1:] or " "):',
              "            elif out:",
@@ -192,13 +215,98 @@ M = [
              "教辅栏目横幅是家具不是配图"),
     # ---- 第十二轮（周末作业 第 3 页：页眉广告拼成无题号假题 + 581×77 废图）----
     Mutation("关·页眉扫码批改广告不认（拼成无题号假题、裁出废图）", RULES,
-             'NOISE_HEADER_RE = re.compile(r"(拍照批改|互动讲解|智能错题本|教材变式练)")',
+             'NOISE_HEADER_RE = re.compile(r"(拍照批改|互动讲解|智能错题本|教材变式练|"\n'
+             '                             r"AI\\s*伴学)")',
              'NOISE_HEADER_RE = re.compile(r"(?!x)x")',
              "页眉扫码批改广告不是题目"),
     Mutation("过·页眉判据把「实际用时」也吞掉（正常题干被抹）", RULES,
-             'NOISE_HEADER_RE = re.compile(r"(拍照批改|互动讲解|智能错题本|教材变式练)")',
-             'NOISE_HEADER_RE = re.compile(r"(拍照批改|互动讲解|智能错题本|教材变式练|实际用时)")',
+             'NOISE_HEADER_RE = re.compile(r"(拍照批改|互动讲解|智能错题本|教材变式练|"\n'
+             '                             r"AI\\s*伴学)")',
+             'NOISE_HEADER_RE = re.compile(r"(拍照批改|互动讲解|智能错题本|教材变式练|"\n'
+             '                             r"AI\\s*伴学|实际用时)")',
              "页眉扫码批改广告不是题目"),
+    # ---- 条目行：空位里的空白不是卡片间隔（周末作业 第 1 页第 1 题）----
+    Mutation("过·空位里的空白当条目间隔（题干被误插换行、空位被撑开）", RULES,
+             '    masked = BLANK_RE.sub("□", s)',
+             "    masked = s",
+             "括号里的空白不是连线卡片的间隔"),
+    # ---- 闯关式综合实践卷：关卡横幅接在题干末尾（综合实践单元(1) p1 第 5 题）----
+    Mutation("关·66 关卡横幅不当家具（「第二关一方向应用我能行」接进题干）", RULES,
+             "    if NOISE_STAGE_BANNER_RE.match(compact):\n        return True",
+             "    if False:\n        return True",
+             "闯关横幅不许接在题干末尾（含反例）"),
+    Mutation("过·66 横幅判据把正常题干也吞掉（「第二关我们来到了动物园」）", RULES,
+             'NOISE_STAGE_BANNER_RE = re.compile(\n'
+             '    r"^第[一二三四五六七八九十]+关[—\\-一]?.{0,14}(大本营|我能行|闯关|挑战)")',
+             'NOISE_STAGE_BANNER_RE = re.compile(\n'
+             '    r"^第[一二三四五六七八九十]+关")',
+             "闯关横幅不许接在题干末尾（含反例）"),
+    # ---- 行首地图标签挡住题号（综合实践单元(1) 第 3 页第三大题）----
+    Mutation("关·66 行首地图标签挡住题号（两题并成一道「1. 1.喷泉」）", RULES,
+             'LEAD_LABEL_QNO_RE = re.compile(\n'
+             '    r"^((?:[^\\s\\d]{1,8}[ \\t\\u3000]{2,}){1,3})(\\d{1,3})[.、．](?!\\d)\\s*(.*)$")',
+             'LEAD_LABEL_QNO_RE = re.compile(r"(?!x)x")',
+             "行首地图标签不许挡住题号（含两个反例）"),
+    Mutation("过·66 题号跳号也认（正文被切成假题）", RULES,
+             "    if last_no is not None:\n"
+             "        if no != last_no + 1:\n"
+             "            return None, s",
+             "    if last_no is not None:\n"
+             "        if False:\n"
+             "            return None, s",
+             "行首地图标签不许挡住题号（含两个反例）"),
+    Mutation("过·66 长正文也当行首标签（题干被吞）", RULES,
+             "r\"^((?:[^\\s\\d]{1,8}[ \\t\\u3000]{2,}){1,3})(\\d{1,3})[.、．](?!\\d)\\s*(.*)$\")",
+             "r\"^((?:[^\\s\\d]{1,99}[ \\t\\u3000]{2,}){1,3})(\\d{1,3})[.、．](?!\\d)\\s*(.*)$\")",
+             "行首地图标签不许挡住题号（含两个反例）"),
+    # ---- 教辅活页的页面家具（品牌行/填写栏/提示栏/标题上的广告）----
+    Mutation("关·出版社品牌行当正文（王朝霞广告并进题干）", RULES,
+             'NOISE_BRAND_RE = re.compile(r"王朝霞|少而精|活页同步练习册|"\n'
+             '                            r"去除封面|化繁为简|品质优良|价格公道")',
+             'NOISE_BRAND_RE = re.compile(r"(?!x)x")',
+             "教辅活页的品牌行"),
+    Mutation("关·班级姓名填写栏当正文", RULES,
+             'NOISE_FILLIN_RE = re.compile(r"班级\\s*[/／]\\s*姓名|^姓\\s*名\\s*[:：]|"\n'
+             '                             r"^日\\s*期\\s*[:：]|^实际用时\\s*[:：]?$")',
+             'NOISE_FILLIN_RE = re.compile(r"(?!x)x")',
+             "教辅活页的品牌行"),
+    Mutation("关·提示栏内容并进上一题（解题妙招/知识打卡）", RULES,
+             "            if any(k in line for k in SIDEBAR_KW):",
+             "            if False:",
+             "教辅活页的品牌行"),
+    Mutation("关·标题行上的答案页码不摘（分段名带广告印上卷面）", RULES,
+             '    out = NOISE_ANSWER_REF_RE.sub(" ", s)',
+             "    out = s",
+             "教辅活页的品牌行"),
+    # ---- 彩色题号徽标（白字红底，RapidOCR 检测不到；周末作业(1) 第 1/2 页）----
+    Mutation("关·徽标右边不用有题干（装饰图标全当题号）", BADGES,
+             "        if not _has_text_on_right(box, items, float(W)):\n            continue",
+             "        if False:\n            continue",
+             "彩色题号徽标"),
+    Mutation("关·徽标识别结果不校验（乱码/低置信度也当题号）", BADGES,
+             '        if not DIGIT_RE.match(text) or text == "0" or float(conf) < DIGIT_CONF_MIN:\n            continue',
+             "        if False:\n            continue",
+             "彩色题号徽标"),
+    Mutation("关·已有 OCR 框里的题号不切开（2看一看 认不出题号）", BADGES,
+             '                    it["text"] = m.group(1) + "." + tail',
+             '                    it["text"] = t',
+             "彩色题号徽标"),
+    Mutation("过·徽标尺寸不设上限（整条横幅当题号）", BADGES,
+             "        if w < W * BADGE_W_FRAC[0] or w > W * BADGE_W_FRAC[1]:\n"
+             "            continue\n"
+             "        if h < W * BADGE_W_FRAC[0] or h > W * BADGE_W_FRAC[1]:\n"
+             "            continue",
+             "        if w < W * BADGE_W_FRAC[0]:\n"
+             "            continue\n"
+             "        if h < W * BADGE_W_FRAC[0]:\n"
+             "            continue",
+             "彩色题号徽标"),
+    Mutation("过·课时序号「第5课时」被补成题号（成品印成「第 5. 课时」）", BADGES,
+             "        if _after_ordinal_marker(box, items):\n"
+             "            continue\n",
+             "        if False:\n"
+             "            continue\n",
+             "彩色题号徽标"),
     # ---- 第九轮（用户截图：乘法题被判成判断题；图片选项的选择题没有尺在量）----
     Mutation("旧·判断信号带光秃秃的 ×（所有乘法题被判判断题）", RULES,
              'JUDGE_HINT = ("对的打", "正确的打", "错的打", "判断", "对的画", "正确的画",\n'
@@ -220,6 +328,17 @@ M = [
              '    q["needs_review"] = q["confidence"] < 0.7 or bool(q.get("review_note"))',
              '    q["needs_review"] = q["confidence"] < 0.7',
              "图片选项的选择题：可作答 + 待校对"),
+    # ---- 第十九轮（综合实践单元(1)：附加题整段被裁进上一题的图）----
+    Mutation("关·附加题不分段（标题和两道填空并进上一题）", RULES,
+             '    if SECTION_BONUS_RE.match(s):\n'
+             '        return True, "", _clean_title(s)\n',
+             '    if False:\n        return True, "", _clean_title(s)\n',
+             "附加题单独成段（含反例）"),
+    Mutation("过·附加题规则不锚定整行（「附加题部分…」也当大题）", RULES,
+             'SECTION_BONUS_RE = re.compile(\n'
+             '    r"^附加题\\s*[。.．]?\\s*(?:[（(]\\s*共\\s*\\d+\\s*分\\s*[）)])?\\s*$")',
+             'SECTION_BONUS_RE = re.compile(r"附加题")',
+             "题干里的附加题不误分段（反例）"),
 ]
 
 if __name__ == "__main__":

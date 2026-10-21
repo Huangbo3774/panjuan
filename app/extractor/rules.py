@@ -93,11 +93,18 @@ def _cn2int(s: str) -> int | None:
 #    "第2天   画校园路线图[课时2]            拍照秒批"（剩余 27 字）→ 整卷重号 20。
 #    页眉页脚的水印是排版噪声，应该由 _clean_title() 去掉，而不是拿长度当判据。
 SECTION_DAY_RE = re.compile(
-    r"^(第\s*\d+\s*(?:天|课时|周|讲|单元)|第\s*[一二三四五六七八九十]{1,3}\s*(?:天|课时|周|讲))"
+    r"^(第\s*\d+\s*[.、．]?\s*(?:天|课时|周|讲|单元)|"
+    r"第\s*[一二三四五六七八九十]{1,3}\s*[.、．]?\s*(?:天|课时|周|讲))"
     r"[\s:：]*(.*)$")
 # 「第三单元综合练习」「综合实践(一)达标练习」「整理和复习」这类没有序号的分段标题
 SECTION_MISC_RE = re.compile(
     r"^.{0,20}?(综合练习|综合应用|达标练习|达标检测|单元测试|单元检测|回顾整理|整理和复习|总复习)[。]?$")
+# 「附加题。(共10分)」是卷末单独一段，没有中文序号，但必须当分段标题：
+# 不认它，它后面那道附加题会被并进上一题的续行，配图还会把附加题整段裁进图里。
+# 真实卷（综合实践单元(1) 第 4 页）：上一题 2 号配送车的图一直裁到页脚，
+# 把「附加题。(共10分)」和两道填空一起吞成位图——正文里一个字都没有。
+SECTION_BONUS_RE = re.compile(
+    r"^附加题\s*[。.．]?\s*(?:[（(]\s*共\s*\d+\s*分\s*[）)])?\s*$")
 
 # 扫描 App 水印 / 页眉页脚 / 页码：这些一定不是题目内容。
 # 真实样本里每一页都带「夸克扫描王 / 极速扫描，就是高效 / 拍照秒批 / 视频讲解」，
@@ -109,8 +116,21 @@ NOISE_WORDS = ("夸克扫描王", "极速扫描", "扫描王", "拍照秒批", "
 #    那样「2.」这种"题号后面内容全在图里"的真实题干会被当页码丢掉（实测命中）。
 NOISE_PAGENO_RE = re.compile(r"^[·•。.]\s*\d{1,3}\s*[·•。]$|^\d{1,3}\s*[·•。]\s*\d{1,3}$")
 NOISE_FOOT_RE = re.compile(r"第\s*\d+\s*页\s*[（(]?\s*共\s*\d+\s*页")
-NOISE_BOOK_RE = re.compile(r"(天天练|教材解读|小学数学|小学语文|小学英语|年级上册|年级下册)")
+NOISE_BOOK_RE = re.compile(r"(天天练|教材解读|小学数学|小学语文|小学英语|"
+                           r"年级上册|年级下册|配北师版|北师版)")
 NOISE_ANSWER_REF_RE = re.compile(r"答案\s*P\s*\d+")
+# 教辅活页的出版社/品牌行。真实卷（周末作业(1).pdf 第 3 页）：
+#   "王朝霞            少而精·活页同步练习册"
+#   "去除封面化繁为简品质优良价格公道"
+# 这两行原来长度超过 24 字闸门，直接混进了上一题的题干。
+NOISE_BRAND_RE = re.compile(r"王朝霞|少而精|活页同步练习册|"
+                            r"去除封面|化繁为简|品质优良|价格公道")
+# 教辅每页顶上的填写栏。它们只是家长抄信息的地方，不是题目。
+NOISE_FILLIN_RE = re.compile(r"班级\s*[/／]\s*姓名|^姓\s*名\s*[:：]|"
+                             r"^日\s*期\s*[:：]|^实际用时\s*[:：]?$")
+# 页码两侧的装饰箭头（OCR 把「26」读成「<<<9」）。必须带箭头才算，
+# 裸数字是题号（"3" 单独一行）或图上刻度，不能丢。
+NOISE_DECOR_RE = re.compile(r"^[<>〈〉《》·•\s]{2,}\d{0,3}$")
 
 # 教辅书的"栏目名"（不是题目，也不该进大题序列）
 STAGE_KW = ("第一步", "第二步", "第三步", "第四步", "知识演练场", "智慧加油站",
@@ -119,24 +139,62 @@ STAGE_KW = ("第一步", "第二步", "第三步", "第四步", "知识演练场
             # 都被单独裁成了一张图（只有横幅、没有内容）。它们是栏目家具，不是题图。
             "解题妙招", "知识打卡")
 
+# 只有这两类是【纯提示栏】：从它开始到下一个题号之前的内容不属于上一题。
+# 周末作业(1) p4 实测："解题妙招" 的"楼数=层数+1"和"知识打卡"的年龄科普
+# 全被并进了第 5 题的题干。其它栏目名（"第一步"等）可能是题目本身的分步，
+# 整段吞掉会丢题干，所以不在这份名单里。
+SIDEBAR_KW = ("解题妙招", "知识打卡")
+
 # 页眉上的扫码批改/AI 伴学广告（王朝霞系教辅每页都印）：
 #   "拍照批改互动讲解" / "智能错题本" / "分钟教材变式练        实际用时："
 # 真实卷（周末作业(1).pdf 第 3 页）：这三行被 OCR 拼成一道【没有题号】的假题，
 # 又因为旁边是彩色横幅 + 二维码，裁出一张 581×77 的页眉废图挂在"第 2 题"下面。
 # 整行匹配 + 短行上限：题干里恰好出现"实际用时"的长句不受影响。
-NOISE_HEADER_RE = re.compile(r"(拍照批改|互动讲解|智能错题本|教材变式练)")
+NOISE_HEADER_RE = re.compile(r"(拍照批改|互动讲解|智能错题本|教材变式练|"
+                             r"AI\s*伴学)")
+# 教辅的"栏目横幅 + 实际用时"：整行都是版式家具，不是题。
+# 真实卷：周末作业(1).pdf 第 3/4 页 "分钟 拓展培优练  (选做题)  实际用时："
+NOISE_BANNER_RE = re.compile(r"(教材变式练|能力进阶练|拓展培优练)")
+# 闯关式综合实践卷的关卡横幅：整行就是"第一关—方向知识大本营"/"第二关一方向应用我能行"，
+# 它不是下一题的题干。真实卷（综合实践单元(1) p1）：横幅被 OCR 接在第 5 题末尾。
+NOISE_STAGE_BANNER_RE = re.compile(
+    r"^第[一二三四五六七八九十]+关[—\-一]?.{0,14}(大本营|我能行|闯关|挑战)")
+
+
+def _noise_rest(s: str, pat: re.Pattern) -> str:
+    """把命中家具字样的片段挖掉，返回剩下的正文（规范空白）。"""
+    return re.sub(r"\s+", "", pat.sub(" ", s))
 
 
 def _is_noise(line: str) -> bool:
     s = line.strip()
     if not s:
         return True
-    if NOISE_PAGENO_RE.match(s) or NOISE_FOOT_RE.search(s) or NOISE_ANSWER_REF_RE.search(s):
+    compact = re.sub(r"\s+", "", s)
+    if NOISE_PAGENO_RE.match(s) or NOISE_FOOT_RE.search(s):
         return True
-    if len(s) <= 24 and NOISE_BOOK_RE.search(s) and not BLANK_RE.search(s):
+    if NOISE_ANSWER_REF_RE.search(s):
+        rest = _noise_rest(s, NOISE_ANSWER_REF_RE)
+        # 只有"答案P122"或旁边那截课时名（"动物聚会"）—— 都是页眉，不是题。
+        # 但"第4课时 动物聚会 答案P122"这种整行标题要留着，它还得当分段用。
+        if len(rest) <= 8 and not re.match(
+                r"^第\s*\d+\s*(?:天|课时|周|讲|单元)", rest):
+            return True
+    if NOISE_BRAND_RE.search(compact) or NOISE_FILLIN_RE.search(compact):
         return True
-    if len(s) <= 30 and NOISE_HEADER_RE.search(s):
-        return True                      # 页眉的扫码批改广告，不是题
+    if NOISE_DECOR_RE.match(s):
+        return True
+    # 题头/页眉可能和家具印在同一行：
+    #   "第4课时 动物聚会   答案P122" / "第5课时快乐的动物   AI伴学"
+    # 挖掉家具后还剩标题的，保留；只剩家具的，丢掉。
+    if NOISE_HEADER_RE.search(compact) and len(_noise_rest(s, NOISE_HEADER_RE)) <= 1:
+        return True
+    if NOISE_BANNER_RE.search(compact) and ("实际用时" in compact or "分钟" in compact):
+        return True
+    if NOISE_STAGE_BANNER_RE.match(compact):
+        return True
+    if len(compact) <= 24 and NOISE_BOOK_RE.search(compact) and not BLANK_RE.search(s):
+        return True
     rest = s.replace("，", " ").replace(",", " ")
     for w in NOISE_WORDS:
         rest = rest.replace(w, " ")
@@ -153,11 +211,10 @@ def is_furniture_text(line: str) -> bool:
     s = (line or "").strip()
     if not s:
         return False
-    if NOISE_PAGENO_RE.match(s) or NOISE_FOOT_RE.search(s) or NOISE_ANSWER_REF_RE.search(s):
-        return True
-    if len(s) <= 24 and NOISE_BOOK_RE.search(s):
-        return True
-    if any(w in s for w in NOISE_WORDS):
+    # ⚠️ 判据只留一份：_is_noise 是正文丢弃用的那份，这里不能再抄一遍旧规则
+    #    （2026-10 周末作业实测：品牌行"王朝霞 少而精·活页同步练习册"只在
+    #     _is_noise 里被认出来，裁图侧的旧副本还当它是正文，图和广告又缝在一起）。
+    if _is_noise(s):
         return True
     if len(s) <= 30 and NOISE_HEADER_RE.search(s):
         return True                      # 页眉广告/栏目横幅，是墙不是图
@@ -175,12 +232,21 @@ def _is_stage(line: str) -> bool:
 
 
 def _clean_title(s: str) -> str:
-    """去掉行尾的水印和多余空格，只留标题本身。"""
-    out = s
+    """去掉标题行上的水印/广告/答案页码和多余空格，只留标题本身。
+
+    真实卷：`第4课时 动物聚会   答案P122`、`第5课时快乐的动物   AI伴学`、
+    `第2天 画校园路线图[课时2]   拍照秒批` —— 同一个标题被三种家具缀着，
+    切分段时三种都得能摘掉，否则标题会带着广告进卷面。
+    """
+    out = NOISE_ANSWER_REF_RE.sub(" ", s)
+    out = NOISE_HEADER_RE.sub(" ", out)
+    out = NOISE_BANNER_RE.sub(" ", out)
     for w in NOISE_WORDS:
         out = out.replace(w, " ")
-    out = re.sub(r"\s{2,}", " ", out).strip(" :：-—")
-    return out.strip()
+    out = re.sub(r"\s{2,}", " ", out)
+    # 页眉边上的装饰箭头（OCR 把页边「26」读成「<<<9」）跟在标题后面也一样是家具
+    out = re.sub(r"\s*[<>〈〉《》·•]{2,}\s*\d{0,3}\s*$", "", out)
+    return out.strip(" :：-—")
 
 
 def _is_section(line: str, expect_no: int | None = None) -> tuple[bool, str, str]:
@@ -216,7 +282,43 @@ def _is_section(line: str, expect_no: int | None = None) -> tuple[bool, str, str
         return True, "", _clean_title(s)
     if len(s) <= 24 and not Q_NUM_RE.match(s) and SECTION_MISC_RE.match(s):
         return True, "", _clean_title(s)
+    # 附加题：没有中文序号，也不是「综合练习」这类词，但确确实实另起一段。
+    if SECTION_BONUS_RE.match(s):
+        return True, "", _clean_title(s)
     return False, "", ""
+
+
+LEAD_LABEL_QNO_RE = re.compile(
+    r"^((?:[^\s\d]{1,8}[ \t\u3000]{2,}){1,3})(\d{1,3})[.、．](?!\d)\s*(.*)$")
+
+
+def _leading_label_question(line: str, last_no: int | None,
+                            numbered_in_sec: int) -> tuple[int | None, str]:
+    """行首是地图标签、题号在后面：认成新题，只把题号后的正文当题干。
+
+    真实卷（综合实践单元(1) 第 3 页第三大题）：
+      "东北           1.喷泉的西面是（      )，东面"
+      "莲池      假山            2.莲池在凉亭的（     )面，在"
+    行首不是题号，旧版整段并成一道无号题，卷面印成"1. 1.喷泉…"（两题糊成一题）。
+    只认 1–3 段短标签、且题号正好接在本大题序号之后；其它情况原样返回。
+    """
+    s = str(line or "").strip()
+    m = LEAD_LABEL_QNO_RE.match(s)
+    if not m:
+        return None, s
+    labels, no_s, rest = m.group(1), m.group(2), m.group(3)
+    toks = [t for t in re.split(r"[ \t\u3000]{2,}", labels.strip()) if t]
+    if not (1 <= len(toks) <= 3):
+        return None, s
+    if not all(re.search(r"[\u4e00-\u9fff]", t) for t in toks):
+        return None, s
+    no = int(no_s)
+    if last_no is not None:
+        if no != last_no + 1:
+            return None, s
+    elif numbered_in_sec == 0 and no > 3:
+        return None, s
+    return no, rest
 
 
 def _parse_question_no(line: str, circled_as_no: bool = False) -> tuple[int | None, str]:
@@ -315,11 +417,52 @@ def _norm_blank_runs(text: str) -> str:
     return text, n
 
 
+# 条目行：三个以上、用两格以上空白隔开的短条目。
+# 真实卷（周末作业(1).pdf 第 1 页第 1 题"想一想，连一连"）：
+#   `6+6   6个2   6×2   2×6   2+2+2+2+2+2   6+2   2个6`
+# 旧版把这一行和指令用空格拼成一段，网页端再折叠空白 → 孩子看到的是一句
+# "6+6 6个2 …"，看不出这是七张待连的卡片。条目行必须单独起一行、且保留间隔。
+ITEM_GAP_RE = re.compile(r"[ \t]{2,}")
+
+
+def _is_item_row(line: str) -> bool:
+    s = (line or "").strip()
+    if not s or len(s) > 140:
+        return False
+    # 括号里的空白是【空位】，不是条目之间的版面间隔 —— 先挖掉再切。
+    # 不挖的话 `数了(      )次,一共有(      )只蝴蝶。` 会被切成三个"短条目"，
+    # 题干续行被误判成连线卡片行（多插一个换行）；网页端同一条判据还会把
+    # 空位里的空格原样留下（tests/subqs_assert.js 的"题干分行"当场红）。
+    masked = BLANK_RE.sub("□", s)
+    parts = [p.strip() for p in ITEM_GAP_RE.split(masked) if p.strip()]
+    if len(parts) < 3:
+        return False
+    return max(len(p) for p in parts) <= 12
+
+
+def _starts_subq(line: str) -> bool:
+    """这一行以「（1）」「(2)」这种小问号开头 → 必须另起一行。
+
+    真实卷（周末作业(1).pdf 第 1 页第 5 题、第 3 页第 1 题）：OCR 把
+    「(1)…」「(2)…」读成两行，旧版用空格拼回一段，家长看到的是
+    "…可以是（ (2)▲+▲…" —— 两道小问糊成一句、空位的右半边也丢了。
+    """
+    return bool(re.match(r"^[（(]\s*\d{1,2}\s*[）)]", (line or "").strip()))
+
+
+def _append_stem(cur_q: dict[str, Any], line: str) -> None:
+    """续行并入题干。条目行/小问行另起一行 —— 这些空白是版面语义，不是排版噪声。"""
+    prev = str(cur_q.get("text") or "").rstrip()
+    sep = "\n" if (_is_item_row(line) or _starts_subq(line)) else " "
+    cur_q["text"] = (prev + sep + line.strip()).strip()
+
+
 def extract(lines: list[str], title: str = "") -> dict[str, Any]:
     """行列表 → 题目结构。lines 必须是【已按阅读顺序排好】的行。"""
     sections: list[dict] = []
     cur_sec: dict | None = None
     cur_q: dict | None = None
+    sidebar = False                     # 正在"解题妙招/知识打卡"里：到下一个题号前不收正文
     skipped: list[str] = []
     noise: list[str] = []
     markers: list[str] = []
@@ -349,7 +492,8 @@ def extract(lines: list[str], title: str = "") -> dict[str, Any]:
         new_section(name, no)
 
     def push_question(no: int | None, stem: str, sec: dict, form: str = "") -> dict:
-        nonlocal cur_q
+        nonlocal cur_q, sidebar
+        sidebar = False                 # 新题开始：提示栏已经结束
         q = {"q_no": no, "qtype": "essay", "text": stem.strip(),
              "options": [], "blanks": 0, "score": 1.0, "confidence": 0.5,
              # no_form 记下题号长什么样（"1." 还是"（1）"）。它决定后面遇到"（2）"
@@ -378,6 +522,9 @@ def extract(lines: list[str], title: str = "") -> dict[str, Any]:
             continue
         if _is_stage(line):
             markers.append(line)
+            if any(k in line for k in SIDEBAR_KW):
+                cur_q = None             # 提示栏不是上一题的续行
+                sidebar = True
             continue
         # 进入答案区后全部收下，不再切题（答案区是批改的输入，不是题目）
         if answer_key or _is_answer_key(line):
@@ -387,6 +534,7 @@ def extract(lines: list[str], title: str = "") -> dict[str, Any]:
         if is_sec:
             open_section(sec_rest, sec_no)
             cur_q = None
+            sidebar = False
             last_no = None
             numbered_in_sec = 0
             continue
@@ -420,6 +568,15 @@ def extract(lines: list[str], title: str = "") -> dict[str, Any]:
             continue
 
         no, rest = _parse_question_no(line, circled_as_no=_section_wants_circled(cur_sec.get("name", "")))
+        if no is None:
+            lead_no, lead_rest = _leading_label_question(line, last_no, numbered_in_sec)
+            if lead_no is not None and not _looks_like_answer_only(lead_rest):
+                push_question(lead_no, lead_rest, cur_sec, "plain")
+                _split_inline_options(cur_q, _sec_name(cur_sec))
+                last_no = lead_no
+                numbered_in_sec += 1
+                seen_numbered = True
+                continue
         if no is not None and cur_q is not None and cur_q.get("no_form") == "plain" \
                 and SUBQ_RE.match(line) and len(str(cur_q.get("text") or "").strip()) >= 4:
             # 【小问不另起一题】"1. 先把词语补充完整，再完成练习。" 下面的
@@ -456,13 +613,16 @@ def extract(lines: list[str], title: str = "") -> dict[str, Any]:
             seen_numbered = True
             continue
 
+        if sidebar:
+            skipped.append(line)          # 提示栏正文：不是题，也不许另起假题
+            continue
         if cur_q is None:
             push_question(None, line, cur_sec)
             continue
 
         # 续行：并入题干，再尝试从题干里拆出选项（选项行已在上面处理，这里只会拆到
         # "题干 + 选项写在同一行"的情况）
-        cur_q["text"] = (cur_q["text"] + " " + line).strip()
+        _append_stem(cur_q, line)
         cur_q["source_lines"].append(line)
         _split_inline_options(cur_q, _sec_name(cur_sec))
 
@@ -732,8 +892,14 @@ def _classify(q: dict, section_hint: str = "") -> None:
        只有「恰好两个选项且都是对/错类词」或「题干/大题名有判断信号」才算 judge。
     """
     text = q["text"]
+    # 多行题干（条目行/小问行）里，行尾孤零零的「（」是 OCR 读丢的空位：
+    # 整段 repair_blanks 只看段尾，补不到它。先按行补，再走整段兜底。
+    line_fixed = 0
+    if "\n" in text:
+        text, line_fixed = re.subn(r"[（(][ \t]*(?=\n)", "（    ）", text)
     # 先补 OCR 读残的括号，再数空位：否则"后面是（"会被当成没有空位的题
     text, fixed = repair_blanks(text)
+    fixed += line_fixed
     if fixed:
         q["text"] = text
         q["blanks_closed"] = fixed

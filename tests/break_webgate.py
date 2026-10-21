@@ -64,7 +64,7 @@ CASES = [
     ("小问标签少给一个输入框（批改下标会错位）", "web/js/subqs.js",
      "    return out.slice(0, n);", "    return out;", "tests/test_subqs_js.py"),
     ("引导语那行不再单独印（小问前的正文消失）", "web/js/subqs.js",
-     "    if (head) out.push(head);", "    if (false) out.push(head);",
+     "    if (head) lines.push(head);", "    if (false) lines.push(head);",
      "tests/test_subqs_js.py"),
     ("只有一问也被加编号（普通题被当成小问拆）", "web/js/subqs.js",
      "    return s.length >= 2 ? s.length : 0;", "    return s.length;",

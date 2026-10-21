@@ -44,10 +44,11 @@ from app.extractor import lines as L                             # noqa: E402
 from app.extractor.figures import (find_figures, page_source_from_pdf,   # noqa: E402
                                    page_source_from_image,
                                    strip_text_inside_figures, apply_graphic_notes,
+                                   fold_figure_preamble_questions,
                                    residue_covered, box_text_patterns,
                                    RESIDUE_KEEP_FIRST_CHARS)
 from app.extractor.rules import (extract, flatten_questions, mark_image_options,
-                                 CHOICE_CUE)  # noqa: E402
+                                 CHOICE_CUE, is_furniture_text)  # noqa: E402
 from app.layout.options import LayoutOptions                     # noqa: E402
 from app.papers.answer_writer import render_answers_pdf          # noqa: E402
 
@@ -172,11 +173,7 @@ def clipped_sides(src, rect, page_boxes, pad_pt=6.0, min_px=45, min_run=18,
         ink = src.gray[by0:by1, bx0:bx1] < src.ink_thr
         if not ink.any():
             continue
-        for (tx0, ty0, tx1, ty1, _t) in page_boxes:
-            a, b = max(int(tx0 * K) - bx0, 0), min(int(tx1 * K) - bx0, ink.shape[1])
-            c, d = max(int(ty0 * K) - by0, 0), min(int(ty1 * K) - by0, ink.shape[0])
-            if b > a and d > c:
-                ink[c:d, a:b] = False
+        _mask_text_boxes(ink, bx0, by0, page_boxes)
         for (ox0, oy0, ox1, oy1) in other_crops:
             a, b = max(int(ox0 * K) - bx0, 0), min(int(ox1 * K) - bx0, ink.shape[1])
             c, d = max(int(oy0 * K) - by0, 0), min(int(oy1 * K) - by0, ink.shape[0])
@@ -190,13 +187,61 @@ def clipped_sides(src, rect, page_boxes, pad_pt=6.0, min_px=45, min_run=18,
 
 
 EDGE_DEAD_PT = 24.0       # 页面最外侧这条带里的是页边花纹/装订线/密封线，不是题目内容
+FURNITURE_BLOCK_PAD_PT = 12.0  # 家具行色块与字框的上下允许距离（见 _mask_text_boxes）
 NEAR_BAND_PT = 6.0        # 裁框内侧多宽算"框内的墨"
 NEAR_RATIO_MIN = 0.5      # 框外的墨至少有一半行要跟框内边缘的墨对齐，才算被切断的延续
 RULE_MIN_W_PT = 40.0      # 1px 高、40pt 以上的横条是印刷横线/答题线，不是图形
 LEAK_MIN_COMP_PX = 40     # 单个连通域小于这个数＝句号/竖弯钩的碎墨，不是被切掉的图形
 
 
-def row_leaks(src, rect, page_boxes, other_crops=(), reach_pt=70.0,
+def _mask_text_boxes(ink, bx0: int, by0: int, page_boxes) -> None:
+    """把边带里的【文字行】挖掉；家具行的彩色底整块挖掉。
+
+    为什么家具行要单独处理：周末作业(1) p1 第 4 题 / p2 第 3 题裁框下面
+    紧贴"智慧加油站"绿色横幅 —— OCR 只读到反白的那 5 个字，绿色圆角底比字框
+    上下左右各大 4–6pt。只按字框挖，剩下那圈底色就被当成"图被切掉一块"，
+    实测两条切边全是这块横幅（var/_probe_edge.py 取证：带内 956/994px 墨
+    全部落在一个连通域里，横向 70.6–164.9 / 33.8–129.6，正是横幅的圆角底）。
+
+    ⚠️ 试过"家具字框统一外扩 12pt 再挖"：那会把紧贴横幅的真图残墨一起盖住，
+       等于给切边尺开了个 12pt 的盲区。现在只挖【横向 ≥50% 落在该家具字框里】
+       的那一个连通域 —— 彩色底正好是这个形状；旁边的图块横向大部分在字框外，
+       仍然照报（自检里有正反例）。
+    普通文字行不放宽：那是题面文字，只按原框挖。
+    """
+    furn: list[tuple[float, float, float, float]] = []
+    for tb in page_boxes:
+        tx0, ty0, tx1, ty1 = [float(v) for v in tb[:4]]
+        if is_furniture_text(str(tb[4] if len(tb) > 4 else "")):
+            furn.append((tx0, ty0, tx1, ty1))
+        a = max(int(tx0 * K) - bx0, 0)
+        b = min(int(tx1 * K) - bx0, ink.shape[1])
+        c = max(int(ty0 * K) - by0, 0)
+        d = min(int(ty1 * K) - by0, ink.shape[0])
+        if b > a and d > c:
+            ink[c:d, a:b] = False
+    if not furn or not ink.any():
+        return
+    n, _lab, stats, _cent = cv2.connectedComponentsWithStats(ink.astype(np.uint8), 8)
+    for i in range(1, n):
+        x, y, w, h, _area = [int(v) for v in stats[i]]
+        if w <= 0 or h <= 0:
+            continue
+        cx0, cx1 = (bx0 + x) / K, (bx0 + x + w) / K
+        cy0, cy1 = (by0 + y) / K, (by0 + y + h) / K
+        for (tx0, ty0, tx1, ty1) in furn:
+            if cy1 < ty0 - FURNITURE_BLOCK_PAD_PT or cy0 > ty1 + FURNITURE_BLOCK_PAD_PT:
+                continue
+            ov = min(cx1, tx1) - max(cx0, tx0)
+            # 宽度也卡死：色块只会比字宽出圆角那一圈；连接域被右侧图块拉长后
+            # 横向占比仍可能过 50%，只靠占比会把旁边的真图一起吞掉。
+            if (ov >= 0.5 * (cx1 - cx0)
+                    and (cx1 - cx0) <= (tx1 - tx0) + 2 * FURNITURE_BLOCK_PAD_PT):
+                ink[y:y + h, x:x + w] = False
+                break
+
+
+def row_leaks(src, rect, page_boxes, other_crops=(), furniture=(), reach_pt=70.0,
               min_px=45, min_run=3):
     """图框【左右两侧的同一行上】还剩多少非文字墨 —— 中间隔着空白也算漏。
 
@@ -225,12 +270,9 @@ def row_leaks(src, rect, page_boxes, other_crops=(), reach_pt=70.0,
         ink = src.gray[by0:by1, bx0:bx1] < src.ink_thr
         if not ink.any():
             continue
-        for (tx0, ty0, tx1, ty1, _t) in page_boxes:
-            a, b = max(int(tx0 * K) - bx0, 0), min(int(tx1 * K) - bx0, ink.shape[1])
-            c, d = max(int(ty0 * K) - by0, 0), min(int(ty1 * K) - by0, ink.shape[0])
-            if b > a and d > c:
-                ink[c:d, a:b] = False
-        for (ox0, oy0, ox1, oy1) in other_crops:
+        _mask_text_boxes(ink, bx0, by0, page_boxes)
+        # furniture = 被丢弃的页边 margin 单字（密封线/装订栏）：不是图的墨。
+        for (ox0, oy0, ox1, oy1) in list(other_crops) + list(furniture):
             a, b = max(int(ox0 * K) - bx0, 0), min(int(ox1 * K) - bx0, ink.shape[1])
             c, d = max(int(oy0 * K) - by0, 0), min(int(oy1 * K) - by0, ink.shape[0])
             if b > a and d > c:
@@ -270,7 +312,11 @@ def row_leaks(src, rect, page_boxes, other_crops=(), reach_pt=70.0,
             # 达标B q8 实测：写作格右框线 820pt 已收进框，右侧 21pt 处 843pt
             # 的密封虚线被框内竖框线带着"行对齐"判据，13 截共 424px 全留下。
             # 真图边界是一条贯穿整框的长线（ch 远大于 60pt），不会被这条误伤。
-            if cw <= 3 and 6 <= ch <= 60 * K and gap > 10 * K:
+            # ⚠️ 不能再要求"离框 >10pt"：裁剪收窄到密封字左边之后，
+            #    虚线离框只有 4pt（达标B q8 实测），带 gap 条件等于放它进来。
+            #    真图边界是贯穿整框的长线（ch 远大于 60pt），不在这一档。
+            #    furniture 还会把密封单字整块挖掉（那是被丢弃的 margin 字）。
+            if cw <= 3 * K and 6 <= ch <= 60 * K:
                 continue
             if gap > 10 * K and ch:
                 hit = sum(1 for yy in range(ch) if (cy + yy) in edge_rows)
@@ -321,8 +367,18 @@ def answerability(qs) -> list[tuple]:
         if qt == "fill" and not int(q.get("blanks") or 0):
             bad.append(("填空没空位", no, t[:24]))
         if not q.get("images") and wants_figure(t, qt):
-            prev = qs[i - 1] if i else {}
-            shared = bool(prev.get("images")) and re.search(r"上图|上面|如图|图上的", t)
+            # 共享图不一定挂在【紧挨着】上一题：大题头下的选项行会被切成一道
+            # 无题号的伪题，图挂在那道伪题上（综合实践单元(1) 第五大题实测），
+            # 真正的第 2 题往上隔两道才是图。同大题内往回看最多 3 道。
+            shared = False
+            for prev in reversed(qs[max(0, i - 3):i]):
+                if prev.get("section") != q.get("section"):
+                    break
+                if prev.get("images"):
+                    shared = True
+                    break
+            if shared:
+                shared = bool(re.search(r"上图|上面|如图|图上的", t))
             if not shared:
                 bad.append(("缺图", no, t[:26]))
     return bad
@@ -500,6 +556,23 @@ def selftest() -> list[str]:
     chk("路线图中不需要有什么（选择）→不该报",
         kinds([q("在设计校园路线图时，路线图中不需要有（  ）。", qt="choice",
                  opts=["①路线", "②方向", "③时间"])]), None)
+    chk("共享图挂在两道之前的伪题上，题干说上图→不该报",
+        kinds([q("①春风小区 ②学校 ③公园 ④医院", no=0, sec="五、解决问题",
+                 imgs=[{"rect": [10, 10, 200, 160]}]),
+               q("小玉从家出发去学校，描述在图上面。", no=1, sec="五、解决问题"),
+               q("在上图中画出小玉上学可能行走的路线。（6分）", no=2,
+                 sec="五、解决问题")]), None)
+    chk("共享图在两道之前但题干没说上图→仍要报",
+        kinds([q("①春风小区 ②学校 ③公园 ④医院", no=0, sec="五、解决问题",
+                 imgs=[{"rect": [10, 10, 200, 160]}]),
+               q("小玉从家出发去学校。", no=1, sec="五、解决问题"),
+               q("请观察图片，画出小玉上学可能行走的路线。（6分）", no=2,
+                 sec="五、解决问题")]), "缺图")
+    chk("图在上一大题里→不在共享范围，要报",
+        kinds([q("上一大题的配图题。", no=1, sec="四、操作",
+                 imgs=[{"rect": [10, 10, 200, 160]}]),
+               q("在上图中画出小玉上学可能行走的路线。", no=1,
+                 sec="五、解决问题")]), "缺图")
     chk("断号（缺第3题）→要报",
         kinds([q("第一题的题干内容。", no=1), q("第二题的题干内容。", no=2),
                q("第四题的题干内容。", no=4)]), "断号")
@@ -534,6 +607,27 @@ def selftest() -> list[str]:
         fails.append("切边尺：框外明明有墨却没报（这条尺坏了，报 0 不算通过）")
     if clipped_sides(src, mine, [], other_crops=[(20.0, 141.0, 120.0, 150.0)]):
         fails.append("切边尺：邻题的图被算成了这道题的「切边」（误报）")
+    # 栏目横幅：OCR 只读到反白字，彩色圆角底比字框大一圈。这圈底色不是被切掉的图。
+    # 正例：家具行字框 + 色块 → 不许报；反例：同一块墨配普通文字行 → 必须报
+    # （证明放宽只挂在家具行上，不是把整条切边尺放哑了）。
+    g_banner = np.full((int(200 * K), int(200 * K)), 255, dtype=np.uint8)
+    g_banner[int(100 * K):int(140 * K), int(20 * K):int(120 * K)] = 40   # 这道题的图
+    g_banner[int(141 * K):int(146 * K), int(30 * K):int(112 * K)] = 40   # 横幅色块
+    src_b = PageSource(1, 200.0, 200.0, g_banner, lambda rect, out: None)
+    banner_box = [(40.0, 143.0, 100.0, 148.0, "智慧加油站")]
+    if clipped_sides(src_b, mine, banner_box):
+        fails.append("切边尺：栏目横幅的彩色底被算成被切掉的图（误报）")
+    plain_box = [(40.0, 143.0, 100.0, 148.0, "下面各题作答")]
+    if not clipped_sides(src_b, mine, plain_box):
+        fails.append("切边尺：横幅色块套到了普通文字上（真正被切的图不报了）")
+    # 横幅旁边连着一块图：不许因为"附近有家具行"就把整块连通域一起盖掉。
+    # 这里图块与横幅在带里相连，连通域横向被拉到字宽的 1.5 倍 —— 只卡 50% 占比
+    # 会把它整个吞掉（实测：去掉宽度上限这条自检就红）。
+    g_frag = g_banner.copy()
+    g_frag[int(141 * K):int(146 * K), int(100 * K):int(120 * K)] = 40
+    if not clipped_sides(PageSource(1, 200.0, 200.0, g_frag, lambda rect, out: None),
+                         mine, banner_box):
+        fails.append("切边尺：横幅旁边连着的图块被一起盖掉了（尺变瞎）")
 
     # 漏块尺：同一行、但【隔着 30pt 空白】的那块墨，切边尺看不见（它只看贴边 6px），
     # 真实卷上这就是"★＋★＝20 被裁成 ★＋★＝"。这条尺必须自己会响。
@@ -584,6 +678,23 @@ def selftest() -> list[str]:
     g7[int(115 * K):int(115 * K) + 12, int(121.0 * K):int(121.0 * K) + 12] = 40
     if not row_leaks(PageSource(1, 200.0, 200.0, g7, lambda rect, out: None), mine, []):
         fails.append("漏块尺：12×12px 的实墨块没报（面积下限把真漏块也挡住了）")
+
+    # 页边密封线：被丢弃的 margin 单字（furniture）不是这道题漏的图；
+    # 细竖虚线（≤3pt 宽、6–60pt 高）也不是。阴性对照＝同一块墨不给 furniture
+    # 时必须报，证明"不报"是因为 furniture 生效，不是尺变瞎。
+    g8 = np.full_like(g2, 255)
+    g8[int(100 * K):int(140 * K), int(20 * K):int(120 * K)] = 40
+    g8[int(105 * K):int(120 * K), int(132 * K):int(142 * K)] = 40     # 密封单字
+    src8 = PageSource(1, 200.0, 200.0, g8, lambda rect, out: None)
+    if not row_leaks(src8, mine, []):
+        fails.append("漏块尺：框外 12pt 的实墨块没报（密封字阴性对照失效）")
+    if row_leaks(src8, mine, [], furniture=[(132.0, 105.0, 142.0, 120.0)]):
+        fails.append("漏块尺：已丢弃的页边密封字被算成漏块（误报）")
+    g9 = np.full_like(g2, 255)
+    g9[int(100 * K):int(140 * K), int(20 * K):int(120 * K)] = 40
+    g9[int(95 * K):int(145 * K), int(126 * K):int(129 * K)] = 40      # 离框 6pt 的细竖虚线
+    if row_leaks(PageSource(1, 200.0, 200.0, g9, lambda rect, out: None), mine, []):
+        fails.append("漏块尺：框外 6pt 的细竖虚线被算成漏块（误报）")
 
     # 题型可疑尺：选项是图片时 OCR 读不到 A/B/C/D，题型会被判成 fill/essay/judge。
     # 正例＝题干明写"填序号"却非 choice；反例＝乘法算式、判断题、真选择题、普通解答。
@@ -762,6 +873,7 @@ def audit(path: str, render=True) -> dict:
         if 0 <= qi < len(qs):
             qs[qi]["images"] = imgs
     n_res = strip_text_inside_figures(qs, spans, got)
+    n_fold = fold_figure_preamble_questions(qs, got, spans)
     apply_graphic_notes(qs, got)
     n_imgopt = mark_image_options(qs)
 
@@ -790,7 +902,13 @@ def audit(path: str, render=True) -> dict:
                               other_crops=others)
             if c:
                 clip.append((qi + 1, [f"{s}+{n}px" for s, n in c], [round(v) for v in rect]))
-            lk = row_leaks(r["sources"][page], rect, boxes.get(page, []), other_crops=others)
+            furn = [(float(m["x"]), float(m["y"]),
+                     float(m["x"]) + float(m.get("w") or 0),
+                     float(m["y"]) + float(m.get("h") or 0))
+                    for m in (r.get("noise") or [])
+                    if int(m.get("page", 1)) == page]
+            lk = row_leaks(r["sources"][page], rect, boxes.get(page, []),
+                           other_crops=others, furniture=furn)
             if lk:
                 leak.append((qi + 1, [f"{s}+{n}px" for s, n in lk], [round(v) for v in rect]))
             for qj, sj in span_by_q.items():
@@ -840,6 +958,8 @@ def audit(path: str, render=True) -> dict:
           f" · 图形算式图 {n_graphic}（整行原图，不计入含题干）")
     if n_res:
         print(f"    （已清掉图内重复文字 {n_res} 行）")
+    if n_fold:
+        print(f"    （已折掉图前伪题 {n_fold} 道：图并给真题，图例并进题干）")
     if handwritten:
         n_na = sum(len(v) for v in na.values())
         print(f"    材料类型：手写作业（人工分类）—— {mat.get('note')}；"
@@ -901,7 +1021,7 @@ def main() -> int:
         return 2
     # 括号里的条数只是【标签】，判决只看 selftest() 返回的 fails ——
     # 加检查时忘了改这个数字，不会让一把坏尺装成好的。
-    print("✓ 审计尺自检通过（44 条正/反对照）")
+    print("✓ 审计尺自检通过（53 条正/反对照）")
     if "--selftest" in sys.argv:        # 只验尺、不看真实材料（变异闸门用）
         return 0
     files = collect(args) or collect([os.path.join(ROOT, "samples", "private")])

@@ -30,7 +30,7 @@ from app.extractor.rules import BLANK_RE                            # noqa: E402
 ASSERT_JS = os.path.join(ROOT, "tests", "subqs_assert.js")
 CROSS_JS = os.path.join(ROOT, "tests", "cross_blanks.js")
 SUBJS = os.path.join(ROOT, "web", "js", "subqs.js")
-N_CASES = 13        # 断言条数：改断言必须同时改这里，否则"删掉一半断言"也能绿灯
+N_CASES = 14        # 断言条数：改断言必须同时改这里，否则"删掉一半断言"也能绿灯
 
 # 清单只有这一份（Python 侧），JS 侧拿同一份跑 —— 两边各抄一份清单，
 # 漂了都不知道比的是不是同一批字符串。

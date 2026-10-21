@@ -26,19 +26,58 @@
     return Math.max(parseInt((q && q.blanks) || 0, 10) || 0, 1);
   }
 
-  /* 题干分行：引导语一行，（1）（2）（3）各一行。没有小问就原样一行。 */
-  function stemLines(q) {
-    var t = ((q && q.text) || '').replace(/\s+/g, ' ').trim();
-    if (!subCount(q)) return t ? [t] : [];
-    var subs = q.subqs;
-    var head = String(subs[0].lead || '').replace(/\s+/g, ' ').trim();
-    var out = [];
-    if (head) out.push(head);
-    for (var i = 0; i < subs.length; i++) {
-      var s = subs[i];
-      out.push('（' + s.no + '）' + String(s.text || '').replace(/\s+/g, ' ').trim());
+  /* 空位口径：括号里的一整串空白 / 一段下划线。
+   * countBlanks 和 isItemRow 共用这一份 —— 两处各写一个，漂了会出现
+   * "空位里那 4 个空格被当条目间隔、整行被判成连线卡片行"（见 isItemRow）。 */
+  var BLANK_RE = /_{2,}|＿{2,}|[（(]\s*[）)]/g;
+
+  /* 条目行：三个以上、用两格以上空白隔开的短条目（连线/数数的卡片行）。
+   * 和 app/extractor/rules.py 的 _is_item_row 同口径：这些空白是版面语义，
+   * 折叠成一个空格后"6+6 6个2 6×2 …"看起来就是一句莫名其妙的话。 */
+  function isItemRow(line) {
+    // 先把【空位】挖成一个字符再切：`数了(    )次,一共有(    )只蝴蝶。`
+    // 按两格空白切会切出三个"短条目"，整行题干被误判成卡片行，
+    // 空位里那 4 个空格就原样留在题干里（subqs_assert 的"题干分行"当场红）。
+    // 括号里的空白是空位，不是条目之间的版面间隔 —— 这一条和 Python 侧同一判据。
+    var masked = String(line || '').replace(BLANK_RE, '□');
+    var parts = masked.split(/[ \t]{2,}/).filter(function (p) {
+      return p.trim();
+    });
+    if (parts.length < 3) return false;
+    var max = 0;
+    for (var i = 0; i < parts.length; i++) {
+      max = Math.max(max, parts[i].trim().length);
     }
-    return out;
+    return max <= 12;
+  }
+
+  /* 单行清洗：条目行保留间隔，普通行折叠空白。 */
+  function tidyLine(line) {
+    var s = String(line == null ? '' : line).trim();
+    if (!s) return '';
+    return isItemRow(s) ? s : s.replace(/\s+/g, ' ');
+  }
+
+  /* 题干分行：显式换行（条目行）各占一行；引导语一行，（1）（2）（3）各一行。 */
+  function stemLines(q) {
+    var raw = String((q && q.text) || '');
+    if (!subCount(q)) {
+      var parts = raw.split(/\r?\n/), out = [];
+      for (var i = 0; i < parts.length; i++) {
+        var line = tidyLine(parts[i]);
+        if (line) out.push(line);
+      }
+      return out;
+    }
+    var subs = q.subqs;
+    var head = tidyLine(subs[0].lead);
+    var lines = [];
+    if (head) lines.push(head);
+    for (var j = 0; j < subs.length; j++) {
+      var s = subs[j];
+      lines.push('（' + s.no + '）' + tidyLine(s.text));
+    }
+    return lines;
   }
 
   /* 空位标签：按小问分组标 (1)第1空 / (1)第2空 / (2)第1空…，多出来的退回第N空。
@@ -65,7 +104,7 @@
    * 做题页的输入框数量就会跳（本项目最恨"同一判据两处实现"）。
    * 一致性由 tests/test_subqs_js.py 拿同一批字符串两边跑一遍来钉。 */
   function countBlanks(text) {
-    var m = String(text == null ? '' : text).match(/_{2,}|＿{2,}|[（(]\s*[）)]/g);
+    var m = String(text == null ? '' : text).match(BLANK_RE);
     return m ? m.length : 0;
   }
 

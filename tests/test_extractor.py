@@ -407,6 +407,42 @@ def long_title_accepted():
 t("长引入句的大题名仍认分段（回归）", long_title_accepted)
 
 
+def bonus_section_keeps_its_own_question():
+    """「附加题。(共10分)」必须另起一段，不能并进上一题。
+
+    真实卷（综合实践单元(1) p4）：不认这段标题，附加题的两行填空会被
+    上一题的区间吞掉，配图一路裁到页脚，把附加题整段做成位图。
+    """
+    lines = ["六、解决问题。", "1.甲（  ）", "2.乙（  ）",
+             "从标“★”的快递点出发，需要经过每个小区。",
+             "附加题。(共10分)",
+             "山的南面与水的北面光照更充足，故称“阳”。",
+             "“贵阳”因位于贵山的（  ）面而得名。"]
+    r = extract(lines)
+    names = [x["name"] for x in r["sections"]]
+    assert names[-1] == "附加题。(共10分)", f"附加题没成段: {names}"
+    prev = r["sections"][-2]["questions"][-1]
+    assert "附加题" not in prev["text"], f"标题并进上一题: {prev['text']!r}"
+    assert "贵阳" not in prev["text"], f"附加题正文并进上一题: {prev['text']!r}"
+    bonus = r["sections"][-1]["questions"][0]
+    assert bonus["q_no"] is None, f"附加题不该有题号: {bonus['q_no']}"
+    assert bonus["auto_no"] == 1, f"附加题在大题内应排第 1: {bonus.get('auto_no')}"
+    assert "贵阳" in bonus["text"], f"附加题正文丢了: {bonus['text']!r}"
+t("附加题单独成段（含反例）", bonus_section_keeps_its_own_question)
+
+
+def bonus_like_stem_not_split():
+    """反例：题号后面/正文中间提到「附加题」的句子不是分段标题。"""
+    lines = ["一、填空。", "1.完成附加题。(共10分)（  ）", "2.乙（  ）",
+             "附加题部分共有三道小题，请认真作答。"]
+    r = extract(lines)
+    names = [x["name"] for x in r["sections"]]
+    assert names == ["一、填空。"], f"题干里的附加题被当分段: {names}"
+    assert len(r["sections"][0]["questions"]) == 2, "题目被切坏"
+    assert "附加题部分" in r["sections"][0]["questions"][1]["text"], "续行正文被吞"
+t("题干里的附加题不误分段（反例）", bonus_like_stem_not_split)
+
+
 def long_essay_confidence():
     """正例：完整长问句（够长 + 句末标点）置信度要过 0.7，别把整卷标成待校对。
     反例：短残句（OCR 断行/图形碎片）必须仍然标 needs_review。"""
@@ -484,8 +520,75 @@ def margin_filter_must_not_eat_body_line_ends():
     assert len(dr) == 1, "真装订栏反而没抓到"
 
 
+def sealing_column_on_photo_edge_is_dropped():
+    """照片右边缘的密封线整列必须摘掉，不能只靠 45pt 页边。
+
+    真实卷：第三单元达标练习题B.jpg（1250×881px ⇒ 900×634pt），
+    OCR 把「密封线内请勿答题」读成十个单字框，散落在 x=838–860pt，
+    其中"请/勿/答/题"落在 45pt 带外，于是"请勿"被拼进最后一题题干末尾。
+    判据必须看"这一列字本身"（同 x 带 ≥4 框、≥3 个不同字、贴边 100pt 内），
+    不能为了抓它把 45pt 放宽——那会吃掉横版卷左半正文的行尾。
+    """
+    from app.extractor.lines import drop_margin_items
+    col = [("弥", 850.3, 97.9), ("封", 850.3, 159.1), ("湾", 838.1, 167.8),
+           ("线", 850.3, 221.0), ("内", 852.5, 283.7), ("请", 853.9, 345.6),
+           ("勿", 852.5, 405.4), ("弥", 839.5, 462.2), ("答", 851.0, 466.6),
+           ("题", 852.5, 528.5)]
+    items = [{"text": t, "x": x, "y": y, "w": 9, "h": 12} for t, x, y in col]
+    items.append({"text": "6.你做过什么手工作品？", "x": 70, "y": 300, "w": 400, "h": 14})
+    keep, dropped = drop_margin_items(items, 900.0)
+    assert len(dropped) == 10, f"密封线没摘干净：{[(d['x'], d['text']) for d in dropped]}"
+    assert [k["text"] for k in keep] == ["6.你做过什么手工作品？"], keep
+    # 反例一：同样的字在页面中间（答题格里的"答"）不许丢
+    mid = [{"text": t, "x": 400, "y": 100 + i * 30, "w": 9, "h": 12}
+           for i, (t, _x, _y) in enumerate(col)]
+    _k, dr = drop_margin_items(mid, 900.0)
+    assert not dr, f"页面中间的竖排答案字被当密封线吃了：{[d['text'] for d in dr]}"
+    # 反例二：贴边但只有 3 个字（普通竖排短词）不许成列丢弃
+    few = [{"text": t, "x": 850, "y": 100 + i * 60, "w": 9, "h": 12}
+           for i, t in enumerate(["请", "勿", "答"])]
+    _k, dr = drop_margin_items(few, 900.0)
+    assert not dr, f"三个字不够成列，误杀了：{[d['text'] for d in dr]}"
+
+
+def photo_route_uses_real_page_size_and_margin_filter():
+    """接线检查：`lines_from_image` 必须按【图片尺寸】建页、并真的调用页边过滤。
+
+    以前照片路线直接用 OCR 框的最大右缘当页宽（左侧正文只到 ~840pt），
+    45pt 页边规则算在 840 上 → 密封线 x≈850 全落在"页面中间"，一个都不丢。
+    这里把 OCR 换成固定条目（模具图用 PIL 真造 1000×700），只测接线：
+    页宽必须 = 720pt，noise 必须带出 10 个框，正文不许少。
+    """
+    import os
+    import tempfile
+    from PIL import Image
+    from app.extractor import lines as L
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "照片.png")
+        Image.new("RGB", (1000, 700), (255, 255, 255)).save(path)
+        fake = [{"text": "6.你做过什么手工作品？", "x": 70, "y": 300,
+                 "w": 400, "h": 14, "conf": 0.95}]
+        for i, t in enumerate("密封线内请勿答题"):
+            fake.append({"text": t, "x": 950, "y": 60 + i * 55,
+                         "w": 9, "h": 12, "conf": 0.9})
+        old = L.O.ocr_image
+        L.O.ocr_image = lambda _p: [dict(x) for x in fake]
+        try:
+            r = L.lines_from_image(path)
+        finally:
+            L.O.ocr_image = old
+        assert abs(r["pages"][0]["width_pt"] - 720.0) < 0.5, \
+            f"页宽没按图片尺寸算：{r['pages'][0]['width_pt']}"
+        assert abs(r["pages"][0]["height_pt"] - 504.0) < 0.5, r["pages"][0]
+        assert len(r.get("noise") or []) == 8, r.get("noise")
+        assert r["pages"][0].get("margin_dropped") == 8, r["pages"][0]
+        assert r["lines"] == ["6.你做过什么手工作品？"], r["lines"]
+
+
 t("装订栏不许混进题干", margin_strip_never_enters_body_text)
 t("贴边正文行尾不许被当装订栏（反例）", margin_filter_must_not_eat_body_line_ends)
+t("照片边缘密封线整列要摘掉（含两个反例）", sealing_column_on_photo_edge_is_dropped)
+t("照片路线用真实页宽且接上页边过滤", photo_route_uses_real_page_size_and_margin_filter)
 
 
 def broken_brackets_get_closed():
@@ -841,6 +944,31 @@ def long_blank_runs_count_as_blanks():
 t("括号里的长空格流要数成空位（含三个反例）", long_blank_runs_count_as_blanks)
 
 
+def multiline_stems_close_their_blank_and_keep_subquestions_apart():
+    """多行题干：行尾的空位要补齐，小问 (1)(2) 不许被空格拼成一句。
+
+    真卷（周末作业(1).pdf）：第 1 页第 3 题 "…可以用3×4解决？（" 后面紧接
+    一行选项条目，整段 repair_blanks 只看段尾 → 空位的右半边永远补不上；
+    第 5 题 "…可以是（" 下一行就是 "(2)…"，成品印成
+    "…可以是（ (2)▲+▲…"，两道小问糊成一句。
+    """
+    lines = [
+        "1. 下面哪些问题可以用3×4解决？（",
+        "牛奶  牛奶  牛奶  4元4元4元",
+        "2. (1)■×7＞8+8+8+8+8，■表示的数可以是（",
+        "(2)▲+▲+●=▲×5，●=（    ）个▲。",
+    ]
+    got = qs(extract(lines))
+    assert got[0]["text"].startswith("下面哪些问题可以用3×4解决？（    ）"), got[0]["text"]
+    assert "\n" in got[0]["text"], "条目行与题干没分开"
+    assert got[1]["blanks"] >= 2, f"多行题干的空位少算了：{got[1].get('blanks')}"
+    assert "\n(2)" in got[1]["text"], f"小问 (2) 没另起一行：{got[1]['text']}"
+    assert got[1]["text"].count("（") == got[1]["text"].count("）"), got[1]["text"]
+    assert not got[1].get("review_note"), got[1]
+t("多行题干：行尾空位要补齐、小问 (1)(2) 不许拼成一句",
+  multiline_stems_close_their_blank_and_keep_subquestions_apart)
+
+
 def span_locates_the_number_glued_stem_row():
     """题号【粘在第一行行首】（"4.(1)一共有多少根胡萝卜?"）时，区间起点必须是这一行。
 
@@ -904,6 +1032,208 @@ def stage_banner_is_furniture_not_a_figure():
     assert not is_furniture_text("第一步，请把 3 个 4 改写成乘法算式，并读出算式。"), \
         "长句子被当横幅抹掉了"
 t("教辅栏目横幅是家具不是配图（含反例）", stage_banner_is_furniture_not_a_figure)
+
+
+def stage_banner_is_not_glued_to_the_question():
+    """闯关横幅"第二关一方向应用我能行"不是题干，也不许接到上一题末尾。
+
+    真实卷（综合实践单元(1) p1 第 5 题）：横幅在图上/下一段之前，OCR 单独一行，
+    解析时被并进第 5 题题干。反例：句子里真的在说"第几关"的题干不许动。
+    """
+    from app.extractor.rules import _is_noise, is_furniture_text
+    assert _is_noise("第二关一方向应用我能行"), "关卡横幅没当家具"
+    assert is_furniture_text("第二关一方向应用我能行")
+    assert not _is_noise("第二关我们来到了动物园"), "正常题干被当横幅抹掉了"
+    assert not _is_noise("第二关的方向知识真有趣"), "正常题干被当横幅抹掉了"
+    got = qs(extract(["5.小君想先参观书法馆，接下来需要向（   ）走。",
+                      "第二关一方向应用我能行",
+                      "三、公园畅游指南。（共21分）"]))
+    assert got and "第二关" not in str(got[0].get("text")), \
+        f"关卡横幅接进题干了：{[q.get('text') for q in got]}"
+t("闯关横幅不许接在题干末尾（含反例）", stage_banner_is_not_glued_to_the_question)
+
+
+def map_labels_before_the_number_do_not_hide_a_question():
+    """行首是地图标签、题号在后面：仍要切开，且题干不许带题号（含两个反例）。"""
+    got = qs(extract([
+        "三、公园畅游指南。（共21分）",
+        "东北           1.喷泉的西面是（      )，东面",
+        "喷泉      游乐场            是（    )。(4分)",
+        "莲池      假山            2.莲池在凉亭的（     )面，在",
+        "凉亭            假山的（     )面。(4分)",
+    ]))
+    assert [q.get("q_no") for q in got] == [1, 2], \
+        f"行首标签挡住了题号：{[(q.get('q_no'), q.get('text')) for q in got]}"
+    assert got[0]["text"].startswith("喷泉的西面"), f"题干起手不对：{got[0]['text']!r}"
+    assert not got[0]["text"].startswith("1."), f"题号留在题干里：{got[0]['text']!r}"
+    assert not got[1]["text"].startswith("2."), f"题号留在题干里：{got[1]['text']!r}"
+    # 反例①：序号跳号（上一题是 1，这行写 5.）→ 不认成新题
+    skip = qs(extract(["三、公园畅游指南。（共21分）",
+                       "东北           1.喷泉的西面是（      )，东面",
+                       "莲池            5.莲池在凉亭的（     )面，在"]))
+    assert [q.get("q_no") for q in skip] == [1], f"跳号被当新题：{skip}"
+    # 反例②：行首是长正文（超过 8 字）再跟数字 → 不认
+    longline = qs(extract(["三、公园畅游指南。（共21分）",
+                           "1.喷泉的西面是（      )，东面",
+                           "下面是一张公园平面示意图请看图           2.莲池在凉亭的（     )面"]))
+    assert [q.get("q_no") for q in longline] == [1], f"长正文被当标签：{longline}"
+    assert "下面是一张公园平面示意图请看图" in longline[0]["text"], "正文被吞了"
+
+
+t("行首地图标签不许挡住题号（含两个反例）", map_labels_before_the_number_do_not_hide_a_question)
+
+
+def blank_parentheses_are_not_item_gaps():
+    """括号里的空白是【空位】，不是连线卡片的间隔。
+
+    真实卷（周末作业(1).pdf 第 1 页第 1 题"想一想，连一连"）的卡片行
+    `6+6   6个2   6×2 …` 必须保留两格以上空白；可同一份卷的
+    `数了(      )次,一共有(      )只蝴蝶。` 按两格空白切也会切出三个"短条目"，
+    旧版把整行判成卡片行：Python 侧给题干续行多插一个换行，网页端把空位里
+    那 4 个空格原样留下（tests/subqs_assert.js 的"题干分行"当场红）。
+    """
+    from app.extractor.rules import _is_item_row
+    assert _is_item_row("6+6   6个2   6×2   2×6   2+2+2+2+2+2   6+2   2个6"), \
+        "真的连线卡片行没认出来"
+    assert not _is_item_row("数了(      )次,一共有(      )只蝴蝶。"), \
+        "空位里的空白被当成了条目间隔"
+    assert not _is_item_row("一年有（        ）个月，大月有（  ）个。"), \
+        "全角括号空位被当成了条目间隔"
+    got = qs(extract(["1. 看图填一填。", "看数填空。",
+                      "数了(      )次,一共有(      )只蝴蝶。"]))
+    assert got and "\n" not in got[0]["text"], \
+        f"题干被多插了换行（网页端会连空位一起变形）：{got[0]['text']!r}"
+
+
+t("括号里的空白不是连线卡片的间隔（含反例）", blank_parentheses_are_not_item_gaps)
+
+
+def worksheet_furniture_never_joins_the_stem():
+    """教辅活页的出版社品牌行 / 填写栏 / 提示栏不是题干，也不许并进上一题。
+
+    真实卷（周末作业(1).pdf，王朝霞《少而精》活页）：
+      · p3 页脚 "王朝霞  少而精·活页同步练习册" 与
+        "去除封面化繁为简品质优良价格公道" 两行都超过 24 字闸门，旧版直接
+        并进了第 2 题的题干；
+      · 同页 "班级/姓名  日期" 填写栏也被当成正文；
+      · p4 "解题妙招"（楼数=层数+1）和 "知识打卡"（年龄科普）整段并进第 5 题。
+    标题行上的家具（答案P122 / AI伴学 / 拍照秒批 / 页边装饰箭头）必须摘掉，
+    只留下课时名 —— 否则分段名会带着广告印到卷面上。
+    """
+    from app.extractor.rules import _clean_title, _is_noise
+    assert _is_noise("班级/姓名        日期"), "填写栏没被当家具"
+    assert _is_noise("王朝霞            少而精·活页同步练习册"), "品牌行没被当家具"
+    assert not _is_noise("小明做口算题，实际用时比计划少了3分钟。"), \
+        "正常题干（带「实际用时」）被当页眉家具抹掉了"
+    lines = ["第4课时 动物聚会   答案P122",
+             "王朝霞            少而精·活页同步练习册",
+             "去除封面化繁为简品质优良价格公道",
+             "班级/姓名        日期",
+             "1.第一题（    ）的题干内容。",
+             "解题妙招",
+             "楼数=层数+1",
+             "2.第二题（    ）的题干内容。"]
+    got = qs(extract(lines))
+    assert [q.get("q_no") for q in got] == [1, 2], \
+        f"家具行另立了一道假题：{[q.get('q_no') for q in got]}"
+    text = " ".join(str(q.get("text") or "") for q in got)
+    for bad in ("王朝霞", "活页同步练习册", "去除封面", "班级", "日期",
+                "楼数", "层数"):
+        assert bad not in text, f"家具内容「{bad}」混进题干：{text!r}"
+    assert "第一题" in got[0]["text"] and "第二题" in got[1]["text"], \
+        f"家具过滤把正常题干一起吞了：{[q.get('text') for q in got]}"
+
+    # 标题行的三种真实家具各摘一次；反例：摘完不能只剩空串
+    assert _clean_title("第4课时 动物聚会   答案P122") == "第4课时 动物聚会"
+    assert _clean_title("第5课时快乐的动物   AI伴学") == "第5课时快乐的动物"
+    assert _clean_title("第2天 画校园路线图[课时2]   拍照秒批") == "第2天 画校园路线图[课时2]"
+    assert _clean_title("第3天 认识小数 <<<9") == "第3天 认识小数"
+
+
+t("教辅活页的品牌行/填写栏/提示栏不当题干（含反例）",
+  worksheet_furniture_never_joins_the_stem)
+
+
+def colored_badges_are_found_but_decorations_are_not():
+    """教辅活页的白字红底题号：OCR 检测网络整块漏掉，必须补检。
+
+    真实卷（周末作业(1).pdf）：第 1 页 1/2/4 题、第 2 页 1/3/4 题的题号都是
+    白字压粉色圆角块，RapidOCR 一个都没检出 → 整页并成一道无题号假题，
+    用户看到的就是"连线条目被并段"。补检判据：①尺寸像题号（页宽 1%–5%）；
+    ②右边紧跟一行汉字题干；③白字只识别、不检测；④OCR 已把它读成
+    "2看一看"时把题号切开。
+    """
+    import numpy as np
+    import cv2
+    from app.extractor.badges import find_badges
+
+    W, H = 1200, 300
+
+    def page():
+        return np.full((H, W, 3), 255, dtype=np.uint8)
+
+    def pink(img, x, y, w, h):
+        # BGR(60,60,220) → HSV 色相 0（红/粉那一档），和教辅徽标同色系
+        cv2.rectangle(img, (x, y), (x + w, y + h), (60, 60, 220), -1)
+
+    def white(img, x, y, w, h):
+        cv2.rectangle(img, (x, y), (x + w, y + h), (255, 255, 255), -1)
+
+    stem = {"text": "看一看，连一连。", "x": 70.0, "y": 45.0,
+            "w": 260.0, "h": 20.0}
+
+    def rec(text, conf=0.99):
+        return lambda im: (text, conf)
+
+    g = page(); pink(g, 20, 40, 40, 40); white(g, 32, 50, 16, 20)
+    got = find_badges(g, [dict(stem)], recognize=rec("2"))
+    assert len(got) == 1 and got[0]["text"] == "2.", f"白字红底题号没认出来：{got}"
+    assert got[0]["badge"] is True, f"补检出的题号没打标记：{got[0]}"
+
+    # 两位数：两个白字块要并成一个数字
+    g = page(); pink(g, 20, 40, 40, 40)
+    white(g, 26, 50, 10, 20); white(g, 40, 50, 10, 20)
+    got = find_badges(g, [dict(stem)], recognize=rec("10"))
+    assert len(got) == 1 and got[0]["text"] == "10.", f"两位数题号没认出来：{got}"
+
+    # 反例①：徽标右边没有题干（装饰图标）→ 不许当题号
+    g = page(); pink(g, 20, 40, 40, 40); white(g, 32, 50, 16, 20)
+    assert find_badges(g, [], recognize=rec("2")) == [], "装饰图标被当题号"
+    # 反例②：右边是英文而不是汉字 → 不是题干
+    assert find_badges(g, [dict(stem, text="abc")], recognize=rec("2")) == [], \
+        "英文标签被当题干"
+    # 反例③：只识别通道读出来不是 1–2 位数字
+    assert find_badges(g, [dict(stem)], recognize=rec("AB")) == [], "乱码被当题号"
+    # 反例④：置信度 <0.5
+    assert find_badges(g, [dict(stem)], recognize=rec("2", 0.3)) == [], \
+        "低置信度识别被当题号"
+    # 反例⑤：10% 页宽的大红方块（装饰图标/色块）不是题号。
+    #   ⚠️ 别用长条横幅当反例：它先被长宽比挡住，尺寸上限那条判据等于没测。
+    g = page(); pink(g, 20, 100, 120, 120); white(g, 60, 130, 40, 60)
+    big_stem = dict(stem, x=160.0, y=150.0)
+    assert find_badges(g, [big_stem], recognize=rec("5")) == [], "大色块被当题号"
+
+    # 已有 OCR 框：OCR 把"2看一看"连成一条 → 切成"2.看一看"，不重复注入
+    g = page(); pink(g, 20, 40, 40, 40); white(g, 32, 50, 16, 20)
+    it = {"text": "2看一看", "x": 18.0, "y": 38.0, "w": 60.0, "h": 44.0}
+    got = find_badges(g, [it], recognize=rec("2"))
+    assert got == [] and it["text"] == "2.看一看", f"题号和题干没切开：{it}"
+    # 反例⑥：压着徽标的是「第4课时」，不是数字 → 原样不动
+    it2 = {"text": "第4课时 动物聚会", "x": 18.0, "y": 38.0,
+           "w": 120.0, "h": 44.0}
+    find_badges(g, [it2], recognize=rec("2"))
+    assert it2["text"] == "第4课时 动物聚会", f"课时标题被改了：{it2}"
+    # 反例⑦：OCR 把「第5课时」拆成「第」「5」「课时」三个框 —— 5 是课时序号，
+    #   补成「5.」会让成品印出「第 5. 课时」（周末作业第 2 页真实发生）。
+    it3 = {"text": "第", "x": 0.0, "y": 44.0, "w": 18.0, "h": 28.0}
+    it4 = {"text": "5", "x": 20.0, "y": 38.0, "w": 40.0, "h": 44.0}
+    it5 = {"text": "课时", "x": 64.0, "y": 44.0, "w": 40.0, "h": 28.0}
+    got = find_badges(g, [it3, it4, it5], recognize=rec("5"))
+    assert got == [] and it4["text"] == "5", f"课时序号被当题号：{it4}"
+
+
+t("彩色题号徽标要认出来、装饰图标不许当题号（含七个反例）",
+  colored_badges_are_found_but_decorations_are_not)
 
 
 def page_header_ads_are_not_questions():

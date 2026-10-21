@@ -23,7 +23,7 @@ from ..paths import VAR, DATA
 from ..extractor import lines as L
 from ..extractor import ocr as OC
 from ..extractor.figures import (find_figures, strip_text_inside_figures,
-                                 apply_graphic_notes)
+                                 apply_graphic_notes, fold_figure_preamble_questions)
 from ..extractor.rules import extract, flatten_questions, mark_image_options
 from ..grading.engine import grade, make_uid
 from ..storage import db
@@ -135,6 +135,14 @@ def api_parse(id_str: str) -> dict:
                 fig_note += f"，还原图形算式 {n_sym} 行"
         except Exception as e:                             # 认符号失败同样不许拖垮识别
             fig_note += f"，图形算式还原失败（{type(e).__name__}: {e}）"
+        # 图前面的无题号伪题（地图标注/图例被 OCR 切成一道"第 1 题"）折进真题。
+        # 必须放在所有按下标取图的环节之后：折完下标会整体前移。
+        try:
+            n_fold = fold_figure_preamble_questions(qs, got, spans)
+            if n_fold:
+                fig_note += f"，折掉图前伪题 {n_fold} 道"
+        except Exception as e:
+            fig_note += f"，图前伪题合并失败（{type(e).__name__}: {e}）"
     except Exception as e:                                 # 配图失败不能拖垮整卷识别
         fig_note = f"，配图裁剪失败（{type(e).__name__}: {e}）"
 
@@ -144,7 +152,9 @@ def api_parse(id_str: str) -> dict:
         "paper_id": pid, "title": res.get("title") or paper.get("title"),
         "status": "proofreading",
         "questions": saved,
-        "sections": [{"name": s["name"], "count": len(s["questions"])} for s in res["sections"]],
+        "sections": [{"name": s["name"],
+                      "count": sum(1 for q in qs if q.get("section") == s["name"])}
+                     for s in res["sections"]],
         "dropped_noise": len(res["dropped_noise"]),
         "stage_markers": len(res["stage_markers"]),
         "answer_key_lines": res["answer_key_lines"][:5],
