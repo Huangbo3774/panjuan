@@ -33,7 +33,7 @@ MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_TOTAL_BYTES = 200 * 1024 * 1024
 ALLOWED = {".pdf", ".docx", ".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
-app = FastAPI(title="磐卷 PaperForge", version="1.2.5")
+app = FastAPI(title="磐卷 PaperForge", version="1.2.6")
 app.include_router(papers_router)
 
 

@@ -29,6 +29,58 @@ TEST = os.path.join(ROOT, "tests", "test_print_formats.py")
 
 EXPECT_LINE = "小问在打印版里各起一行"
 EXPECT_VIEW = "小问视图接在读库链路上"
+TEST_EXPORT = os.path.join(ROOT, "tests", "test_answer_export.py")
+EXPECT_SAME_PAGE = "选择题整题同页"
+EXPECT_WHOLE_FIG = "整题截图放大到页宽"
+EXPECT_WHOLE_Q = "整题原图不许再印一遍"
+EXPECT_FIG_FIRST = "配图紧跟题干"
+
+# 导出分页 / 整题截图尺寸（被照的尺是 test_answer_export.py）
+M_EXPORT = [
+    Mutation("旧·题目不整题搬页（D 选项单独落在下一页）", WRITER,
+             "        if est <= usable:\n            fl.need(est)",
+             "        if False:\n            fl.need(est)",
+             EXPECT_SAME_PAGE),
+    Mutation("旧·整题截图按 1:1 印（半栏宽，字只有 5–6pt）", WRITER,
+             "    if whole and w_pt:",
+             "    if False and w_pt:",
+             EXPECT_WHOLE_FIG),
+    Mutation("旧·半页扫描件的普通配图不放大（P4 角图只有 53pt）", WRITER,
+             "    pscale = _page_scale(im)",
+             "    pscale = 1.0",
+             EXPECT_WHOLE_FIG),
+    Mutation("旧·整题原图又印一遍 OCR 文字（同题出现两次）", WRITER,
+             '        whole_q = any(bool(im.get("whole_question")) for im in (q.get("images") or []))',
+             "        whole_q = False",
+             EXPECT_WHOLE_Q),
+    Mutation("旧·整题原图的作答不印（孩子的答案在导出里看不见）", WRITER,
+             '                fl.text("作答：" + body, fs, indent=indent + 6, gap_after=0)',
+             "                pass",
+             EXPECT_WHOLE_Q),
+    Mutation("旧·整题没作答印两次「未作答」（批改版叠成两行）", WRITER,
+             '                fl.text("作答：" + body, fs, indent=indent + 6, gap_after=0)\n'
+             "            elif not graded:",
+             '                fl.text("作答：" + body, fs, indent=indent + 6, gap_after=0)\n'
+             "            elif graded:\n"
+             '                fl.text("（未作答）", fs - 1, indent=indent + 8, gap_after=0)\n'
+             "            elif not graded:",
+             EXPECT_WHOLE_Q),
+    Mutation("关·整题图下不给作答行（孩子没处下笔）", WRITER,
+             "            elif not graded:",
+             "            elif False:",
+             EXPECT_WHOLE_Q),
+    Mutation("关·原卷自带答框还补作答行（P5 Q24/Q25 多翻一页）", WRITER,
+             '                if (not re.search(r"答\\s*[:：]|我的理由|解\\s*[:：]", src_lines)',
+             "                if (True",
+             EXPECT_WHOLE_Q),
+    Mutation("旧·普通配图留到作答横线之后才画（孩子先看到空行，P2 Q8/P3 面积题）", WRITER,
+             '            if q.get("images"):\n'
+             "                _draw_figures(c, q, opt, fl, indent, fig_dir=fig_dir, stats=stats)\n"
+             "                figures_done = True\n"
+             '            body = " ".join(alist).strip()',
+             '            body = " ".join(alist).strip()',
+             EXPECT_FIG_FIRST),
+]
 
 M = [
     Mutation("关·打印版根本不看小问视图（三问仍挤一段）", WRITER,
@@ -58,4 +110,6 @@ M = [
 ]
 
 if __name__ == "__main__":
-    sys.exit(run(M, TEST))
+    rc1 = run(M, TEST)
+    rc2 = run(M_EXPORT, TEST_EXPORT)
+    sys.exit(1 if (rc1 or rc2) else 0)

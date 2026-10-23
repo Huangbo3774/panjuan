@@ -376,5 +376,103 @@ t("两根杠＝一个等号；一根杠不许长出一个等号（含反例）",
   equals_is_one_sign_not_two_minuses)
 
 
+def _cjk_title(marker: str | None = "gap"):
+    """合成 P6 那条大题标题：四、笔算（打<记>的要验算）（24%）。
+
+    OCR 文本里没有那个记号 —— 正是真实卷的样子（RapidOCR 把 6.5pt 的 ▲ 整块吞了）。
+    """
+    from PIL import Image, ImageDraw, ImageFont
+    try:
+        font = ImageFont.truetype("C:/Windows/Fonts/msyh.ttc", int(round(11.5 * K)))
+    except Exception:
+        return None                                     # 没装中文字体就跳过，不假绿
+    W, H = int(290 * K), int(40 * K)
+    im = Image.new("L", (W, H), 255)
+    d = ImageDraw.Draw(im)
+    x, y = 20.0 * K, 8.0 * K
+    head, tail = "四、笔算（打", "的要验算）（24%）"
+    d.text((int(x), int(y)), head, font=font, fill=0)
+    w1 = d.textlength(head, font=font)
+    gap = 10.0 * K
+    x2 = x + w1 + gap
+    d.text((int(x2), int(y)), tail, font=font, fill=0)
+    g = np.array(im)
+    cy = y + 7.5 * K
+    if marker == "gap":
+        _triangle(g, x + w1 + gap / 2.0, cy, 4.0 * K)
+    elif marker == "far":
+        _triangle(g, x2 + d.textlength(tail, font=font) + 6.0 * K, cy, 4.0 * K)
+    elif marker == "dot":
+        cv2.circle(g, (int(x + w1 + gap / 2.0), int(cy)), max(1, int(1.4 * K)), 0, -1)
+    ink = np.nonzero(g < 128)
+    if len(ink[0]) == 0:
+        return None
+    x0p, x1p = float(ink[1].min()), float(ink[1].max())
+    y0p, y1p = float(ink[0].min()), float(ink[0].max())
+    row = {"text": "四、笔算（打的要验算）（24%）", "page": 1, "col": 0,
+           "x": x0p / K, "y": y0p / K,
+           "w": (x1p - x0p + 1) / K, "h": (y1p - y0p + 1) / K}
+    return g, row
+
+
+def section_mark_is_recovered_from_ink():
+    """「打▲的」被读成「打的」：缺口里的实心三角必须补成 ▲。"""
+    made = _cjk_title("gap")
+    if made is None:
+        return
+    g, row = made
+    ch = SY._section_mark_from_source(_src(g), row, np, cv2)
+    assert ch == "▲", f"实心三角没补回来：{ch!r}"
+
+
+def section_mark_refuses_wrong_places():
+    """反例：标记不在缺口 / 只是一个小墨点 / 压根没有标记 —— 一律补空串。"""
+    for kind, why in (("far", "缺口外的三角"), ("dot", "缺口里的小墨点"),
+                      (None, "没有标记")):
+        made = _cjk_title(kind)
+        if made is None:
+            return
+        g, row = made
+        ch = SY._section_mark_from_source(_src(g), row, np, cv2)
+        assert ch == "", f"{why}被塞进了标题：{ch!r}"
+
+
+def api_parse_does_not_shadow_symbols_module():
+    """api_parse 里不许再局部导入 SY：局部名会遮蔽模块级别名。
+
+    实测事故：函数后半段的一句 `from ..extractor import symbols as SY` 让整个
+    api_parse 里的 SY 都成了局部变量，前半段补大题标题时抛 UnboundLocalError，
+    又被 `except Exception` 吞掉 —— 单测直接调 repair_section_marks 全绿，
+    真卷走 API 却一处都没补。这条尺盯的是【调用链】而不是函数本身。
+    """
+    import ast
+    src = os.path.join(ROOT, "app", "api", "papers.py")
+    tree = ast.parse(open(src, encoding="utf-8").read())
+    fn = next((n for n in tree.body
+               if isinstance(n, ast.FunctionDef) and n.name == "api_parse"), None)
+    assert fn is not None, "找不到 api_parse"
+    bad = []
+    for node in ast.walk(fn):
+        if isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                if a.asname == "SY":
+                    bad.append((node.lineno, "from ... import symbols as SY"))
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if a.asname == "SY":
+                    bad.append((node.lineno, "import ... as SY"))
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "SY":
+                    bad.append((node.lineno, "SY = ..."))
+    assert not bad, f"api_parse 内出现局部 SY，模块级别名会被遮蔽：{bad}"
+
+
+t("标题「打▲的」的实心三角能从墨迹补回", section_mark_is_recovered_from_ink)
+t("标题补标记的三个反例：位置不对/墨点太小/没有标记", section_mark_refuses_wrong_places)
+t("api_parse 不许在函数内再导入 SY（会遮蔽模块级别名）",
+  api_parse_does_not_shadow_symbols_module)
+
+
 print(f"\n{ok_n} passed, {bad_n} failed")
 sys.exit(1 if bad_n else 0)

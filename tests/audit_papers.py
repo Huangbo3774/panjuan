@@ -45,9 +45,13 @@ from app.extractor.figures import (find_figures, page_source_from_pdf,   # noqa:
                                    page_source_from_image,
                                    strip_text_inside_figures, apply_graphic_notes,
                                    fold_figure_preamble_questions,
+                                   attach_span_fallbacks, strip_number_only_stems,
+                                   mark_unbalanced_brackets,
                                    residue_covered, box_text_patterns,
                                    RESIDUE_KEEP_FIRST_CHARS)
-from app.extractor.rules import (extract, flatten_questions, mark_image_options,
+from app.extractor.rules import (extract, fallback_uncertain_types,
+                                  flatten_questions, mark_image_options,
+                                  recount_blanks, trim_trailing_next_qno,
                                  CHOICE_CUE, is_furniture_text)  # noqa: E402
 from app.layout.options import LayoutOptions                     # noqa: E402
 from app.papers.answer_writer import render_answers_pdf          # noqa: E402
@@ -355,7 +359,8 @@ def answerability(qs) -> list[tuple]:
     for i, q in enumerate(qs):
         t = str(q.get("text") or "").strip()
         no = int(q.get("q_no") or i + 1)
-        if not t or ONLY_PUNCT.match(t):
+        if (not t or ONLY_PUNCT.match(t)) and not q.get("images"):
+            # 图题：题干为空但有原图（span-fallback），孩子能照着图做，不算空题。
             bad.append(("空题干", no, t[:20]))
             continue
         if (t.count("（") + t.count("(")) != (t.count("）") + t.count(")")) \
@@ -858,8 +863,9 @@ def audit(path: str, render=True) -> dict:
     if not r or not r.get("lines"):
         print(f"\n【{name}】没读到任何文本行（跳过）")
         return {}
-    res = extract(r["lines"], title=name)
+    res = extract(r["lines"], title=name, ann=r["ann"])
     qs = flatten_questions(res)
+    trim_trailing_next_qno(qs)
     spans = L.spans_for_questions(r["ann"], qs, pages=r.get("pages"),
                                   sections=res.get("sections"))
     fig_dir = os.path.join(OUT, "figs", name)
@@ -872,10 +878,16 @@ def audit(path: str, render=True) -> dict:
     for qi, imgs in got.items():
         if 0 <= qi < len(qs):
             qs[qi]["images"] = imgs
-    n_res = strip_text_inside_figures(qs, spans, got)
+    n_res = strip_text_inside_figures(qs, spans, got, sources=r["sources"],
+                                      fig_dir=fig_dir)
     n_fold = fold_figure_preamble_questions(qs, got, spans)
     apply_graphic_notes(qs, got)
+    n_span = attach_span_fallbacks(qs, r["sources"], spans, fig_dir)
+    strip_number_only_stems(qs)
+    mark_unbalanced_brackets(qs)
     n_imgopt = mark_image_options(qs)
+    recount_blanks(qs)          # 清字后空位可能归零：fill → essay，做题页才有作答框
+    fallback_uncertain_types(qs)  # 题型不确定/小问装不下 → 问答框兜底
 
     by_page: dict[int, list] = {}
     for a in r["ann"]:

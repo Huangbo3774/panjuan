@@ -242,11 +242,24 @@ def grade(questions: list[dict[str, Any]],
                 verdict = "wrong"
             reason = "；".join(detail) if detail else _match_fill(str(exp_slots[0]), given)[1]
         else:
-            # essay / unknown：PRD 规定不自动判分，只给关键词命中提示
-            verdict = "pending"
-            hint = _keyword_hint(str(exp_list[0]), given)
-            reason = f"问答题需人工确认（与参考答案关键词重合 {int(hint*100)}%）"
-            detail.append(f"keyword_hit={hint}")
+            # essay / unknown：默认不自动判分，只给关键词命中提示。
+            # 但作答与标准答案【归一化后完全一致】时没有任何歧义，没有理由挂"待确认"：
+            # 独立复测 report_A P1-03 实测 15 道退成问答的题，标准答案与作答逐字
+            # 相同（如 "A"/"A"），旧口径仍给 0 分待人工，整卷 23 题只能自动判 5 题。
+            # 只认完全相等/数值相等，不做关键词拼凑 —— 拿不准的仍然 pending。
+            exp0 = str(exp_list[0]).strip()
+            ev, gv = variants(exp0), variants(given)
+            exact = (exp0 and given.strip() and
+                     (any(x == y for x in ev for y in gv) or numbers_equal(exp0, given)))
+            if exact:
+                verdict = "correct"
+                reason = "问答题：作答与标准答案一致"
+                detail.append("exact_match")
+            else:
+                verdict = "pending"
+                hint = _keyword_hint(str(exp_list[0]), given)
+                reason = f"问答题需人工确认（与参考答案关键词重合 {int(hint*100)}%）"
+                detail.append(f"keyword_hit={hint}")
 
         if verdict == "correct":
             score += maxs

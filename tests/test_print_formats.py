@@ -432,9 +432,15 @@ def subqs_view_is_computed_at_read_time():
                                 "options": []},
                                {"q_no": 3, "auto_no": 3, "section": "一、填空", "qtype": "fill",
                                 "text": "数了(      )次,一共有(      )只蝴蝶。", "blanks": 0,
+                                "options": []},
+                               # 一年级数数题：数量本身就写成 1、2、3，没有括号。
+                               # 小问号若允许"裸数字"，这题会被劈成三问（打印版各起
+                               # 一行、正文只剩"只小鸟，"），孩子根本没法作答。
+                               {"q_no": 4, "auto_no": 4, "section": "一、填空", "qtype": "fill",
+                                "text": "看图数一数：1只小鸟，2只小兔，3只小鸡。", "blanks": 0,
                                 "options": []}])
     got = db.get_questions(pid)
-    assert len(got) == 3, f"小问不许拆成两道题（题号/分值仍按一道走）：{len(got)}"
+    assert len(got) == 4, f"小问不许拆成两道题（题号/分值仍按一道走）：{len(got)}"
     # 老库里存着"空位数 0"（旧口径只认 1–4 个空格），读出来必须自愈成 2，
     # 否则家长不重新上传一次，做题页永远只给一个输入框。
     assert got[2]["blanks"] == 2, f"空位数没在读时重算（存的快照不会自愈）：{got[2]['blanks']}"
@@ -442,6 +448,8 @@ def subqs_view_is_computed_at_read_time():
         f"读库没带出小问视图（线没接）：{got[0].get('subqs')}"
     # 已经填了数的空位不是小问号 —— 库里读出来就必须是空视图
     assert got[1].get("subqs") == [], f"把算式结果当成了小问：{got[1]['subqs']}"
+    # 数数题里的"1只…2只…"是数量不是小问编号 —— 小问号必须带括号。
+    assert got[3].get("subqs") == [], f"把数量词当成了小问编号：{got[3]['subqs']}"
     assert "看图数一数" in str(got[0]["subqs"][0].get("lead") or ""), \
         f"引导语没随视图读出来：{got[0]['subqs'][0]}"
 

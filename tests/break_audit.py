@@ -137,5 +137,14 @@ M = [
              "旧逐页图清理"),
 ]
 
+# Windows 检出（core.autocrlf=true）会把 audit_papers.py 写成 CRLF，而上面的变异
+# 片段按 LF 书写。不归一化，凡是跨行片段都会"锚点命中 0 次"——文件明明没变，
+# 却把整条闸门判成失效（v1.2.6 实测 11/24 条报锚点失效）。按目标文件的实际
+# 换行风格展开片段，读源码时也是 newline="" 原样读，两边口径一致。
+_AU_BYTES = open(AU, "rb").read()
+if b"\r\n" in _AU_BYTES:
+    M = [m._replace(needle=m.needle.replace("\n", "\r\n"),
+                    broken=m.broken.replace("\n", "\r\n")) for m in M]
+
 if __name__ == "__main__":
     sys.exit(run(M, AU, test_args=("--selftest",)))

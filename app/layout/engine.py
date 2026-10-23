@@ -6,10 +6,16 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Callable
 
 from .options import LayoutOptions, A4_W, A4_H
 from .columns import structure_page
+
+# 题号行："7. 淘气…" / "11．某校…"；小数（3.14）与"第5课时"不算。
+# 用它把同一道题的题干/小问/选项打上同一个组号，翻页时整组一起走。
+_QNO_LINE_RE = re.compile(r"^\s*\d{1,2}\s*[.、．]\s*(?=[\u4e00-\u9fff（(“])")
+_SECTION_LINE_RE = re.compile(r"^\s*[一二三四五六七八九十]+\s*[、.．]")
 
 # 文本测量函数由 papers 层注入（要用已注册的字体），默认给一个 CJK 保守估算
 _default_metrics: Callable[[str, float], float] = lambda s, fs: fs * sum(
@@ -75,6 +81,9 @@ def _blocks_to_flow(pages: list[dict], title: str = "") -> list[dict]:
     """把解析结果的 blocks 拉平成"内容流"。文字页走分栏归位，图片页整块保留。"""
     norm_title = "".join((title or "").split())
     flow: list[dict] = []
+    # 同一道题的所有行共用一个 group 号；图片与无题号文本为 None（不参与整组搬页）。
+    gid = 0
+    group: int | None = None
     for pg in pages:
         if pg.get("is_scan"):
             # 扫描页的位图来源有两种：PDF 渲染出的 rendered_image，或图片文件本身的 ImageBlock
@@ -106,9 +115,15 @@ def _blocks_to_flow(pages: list[dict], title: str = "") -> list[dict]:
                     # 表头已经印了标题，正文里重复出现的同名行丢掉（真实卷常首行就是卷名）
                     if norm_title and "".join(ln["text"].split()) == norm_title:
                         continue
-                    flow.append({"kind": "text", "text": ln["text"], "bold": False,
+                    t = ln["text"]
+                    if _QNO_LINE_RE.match(t):
+                        gid += 1
+                        group = gid
+                    elif _SECTION_LINE_RE.match(t):
+                        group = None
+                    flow.append({"kind": "text", "text": t, "bold": False,
                                  "size": None, "col": ln["col"], "columns": st["columns"],
-                                 "page_no": pg["page_no"]})
+                                 "page_no": pg["page_no"], "group": group})
             else:
                 for b in text_blocks:
                     flow.append({"kind": "text", "text": b["text"], "bold": bool(b.get("bold")),
@@ -117,6 +132,9 @@ def _blocks_to_flow(pages: list[dict], title: str = "") -> list[dict]:
         for b in img_blocks:
             p = b.get("path")
             if p and os.path.exists(p):
+                # 图片之后的文字（常是选项/续写）不再跟前面的题号算一组：
+                # 搬页时只搬纯文本块，避免把图留在上一页。
+                group = None
                 flow.append({"kind": "image", "path": p, "page_no": pg["page_no"],
                              "w_px": b.get("width_px"), "h_px": b.get("height_px")})
     return flow
@@ -151,6 +169,33 @@ def build_layout(parsed_pages: list[dict], opt: LayoutOptions, title: str = "") 
             pages.append({"no": len(pages) + 1, "blocks": cur})
         cur, y = [], 0.0
 
+    def lift_group_to_new_page(group: int | None, block_h: float) -> bool:
+        """一题被页底切断时，把落在这页上的整组题（题干+选项）一起搬到下一页。
+
+        为什么要有它：P5 第 7 题的 D 选项被单独甩到下一页顶部，孩子看到的是
+        一行没有题干的"D.只有②③"（真实导出实测）。只有整组能在一页里放下才搬；
+        题干本身就超过一页、或组里夹着图片时退回原来的逐块分页，避免死循环。
+        """
+        nonlocal cur, y
+        if group is None:
+            return False
+        start = next((i for i, b in enumerate(cur) if b.get("group") == group), None)
+        if start is None or start == 0:
+            return False
+        tail = cur[start:]
+        if any(b.get("type") != "text" for b in tail):
+            return False
+        total = sum(b["h"] + lead * 0.35 for b in tail) + block_h + lead * 0.35
+        if total > opt.content_h + 0.01:
+            return False
+        pages.append({"no": len(pages) + 1, "blocks": cur[:start]})
+        ny = 0.0
+        for b in tail:
+            b["y"] = ny
+            ny += b["h"] + lead * 0.35
+        cur, y = tail, ny
+        return True
+
     for item in flow:
         if item["kind"] == "image":
             from PIL import Image
@@ -182,13 +227,14 @@ def build_layout(parsed_pages: list[dict], opt: LayoutOptions, title: str = "") 
         lines = wrap_text(text, size, cw)
         block_h = len(lines) * (size * opt.line_spacing)
         if y + block_h > opt.content_h and cur:
-            new_page()
-            lines = wrap_text(text, size, cw)
-            block_h = len(lines) * (size * opt.line_spacing)
+            if not lift_group_to_new_page(item.get("group"), block_h):
+                new_page()
+                lines = wrap_text(text, size, cw)
+                block_h = len(lines) * (size * opt.line_spacing)
         cur.append({"type": "text", "lines": lines, "x": 0, "y": y,
                     "w": cw, "h": block_h, "size": size, "bold": bold,
                     "col": item.get("col", 0), "columns": item.get("columns", 1),
-                    "src_page": item.get("page_no")})
+                    "src_page": item.get("page_no"), "group": item.get("group")})
         y += block_h + lead * 0.35
 
     if cur:

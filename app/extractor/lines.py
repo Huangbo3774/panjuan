@@ -88,6 +88,38 @@ def _sealing_column_ids(items: list[dict[str, Any]], page_w: float) -> set[int]:
     return drop
 
 
+# 页边独立题号："7." / "12、" / "①" / "（3）"。
+# 它们只有 1–3 个字符，旧版和竖排密封线单字一起被 len<=2 误杀：
+# P2 第 7 题的"7."正好落在左边 45pt 装订带内，于是整题被并进第 6 题
+# （实测 28 题、第 7 题消失）。题号必须留，判据见 _has_right_neighbor。
+QNUM_LABEL_RE = re.compile(r"^(?:\d{1,3}\s*[.、．]?|[①-⑳]|[（(]\d{1,3}[）)])$")
+
+
+def _has_right_neighbor(it: dict[str, Any], items: list[dict[str, Any]]) -> bool:
+    """这个页边小框右边同一行还有正文吗？
+
+    有 ⇒ 它是题号（"7." 后面紧跟"3/7里面有…"），不是竖排密封线单字。
+    竖排密封线是一列彼此上下堆叠的字，右边没有同一行的正文；
+    页脚孤零零的页码右边也没有正文，仍会被当页边噪声扔掉。
+    """
+    x1 = float(it["x"]) + float(it.get("w") or 0)
+    cy = float(it["y"]) + float(it.get("h") or 0) / 2.0
+    for o in items:
+        if o is it:
+            continue
+        ox = float(o["x"])
+        if ox < x1 - 1.0:
+            continue
+        # 同一行：垂直中心差不超过两者平均行高（给扫描件的行高抖动留余量）
+        oy = float(o["y"]) + float(o.get("h") or 0) / 2.0
+        tol = max(10.0, (float(it.get("h") or 0) + float(o.get("h") or 0)) / 2.0)
+        if abs(oy - cy) > tol:
+            continue
+        if ox + float(o.get("w") or 0) > MARGIN_ZONE_PT:
+            return True
+    return False
+
+
 def drop_margin_items(items: list[dict[str, Any]], page_w: float
                       ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """把整条落在页边装订带里、且是装订栏/侧边栏字样的条目挑出来。
@@ -100,6 +132,8 @@ def drop_margin_items(items: list[dict[str, Any]], page_w: float
          用户看到的是"题目读不通"，比混进装订栏更糟。
       ② 文字是装订栏套话 / 短到 ≤2 个字（竖排每字一个框）
         / ≤6 个字的纯词（侧边栏科目名，不含任何数字与标点）。
+    ⚠️ 例外：页边独立题号（"7."）虽然也只有 2 个字符，但它右边同一行有正文，
+       是题目的一部分；旧版把它当密封线单字丢掉，整道题跟着消失（P2 实测）。
     """
     keep: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
@@ -115,6 +149,9 @@ def drop_margin_items(items: list[dict[str, Any]], page_w: float
         in_edge = x1 <= MARGIN_ZONE_PT or x0 >= page_w - MARGIN_ZONE_PT
         if in_edge and t and (len(t) <= MARGIN_MAX_CHARS or MARGIN_BOILER.search(t)
                               or _is_margin_tab(t)):
+            if QNUM_LABEL_RE.match(t) and _has_right_neighbor(it, items):
+                keep.append(it)
+                continue
             dropped.append(it)
             continue
         keep.append(it)
@@ -250,37 +287,34 @@ def annotated_lines_from_pdf(path: str, work_dir: str | None = None, dpi: int = 
             "errors": errors}
 
 
-def verify_bands_with_ink(page, bands: list[dict[str, float]], page_w: float,
-                          dpi: int = 72) -> list[dict[str, float]]:
-    """用页面**墨迹**复核栏界。文字框投影稀疏不等于栏缝 —— 那里往往正是图形占的位置。
+def _bands_from_gray(g, bands: list[dict[str, float]],
+                     page_w: float) -> list[dict[str, float]]:
+    """灰度图 + 候选栏界 → 用真实墨迹留下真栏缝（见 verify_bands_with_ink）。
 
-    实测：综合实践单元.pdf 第 1 页（841×653pt，两张 A4 并排）真实墨迹只有
-    一条缝（403–462pt，带内墨占比 0.11%），但只看文本框投影会切出 **4 栏**，
-    多出的两条假缝导致：① 一张图被从中间劈开；② 左侧竖排"学校/班级/姓名/学号"
-    自成一栏，裁图时冒出一堆 36×150 的细长条垃圾。
-
-    真栏缝的判据：这条竖带（±1% 页宽）在正文高度范围内基本【没有墨】。
-    太窄的栏带（<8% 页宽）一律并进邻居 —— 装订线、侧栏不该成为一道墙。
+    "有一条空白带"不等于"这里是栏缝"。新下载 P2/P3 实测两个反例：
+      · P2 计算页：字符之间的 1–2% 空隙被当成栏缝，竖式 ①–⑥ 被按列拼成乱序；
+      · P3 计算页：上下两组 2-up 题之间的空白被当成栏缝，②④小题被吞进下一大题。
+    真栏缝必须同时满足三条：① 不贴页边（页边留白是版心，不是栏）；
+    ② 有足够宽度（≥2% 页宽，排除字间空隙）；③ 没有多少文字行横穿（≤5%，
+    排除"一行里并排两道题"和跨栏标题所在的版式）。
     """
     if len(bands) <= 1:
         return bands
     import numpy as np
-    try:
-        pix = page.get_pixmap(dpi=dpi, colorspace=pymupdf.csGRAY)
-        g = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width)
-    except Exception:
-        return bands
     ink = g < 160
     H, W = ink.shape
     rows = np.flatnonzero(ink.any(axis=1))
     if len(rows) < 12:
         return bands
     top, bot = int(rows[0]), int(rows[-1])
+    body = ink[top:bot + 1, :]
     # 正文高度范围内"每一列有多少行是黑的"→ 找出真正的竖直空白带
-    frac = ink[top:bot + 1, :].mean(axis=0)
+    frac = body.mean(axis=0)
+    text_rows = int(body.any(axis=1).sum())
+    min_w = max(3, int(W * 0.02))
+    max_cross = max(2, int(text_rows * 0.05))
     runs: list[tuple[int, int]] = []
     start = None
-    min_w = max(3, int(W * 0.012))
     for x in range(W):
         empty = frac[x] <= 0.02
         if empty and start is None:
@@ -291,9 +325,13 @@ def verify_bands_with_ink(page, bands: list[dict[str, float]], page_w: float,
             start = None
     if start is not None and W - start >= min_w:
         runs.append((start, W))
-    if not runs:
-        return [bands[0]] if len(bands) == 1 else bands
-    centers = [((a + b) / 2.0) / W * page_w for a, b in runs]      # px → pt
+    # 页边留白（贴左/右边缘）不是栏缝：候选靠边时它会被吸附过去，把版心切成"窄栏"。
+    runs = [(a, b) for a, b in runs if a > 0 and b < W]
+    # 栏缝里不许有文字行横穿 —— 2-up 排版的标题/图形会连通左右两栏。
+    centers = [((a + b) / 2.0) / W * page_w                   # px → pt
+               for a, b in runs
+               if int(body[:, a:b].any(axis=1).sum()) <= max_cross]
+    # 一条合格栏缝都没有时 keep 为空，下面会自然收成一整栏（edges=[0,page_w]）。
 
     keep: list[float] = []
     for b in bands[1:]:
@@ -323,6 +361,49 @@ def verify_bands_with_ink(page, bands: list[dict[str, float]], page_w: float,
         else:
             i += 1
     return out
+
+
+def verify_bands_with_ink(page, bands: list[dict[str, float]], page_w: float,
+                          dpi: int = 72) -> list[dict[str, float]]:
+    """用页面**墨迹**复核栏界。文字框投影稀疏不等于栏缝 —— 那里往往正是图形占的位置。
+
+    实测：综合实践单元.pdf 第 1 页（841×653pt，两张 A4 并排）真实墨迹只有
+    一条缝（403–462pt，带内墨占比 0.11%），但只看文本框投影会切出 **4 栏**，
+    多出的两条假缝导致：① 一张图被从中间劈开；② 左侧竖排"学校/班级/姓名/学号"
+    自成一栏，裁图时冒出一堆 36×150 的细长条垃圾。
+
+    真栏缝的判据：这条竖带（±1% 页宽）在正文高度范围内基本【没有墨】。
+    太窄的栏带（<8% 页宽）一律并进邻居 —— 装订线、侧栏不该成为一道墙。
+    """
+    if len(bands) <= 1:
+        return bands
+    import numpy as np
+    try:
+        pix = page.get_pixmap(dpi=dpi, colorspace=pymupdf.csGRAY)
+        g = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width)
+    except Exception:
+        return bands
+    return _bands_from_gray(g, bands, page_w)
+
+
+def verify_bands_with_image(path: str, bands: list[dict[str, float]],
+                            page_w: float) -> list[dict[str, float]]:
+    """扫描图/照片路线用【图片墨迹】复核栏界（DOCX 整页扫描图也走这里）。
+
+    图片路线以前完全不复核：单栏卷上图形和选项框的投影会切出 2–3 条假缝，
+    同一题的 A/B 选项被分进不同栏，按"栏优先"排序后整段错位
+    （新下载 P1 实测：Q4 的五花八门选项、Q7 的 A 选项并进 Q4，Q18 落到下一大题）。
+    """
+    if len(bands) <= 1:
+        return bands
+    try:
+        from PIL import Image
+        import numpy as np
+        with Image.open(path) as im:
+            g = np.asarray(im.convert("L"))
+    except Exception:
+        return bands
+    return _bands_from_gray(g, bands, page_w)
 
 
 def _ordered_items(items: list[dict[str, Any]], page_w: float,
@@ -379,6 +460,15 @@ def spans_for_questions(ann: list[dict[str, Any]], questions: list[dict[str, Any
         idx.setdefault(norm(a["text"]), n)
 
     def locate(q: dict[str, Any], start: int) -> int:
+        # 题干是空的（OCR 只读出题号，如 P5 第 20 题只剩"20."）：
+        # 源码行里没有可匹配的文字，区间会整个丢掉，配图兜底也无从裁起。
+        # 退化成用题号本身找锚点；只在本题号确实存在时认，不猜。
+        if not any(norm(s) for s in (q.get("source_lines") or [])) and q.get("q_no") is not None:
+            for n in range(start, len(ann)):
+                m = BARE.match(str(ann[n].get("text") or "").strip())
+                if m and int(m.group(1)) == int(q["q_no"]):
+                    return n
+            return -1
         for s in q.get("source_lines") or []:
             t = norm(s)
             if not t:
@@ -388,6 +478,16 @@ def spans_for_questions(ann: list[dict[str, Any]], questions: list[dict[str, Any
             for n in range(start, len(ann)):       # 被拆行/合并过的，退化成前缀匹配
                 if len(t) >= 4 and norm(ann[n]["text"]).startswith(t[:10]):
                     return n
+            # 跨页合并行：OCR 把上一页页底的大题名和下一页页首的算式并成一条
+            # source_line（P2 Q4："4、估算"在页底，"901×8=…"在下一页顶）。
+            # 整条既不是任何 ann 行，也不是任何 ann 行的前缀 —— 但页首那行
+            # 是它的后缀。认不出这一行，这道题就没有区间，整题图/纠错都无从谈起。
+            # 只认长度 ≥ 4 的后缀，避免把页码、单个符号认成题干。
+            if len(t) >= 6:
+                for n in range(start, len(ann)):
+                    s = norm(ann[n]["text"])
+                    if len(s) >= 4 and t.endswith(s):
+                        return n
             # 题号粘在第一行行首的卷（真卷第 2 页："4.(1)一共有多少根胡萝卜?"）：
             # 上面两招都比不中 —— 行首被剥掉一层"4."还剩"(1)"，而题干那行剥掉的是"(1)"，
             # 两边剥的层数不一样，就对不上了。于是 locate 掉到这道题的第二行，
@@ -480,7 +580,9 @@ def spans_for_questions(ann: list[dict[str, Any]], questions: list[dict[str, Any
         name = sec.get("name") or ""
         if not SECTION_RE.match(name.strip()):
             continue                                 # 卷名/关卡名不当墙，只有一、二、三这种才算
-        n = locate_text(name)
+        # 标题里的作图标记可能被补过（「打的」→「打▲的」）：锚点必须用 OCR 原行文本，
+        # 否则改名后在这里找不到标题，span 会越过页底漫进下一大题。
+        n = locate_text(sec.get("ocr_name") or name)
         if n < 0:
             continue
         a = ann[n]
@@ -513,18 +615,38 @@ def spans_for_questions(ann: list[dict[str, Any]], questions: list[dict[str, Any
                 up = o
         if up:
             y0 = up["y"]
-        # 同栏内、严格在它下面的最近锚点（下一题或下一个大题题头）= 区间下界
+        # 同栏内、严格在它下面的最近锚点（下一题或下一个大题题头）= 区间下界。
+        # ⚠️ 判据要拿【本题自己的起点行】比，不能用向上扩过的 y0：
+        #    并排两道小题（P1 Q17/Q18）同一行起手，y0 被扩到大题题头后，
+        #    另一道小题的行也满足 o.y > y0+1，于是两题的区间都被压成"题头+题干"，
+        #    下面整块图谁都不接 —— 两道题各丢一张图。
         y1 = float(g["h"] or 1e9)
         for o in anchors:
             if o is rec or o["page"] != page or o["col"] != col:
                 continue
-            if o["y"] > y0 + 1 and o["y"] < y1:
+            if o["y"] > rec["y"] + 1 and o["y"] < y1:
                 y1 = o["y"]
         if col < 0:                                   # 通栏行（页眉/大标题）：整幅宽
             x0, x1 = 0.0, float(g["w"] or y1)
         else:
             a = ann[rec["n"]]
             x0, x1 = col_bounds(page, float(a["x"]) + float(a["w"]) / 2)
+        # 一道题横跨两栏：P5 Q17 的 (2) 3/4:5/12、Q18 的 (2)(4) 印在右栏，
+        # 但题目锚点在左栏 —— 只按左栏裁，整题截图会丢一半小题（做不了）。
+        # 只认【本题 source_lines 里原样出现】的行，避免把隔壁题一起框进来。
+        qsrc = {norm(s) for s in (questions[rec["qi"]].get("source_lines") or [])
+                if norm(s)}
+        if qsrc:
+            for b in ann:
+                if int(b["page"]) != page or int(b.get("col", 0)) == col:
+                    continue
+                if not (y0 - 1.0 <= float(b["y"]) < y1):
+                    continue
+                if norm(b["text"]) not in qsrc:
+                    continue
+                bx0, bx1 = float(b["x"]), float(b["x"]) + float(b["w"])
+                x0 = min(x0, bx0 - 2.0)
+                x1 = max(x1, bx1 + 2.0)
         boxes = [b for b in ann
                  if int(b["page"]) == page and int(b.get("col", 0)) == col
                  and y0 <= float(b["y"]) < y1]
@@ -539,13 +661,90 @@ def spans_for_questions(ann: list[dict[str, Any]], questions: list[dict[str, Any
     return spans
 
 
+# 一行里并排两道题：OCR 把两条小题读成一条框（"17.… 18.…" 或 "1.    2、"）。
+# extract() 早在文本层把 "17.… 18.…" 切开了，但 ann 仍只有一条框，于是两题共用
+# 同一个 y 锚点/整行宽 —— spans_for_questions 把前者的区间一路压到下一行，
+# 图全落到后一题（P1 Q17 没图、Q18 的图里并排着两幅）。这里按字符视觉宽度
+# 把框一分为二，让两道题各自有起点。
+_ANN_MARK = re.compile(r"(?<![.\d])(\d{1,2})[、．.](?!\d)\s*")
+_ANN_EMPTY_SEG = re.compile(r"^[\s（()）_＿.、．:：,，;；\"'“”‘’]*$")
+
+
+def _ann_units(s: str) -> int:
+    """粗略视觉宽度：全角/汉字按 2，ASCII 按 1。只用来按比例切框，不用来量字。"""
+    return sum(2 if ord(ch) > 0x2E7F else 1 for ch in s)
+
+
+def _question_ann_parts(text: str) -> list[tuple[int, int, str]]:
+    """一条 OCR 行里若有两个并列题号，返回 [(起, 止, 段文本), ...]；否则空表。
+
+    反例（必须不切）：小数 "3.5 与 4.2"、括号小问 "（1）（2）"、行首有正文。
+    只认【恰好两个】题号，且两段要么都有正文（P1："17.… 18.…"），
+    要么都是光杆题号且序号连续（P3："1.        2、"）。
+    """
+    line = str(text or "")
+    marks = list(_ANN_MARK.finditer(line))
+    if len(marks) != 2 or line[:marks[0].start()].strip():
+        return []
+    segs: list[tuple[int, int, str]] = []
+    bare: list[bool] = []
+    nums: list[int] = []
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(line)
+        raw = line[m.start():end]
+        lead = len(raw) - len(raw.lstrip())
+        seg = raw.strip()
+        if not seg:
+            return []
+        rest = re.sub(r"^\d{1,2}\s*[、．.]?\s*", "", seg)
+        segs.append((m.start() + lead, m.start() + lead + len(seg), seg))
+        bare.append(bool(_ANN_EMPTY_SEG.match(rest)))
+        nums.append(int(m.group(1)))
+    if not (all(bare) or not any(bare)):
+        return []
+    if all(bare) and nums[1] != nums[0] + 1:
+        # 两个光杆数字不连续：更像答案号/页码清单，不当题号切
+        return []
+    return segs
+
+
+def split_question_ann(ann: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把“一行两道题”的 ann 框按文字比例拆成两条，坐标随之分开。
+
+    只改 ann，不改文本：文本层由 rules._split_multi_question_line 切。
+    两条框必须保持原顺序；x/w 按视觉宽度比例估，y/h/col/page 原样继承。
+    """
+    out: list[dict[str, Any]] = []
+    for a in ann:
+        text = str(a.get("text") or "")
+        parts = _question_ann_parts(text)
+        if len(parts) < 2:
+            out.append(a)
+            continue
+        total = max(1, _ann_units(text))
+        x = float(a.get("x") or 0.0)
+        w = float(a.get("w") or 0.0)
+        for start, end, seg in parts:
+            u0 = _ann_units(text[:start])
+            u1 = _ann_units(text[:end])
+            px0 = x + w * (u0 / total)
+            px1 = x + w * (u1 / total)
+            if px1 - px0 < 2.0:
+                px1 = min(x + w, px0 + 2.0)
+            out.append({**a, "text": seg, "x": round(px0, 1),
+                        "w": round(max(2.0, px1 - px0), 1)})
+    return out
+
+
 def lines_from_image(path: str, dpi_probe: int = 100) -> dict[str, Any]:
     """单张作业照片 → 文本行（带 pt 坐标，和 figures 的虚拟页面口径一致）。"""
     ok, why = O.available()
     if not ok:
         return {"lines": [], "ann": [], "pages": [], "ocr_conf": 0,
                 "needs_review": True, "error": why}
-    raw = O.ocr_image(path)
+    # 小图先放大：真实 DOCX/图片材料只有 455–611px 宽，原尺寸 OCR 会漏页边题号、
+    # 把密排题干粘成一行。ocr_image_auto 内部放大，坐标仍按原图像素返回。
+    raw = O.ocr_image_auto(path)
     sc = 72.0 / dpi_probe                      # 照片按"1px = 1px@dpi_probe"当页面，换成 pt
     items = [{**it, "x": it["x"] * sc, "y": it["y"] * sc,
               "w": it["w"] * sc, "h": it["h"] * sc} for it in raw]
@@ -566,9 +765,15 @@ def lines_from_image(path: str, dpi_probe: int = 100) -> dict[str, Any]:
         h_pt = max((it["y"] + it["h"] for it in items), default=1)
     # 照片路线以前完全没做页边过滤（PDF 路线有），密封线竖排字于是直接进正文。
     items, margin = drop_margin_items(items, w_pt)
-    ann, bands = _ordered_items(items, w_pt)
+    # 栏界必须用图片墨迹复核：单栏卷的图形/选项框会被投影当成栏缝，
+    # 2–3 条假缝足以把同一题拆进不同栏、整页阅读顺序打乱（P1 扫描卷实测）。
+    cand = detect_columns(items, w_pt)
+    if len(cand) > 1:
+        cand = verify_bands_with_image(path, cand, w_pt)
+    ann, bands = _ordered_items(items, w_pt, bands=cand)
     for a in ann:
         a["page"] = 1
+    ann = split_question_ann(ann)
     return {"lines": [a["text"] for a in ann], "ann": ann,
             "pages": [{"page": 1, "route": "ocr", "lines": len(ann),
                        "width_pt": w_pt, "height_pt": h_pt,
@@ -624,6 +829,11 @@ def lines_from_task(task) -> dict[str, Any]:
         if r.get("error"):
             err.append(f"{f['name']}：{r['error']}")
         page_base += max(1, len(r.get("pages", []) or [1]))
+    # 一行并排两道题（"17.… 18.…" / "1.    2、"）：ann 必须跟文本一起拆开，
+    # 否则两题共用一条 y 锚点，前一题的区间只到下一行、图全被后一题接走。
+    # 放在合并所有文件之后：PDF/图片/DOCX 三条路由都走同一把尺。
+    ann = split_question_ann(ann)
+    lines = [a["text"] for a in ann]
     # ⚠️ pages 必须带出去：papers.py 的裁图要用每页的 bands（栏带）来限制裁剪范围。
     #    以前这里只回 files/page_sources，pages 被丢掉了，于是
     #    spans_for_questions 拿不到栏带、col_bounds 退回整页宽 ——
@@ -647,16 +857,75 @@ def open_page_source(kind: str, path: str, global_page: int,
         return page_source_from_pdf(f["path"], local)
     if kind in (".png", ".jpg", ".jpeg", ".webp", ".bmp"):
         return page_source_from_image(f["path"], local)
+    if kind == ".docx":
+        # 扫描页贴进 Word：每页的整页图就是裁剪源，几何口径与 lines_from_image 一致。
+        pgs = f.get("pages") or []
+        if 0 <= local - 1 < len(pgs):
+            img = pgs[local - 1].get("rendered_image")
+            if img and os.path.exists(img):
+                return page_source_from_image(img, local)
     return None
 
 
 def _from_parsed_docx(f: dict) -> dict[str, Any]:
-    """docx：解析阶段已经把段落取成文本块，直接按顺序拼。"""
+    """docx：文字块按顺序拼；扫描页（整页图贴进 Word）走 OCR。
+
+    ⚠️ 必须返回 ann：lines_from_task 只从 ann 取文本。旧版这里只给 lines，
+       于是 DOCX 的文字也在任务链路里蒸发了；扫描页更是 0 行 0 题。
+    """
     parsed = f.get("parsed") or {}
-    out: list[str] = []
+    lines: list[str] = []
+    ann: list[dict[str, Any]] = []
+    pages: list[dict[str, Any]] = []
+    confs: list[float] = []
+    errors: list[str] = []
+    local_page = 0
     for pg in parsed.get("pages", []):
+        local_page += 1
+        if pg.get("is_scan"):
+            img = pg.get("rendered_image")
+            if not img:
+                img = next((b.get("path") for b in pg.get("blocks", [])
+                            if b.get("kind") == "image" and b.get("path")
+                            and os.path.exists(b["path"])), None)
+            if not img or not os.path.exists(img):
+                errors.append(f"第 {local_page} 页缺少整页图")
+                pages.append({"page": local_page, "route": "docx-scan-missing",
+                              "lines": 0, "width_pt": pg.get("w_pt"),
+                              "height_pt": pg.get("h_pt")})
+                continue
+            r = lines_from_image(img)
+            for a in r.get("ann", []):
+                a = {**a, "page": local_page}
+                ann.append(a)
+                lines.append(a["text"])
+            for e in r.get("errors") or []:
+                errors.append(f"第 {local_page} 页：{e}")
+            p0 = (r.get("pages") or [{}])[0]
+            pages.append({
+                "page": local_page, "route": "docx-scan", "lines": len(r.get("ann", [])),
+                "width_pt": p0.get("width_pt") or pg.get("w_pt"),
+                "height_pt": p0.get("height_pt") or pg.get("h_pt"),
+                "columns": p0.get("columns", 1), "bands": p0.get("bands", []),
+                "rendered_image": img,
+            })
+            confs.append(r.get("ocr_conf") or 0)
+            continue
+        n0 = len(lines)
+        y = 0.0
         for b in pg.get("blocks", []):
-            if b.get("kind") == "text" and (b.get("text") or "").strip():
-                out.append(b["text"].strip())
-    return {"lines": out, "pages": [{"page": 1, "route": "docx", "lines": len(out)}],
-            "ocr_conf": 1.0, "needs_review": False}
+            if b.get("kind") != "text":
+                continue
+            for raw in (b.get("text") or "").splitlines():
+                txt = raw.strip()
+                if not txt:
+                    continue
+                ann.append({"text": txt, "page": local_page, "x": 0.0, "y": y,
+                            "w": max(10.0, len(txt) * 10.0), "h": 10.0})
+                lines.append(txt)
+                y += 20.0
+        pages.append({"page": local_page, "route": "docx", "lines": len(lines) - n0})
+    return {"lines": lines, "ann": ann, "pages": pages,
+            "ocr_conf": round(max(confs), 3) if confs else 1.0,
+            "needs_review": any(p.get("route") == "docx-scan-missing" for p in pages),
+            "errors": errors}

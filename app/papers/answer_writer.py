@@ -27,7 +27,12 @@ from ..layout.engine import wrap_text
 from .pdf_writer import ensure_fonts, _state, _measure, _draw_footer
 
 A4_W, A4_H = 595.28, 841.89
-BLANK_RE = re.compile(r"(_{2,}|[＿]{2,}|（\s{0,6}）|\(\s{0,6}\))")
+# ⚠️ 括号里的空白【不限长度】，且左右可混配半角/全角。
+# 旧版卡 1–6 个空格，而扫描件上的空位常被 OCR 读成 8–14 个空格（P3 Q6 实测 12 个）：
+# 识别端按"不限长度"数出 3 个空位，导出端只认前 2 个 → 第 1 空没填、答案整体右移一格、
+# 最后一个答案被丢到"其余作答"，而批改仍打 √（独立复测 report_A P3-01/02/03）。
+# 两处口径必须逐字一致：都是 app/extractor/rules.py 的 BLANK_RE。
+BLANK_RE = re.compile(r"(_{2,}|[＿]{2,}|[（(]\s*[）)])")
 FIG_BORDER = HexColor("#c9ccc9")
 
 
@@ -139,15 +144,7 @@ def _draw_figures(c: rl_canvas.Canvas, q: dict, opt: LayoutOptions, fl: "Flow",
             if stats is not None:
                 stats["missing"] += 1
             continue
-        w_pt = float(im.get("w_pt") or 0) or opt.content_w * 0.6
-        h_pt = float(im.get("h_pt") or 0) or w_pt * 0.6
-        max_w = opt.content_w - indent - 8
-        scale = min(1.0, max_w / w_pt) if w_pt else 1.0
-        # 高度上限：一张图最多吃掉半页，超了就缩（否则平面图会把整页占满）
-        max_h = (A4_H - opt.margin_top - opt.margin_bottom) * 0.5
-        if h_pt * scale > max_h:
-            scale = max_h / h_pt
-        w, h = w_pt * scale, h_pt * scale
+        w, h = _figure_size(im, opt, indent)
         fl.need(h + 8)
         fl.y -= 4
         c.saveState()
@@ -192,6 +189,84 @@ def _chosen(alist: list[str], options: list[str]) -> int | None:
     return None
 
 
+def _page_scale(im: dict) -> float:
+    """源页比 A4 窄时，配图按页宽比例放大回去。
+
+    P4 的扫描 PDF 页面只有半张 A4（285.6×404pt），图按原 pt 印出来只有
+    应有大小的一半：Q10 的角只有 53pt、统计表 191pt，孩子看不清。
+    源页是 A4（595pt）时返回 1.0，普通配图仍只缩不放。
+    """
+    pw = float(im.get("page_w_pt") or 0)
+    if not pw or pw >= A4_W * 0.8:
+        return 1.0
+    return min(A4_W / pw, 2.2)
+
+
+def _figure_size(im: dict, opt: LayoutOptions, indent: float) -> tuple[float, float]:
+    """配图在纸上的宽高。绘制与高度估算共用这一份，避免两处规则走岔。"""
+    w_pt = float(im.get("w_pt") or 0) or opt.content_w * 0.6
+    h_pt = float(im.get("h_pt") or 0) or w_pt * 0.6
+    max_w = opt.content_w - indent - 8
+    pscale = _page_scale(im)
+    scale = min(1.0, max_w / w_pt) * pscale if w_pt else 1.0
+    if w_pt:
+        scale = min(scale, max_w / w_pt)
+    whole = bool(im.get("graphic"))
+    if whole and w_pt:
+        # 整题截图是从半栏/整栏裁下来的：原尺寸只有内容区的一半宽，
+        # 按 1.0 上限印出来字只有 5–6pt（P5 Q24/Q25 实测）。整题图允许
+        # 放大到页宽（源图是 200dpi 渲染，放到 ~100dpi 仍清楚）。
+        scale = min(max_w / w_pt, max(1.9, pscale))
+    # 高度上限：普通配图最多吃掉半页；整题截图可占近一整页（它就是一道题）
+    max_h = (A4_H - opt.margin_top - opt.margin_bottom) * (0.92 if whole else 0.5)
+    if h_pt * scale > max_h:
+        scale = max_h / h_pt
+    return w_pt * scale, h_pt * scale
+
+
+def _figure_consumed_h(im: dict, opt: LayoutOptions, indent: float) -> float:
+    """_draw_figures 实际吃掉的纵向高度。"""
+    return _figure_size(im, opt, indent)[1] + 10.0
+
+
+def _estimate_question_h(q: dict, opt: LayoutOptions, fs: float, indent: float,
+                         graded: bool, alist: list[str], new_section: bool,
+                         prefix: str, stem: str) -> float:
+    """一道题在纸上大约要多高，用来决定"整题是否搬到下一页"。
+
+    只求上界附近：宁可估大一点（多留白），也不要把选项留在页底。
+    """
+    lead = opt.leading
+
+    def text_h(s: str) -> float:
+        return len(wrap_text(s, fs, opt.content_w - indent)) * lead + 1.0
+
+    h = 0.0
+    if new_section:
+        h += 4 + (fs + 1) * opt.line_spacing + 2
+    qtype = (q.get("qtype") or "unknown").lower()
+    h += text_h(f"{prefix}{stem}")
+    if qtype == "choice" and q.get("options"):
+        h += len(q["options"]) * (lead + 1)
+    elif qtype == "judge":
+        h += lead
+    elif qtype not in ("choice", "judge", "fill"):
+        body = " ".join(alist).strip()
+        if body:
+            h += text_h("答：" + body)
+        else:
+            # 没作答时不论有没有配图都要留两条横线：旧版对 graphic 图跳过这笔
+            # 高度，估算偏小，图+横线被挤到页底后才翻页，题干单独留在上一页。
+            h += 2 * (lead + 6)
+    syms = [str(s).strip() for s in (q.get("symbols") or []) if str(s).strip()]
+    if syms:
+        h += (len(syms) + 1) * lead
+    h += sum(_figure_consumed_h(im, opt, indent) for im in (q.get("images") or []))
+    if graded and not alist:
+        h += lead
+    return h + 5
+
+
 def _paint(c: rl_canvas.Canvas, questions: list[dict], opt: LayoutOptions, title: str,
            graded: bool, answers: dict, key: dict, grade_result: dict | None,
            class_name: str, student_name: str, total: int | None,
@@ -228,10 +303,7 @@ def _paint(c: rl_canvas.Canvas, questions: list[dict], opt: LayoutOptions, title
     for q in questions:
         uid = str(q.get("uid") or "")
         sec = (q.get("section") or "").strip()
-        if sec and sec != last_section:
-            fl.space(4)
-            fl.text(sec, fs + 1, gap_after=2)
-            last_section = sec
+        new_section = bool(sec and sec != last_section)
 
         res = by_uid.get(uid, {})
         mark = res.get("verdict") if graded else None
@@ -247,15 +319,72 @@ def _paint(c: rl_canvas.Canvas, questions: list[dict], opt: LayoutOptions, title
             head = str(subs[0].get("lead") or "").strip()
             body = "\n".join(f"（{s.get('no')}）{s.get('text')}" for s in subs)
             stem = f"{head}\n{body}" if head else body
+        # 整题原图（算式整题截图/兜底截图）是从题号那一行开始裁的，题号已经
+        # 印在图里。题干被清空时再印一个 "20." —— 版面一挤就只剩这个孤零零的
+        # 题号留在页底，图跑到下一页（P5 Q20 实测），既重复又断题。
+        whole_span = any(str(im.get("graphic_kind") or "") in ("calc-span", "span-fallback")
+                         for im in (q.get("images") or []))
+        # 单 span 的兜底图连题号、选项、作答横线一起裁在里头，就是整道题
+        # （figures.py 打的 whole_question 标记）。此时再排一遍 OCR 文字，
+        # 同一道题会完整出现两次（P5 Q4/Q8 实测，Q4 还带 "B D" 残渣）。
+        whole_q = any(bool(im.get("whole_question")) for im in (q.get("images") or []))
+        if (whole_span and not stem) or whole_q:
+            prefix = ""
         raw = answers.get(uid)
         alist = raw if isinstance(raw, (list, tuple)) else ([raw] if raw not in (None, "") else [])
         alist = [str(a) for a in alist]
         qtype = (q.get("qtype") or "unknown").lower()
+        # 整题尽量落在同一页：P5 第 7 题的 D 选项曾被单独甩到下一页顶部，
+        # 孩子看到一行没有题干的"D.只有②③"（真机导出实测）。只有整题
+        # 确实能在一页内放下才搬；超长题/超大图退回逐块分页。
+        usable = A4_H - opt.margin_top - opt.margin_bottom - 20
+        est = _estimate_question_h(q, opt, fs, indent, graded, alist,
+                                   new_section, prefix, stem)
+        if est <= usable:
+            fl.need(est)
+        if new_section:
+            fl.space(4)
+            fl.text(sec, fs + 1, gap_after=2)
+            last_section = sec
         y0 = fl.y
         figures_done = False
 
-        if qtype == "choice" and q.get("options"):
+        if whole_q:
+            # 原图就是题干：只印这一张，不再重排文字。
+            _draw_figures(c, q, opt, fl, indent, fig_dir=fig_dir, stats=stats)
+            figures_done = True
+            if alist:
+                body = "；".join(alist)
+                if qtype == "choice" and q.get("options"):
+                    pick = _chosen(alist, q["options"])
+                    if pick is not None:
+                        body = str(q["options"][pick])
+                fl.text("作答：" + body, fs, indent=indent + 6, gap_after=0)
+            elif not graded:
+                # 空白卷/作答卷没答案时也要留作答位置：整题图里虽然印着选项/空位，但那是扫描件，
+                # 孩子没有可下笔的行（P1 Q1/Q2/Q5 实测：图下直接接下一题）。
+                # 但原卷自带「答：」「我的理由：」框的（P5 Q24/Q25），再补两行
+                # 只是把下一题顶到新页（空白版实测 8 页变 10 页），所以跳过。
+                src_lines = "\n".join(str(x) for x in (q.get("source_lines") or []))
+                need_h = fs + 2 * (fl.opt.leading + 6) + 4
+                # 只剩答案行写不下时【不要】为了它翻页：整题图本身还有空位，
+                # 硬翻只会多出一整页（P5 Q23 实测第 8 页只为三行答案）。
+                if (not re.search(r"答\s*[:：]|我的理由|解\s*[:：]", src_lines)
+                        and fl.y - need_h >= opt.margin_bottom + 18):
+                    fl.text("作答：", fs, indent=indent + 6, gap_after=0)
+                    for _ in range(2):
+                        c.setStrokeColor(HexColor("#BBBBBB"))
+                        c.setLineWidth(0.5)
+                        c.line(opt.margin_left + indent + 6, fl.y - fs,
+                               A4_W - opt.margin_right, fl.y - fs)
+                        fl.y -= fl.opt.leading + 6
+        elif qtype == "choice" and q.get("options"):
             fl.text(f"{prefix}{stem}", fs, indent=indent, gap_after=1)
+            # 配图属于题干：先印图，再印选项。图在选项后面时，孩子得先读
+            # 四个还没有上下文的选项，才能看到题目到底画了什么。
+            if q.get("images"):
+                _draw_figures(c, q, opt, fl, indent, fig_dir=fig_dir, stats=stats)
+                figures_done = True
             pick = _chosen(alist, q["options"])
             for i, o in enumerate(q["options"]):
                 fl.need(fl.opt.leading + 2)
@@ -267,6 +396,9 @@ def _paint(c: rl_canvas.Canvas, questions: list[dict], opt: LayoutOptions, title
                 fl.y -= fl.opt.leading + 1
         elif qtype == "judge":
             fl.text(f"{prefix}{stem}", fs, indent=indent, gap_after=1)
+            if q.get("images"):
+                _draw_figures(c, q, opt, fl, indent, fig_dir=fig_dir, stats=stats)
+                figures_done = True
             fl.need(fl.opt.leading)
             c.setFont(_state["family"], fs)
             x = opt.margin_left + indent + 8
@@ -283,25 +415,21 @@ def _paint(c: rl_canvas.Canvas, questions: list[dict], opt: LayoutOptions, title
             if extra:
                 text += "  其余作答：" + "；".join(extra)
             fl.text(text, fs, indent=indent, gap_after=1)
-        else:
-            fl.text(f"{prefix}{stem}", fs, indent=indent, gap_after=1)
-            body = " ".join(alist).strip()
-            # 图形算式的整行原图【就是题干的一部分】（番茄/黄瓜 OCR 读不出来），
-            # 必须紧贴题干印；先印两条作答横线再把原图放下面，孩子会以为上面
-            # 那行残缺的"如果 =16"才是题目。其余题的图仍按老顺序排在作答行后。
-            graphic_img = any(bool(im.get("graphic")) for im in (q.get("images") or []))
-            if body:
-                fl.text("答：" + body, fs, indent=indent + 6, gap_after=1)
-            elif graphic_img:
+            if q.get("images"):
                 _draw_figures(c, q, opt, fl, indent, fig_dir=fig_dir, stats=stats)
                 figures_done = True
-                for _ in range(2):
-                    fl.need(fl.opt.leading + 6)
-                    c.setStrokeColor(HexColor("#BBBBBB"))
-                    c.setLineWidth(0.5)
-                    c.line(opt.margin_left + indent + 6, fl.y - fs,
-                           A4_W - opt.margin_right, fl.y - fs)
-                    fl.y -= fl.opt.leading + 6
+        else:
+            fl.text(f"{prefix}{stem}", fs, indent=indent, gap_after=1)
+            # 图必须紧跟题干、排在作答区之前。独立复测 P2 Q8 / P3 面积题
+            # 实测：旧版把非 graphic 图留到函数末尾才画，纸上先出现"1."和
+            # 两条作答横线、图在横线下面 —— 孩子得先越过答题区才看到题目。
+            # 图形算式（graphic=True）本来就要紧贴题干，现在全类型同一条顺序。
+            if q.get("images"):
+                _draw_figures(c, q, opt, fl, indent, fig_dir=fig_dir, stats=stats)
+                figures_done = True
+            body = " ".join(alist).strip()
+            if body:
+                fl.text("答：" + body, fs, indent=indent + 6, gap_after=1)
             else:
                 for _ in range(2):
                     fl.need(fl.opt.leading + 6)
@@ -311,7 +439,7 @@ def _paint(c: rl_canvas.Canvas, questions: list[dict], opt: LayoutOptions, title
                            A4_W - opt.margin_right, fl.y - fs)
                     fl.y -= fl.opt.leading + 6
 
-        syms = [str(s).strip() for s in (q.get("symbols") or []) if str(s).strip()]
+        syms = [] if whole_q else [str(s).strip() for s in (q.get("symbols") or []) if str(s).strip()]
         if syms:
             # 卷面上【画出来】的图形符号（★＋★＝20 这种）OCR 只认字，题干会读成
             # "=20 39" 的残渣。这几行是系统按轮廓还原的算式，印在题干下面，
@@ -333,24 +461,39 @@ def _paint(c: rl_canvas.Canvas, questions: list[dict], opt: LayoutOptions, title
 
     if graded and grade_result:
         r = grade_result
-        wrong = [str(x.get("q_no")) for x in r.get("results", [])
-                 if x["verdict"] == "wrong" and x.get("q_no") is not None]
-        pend = [str(x.get("q_no")) for x in r.get("results", [])
-                if x["verdict"] == "pending" and x.get("q_no") is not None]
-        rows = [f"得分 {r.get('score', 0)} ／ 满分 {r.get('total', 0)}"
-                f"（另有 {r.get('pending_max', 0)} 分待人工确认）",
-                f"判对 {r['counts']['correct']} 题 · 判错 {r['counts']['wrong']} 题"
-                f" · 待确认 {r['counts']['pending']} 题",
-                f"错题：{'、'.join(wrong) or '无'}　待确认：{'、'.join(pend) or '无'}"]
+
+        def _label(x: dict) -> str:
+            """汇总里的题目标签：带大题序号，整题图没有 q_no 时用「整题」。
+
+            独立复测 report_A/B 实测：旧版只用 q_no，不同大题的 1/2/3 混成一串，
+            无法映射；q_no=None 的整题图题（一、口算 / 四、笔算）被直接漏掉，
+            "待确认 19 题"下面只列了 17 个号。
+            """
+            sec = str(x.get("section") or "")
+            m = re.match(r"^\s*([一二三四五六七八九十]+)\s*[、.．]", sec)
+            pre = (m.group(1) + "·") if m else ""
+            no = x.get("q_no")
+            return f"{pre}{no}" if no is not None else f"{pre}整题"
+
+        wrong = [_label(x) for x in r.get("results", []) if x["verdict"] == "wrong"]
+        pend = [_label(x) for x in r.get("results", []) if x["verdict"] == "pending"]
+        base_rows = [f"得分 {r.get('score', 0)} ／ 满分 {r.get('total', 0)}"
+                     f"（另有 {r.get('pending_max', 0)} 分待人工确认）",
+                     f"判对 {r['counts']['correct']} 题 · 判错 {r['counts']['wrong']} 题"
+                     f" · 待确认 {r['counts']['pending']} 题"]
+        rows = base_rows + wrap_text(f"错题：{'、'.join(wrong) or '无'}",
+                                     fs, opt.content_w - 12) \
+            + wrap_text(f"待确认：{'、'.join(pend) or '无'}",
+                        fs, opt.content_w - 12)
         fl.space(6)
-        h = fl.opt.leading * 3 + 12
+        h = fl.opt.leading * len(rows) + 12
         fl.need(h)
         c.setStrokeColor(black)
         c.setLineWidth(0.8)
         c.rect(opt.margin_left, fl.y - h, opt.content_w, h, stroke=1, fill=0)
         c.setFont(_state["family"], fs)
         for i, s in enumerate(rows):
-            c.drawString(opt.margin_left + 6, fl.y - fl.opt.leading * i - fs - 4, s[:120])
+            c.drawString(opt.margin_left + 6, fl.y - fl.opt.leading * i - fs - 4, s)
         fl.y -= h
 
     if total:

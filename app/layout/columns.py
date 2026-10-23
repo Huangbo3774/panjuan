@@ -5,6 +5,7 @@ Python 版，移植自 ../shijuan-maker/src/layout.mjs（该实现已在真实�
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Iterable
 
 
@@ -19,6 +20,12 @@ def _join_with_gaps(parts: list[dict]) -> str:
         gap = cur["x"] - (prev["x"] + prev.get("w", 0))
         if gap > unit:
             out += " " * min(12, max(1, int(round(gap / unit))))
+        elif gap <= 0 and re.search(r"[.．、]$", str(prev.get("text") or "")) \
+                and re.match(r"[\d（(]", str(cur.get("text") or "")):
+            # OCR 框轻微重叠时不能直接粘：P3 的独立题号"1."框比字宽，右缘压住了
+            # 下一题的"2.15 小时"，拼成"1.2.15"后既不像题号也不像小数，
+            # 两道理科填空题当场并成一道。题号后补一个空格，切题逻辑才看得见它。
+            out += " "
         out += cur["text"]
     return out
 
@@ -217,6 +224,71 @@ def detect_columns(items: list[dict], page_w: float, min_gap_ratio: float = 0.03
     return bands
 
 
+_CIRCLED_DIGITS = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
+
+
+def _subitem_no(text: str) -> int | None:
+    """行首的小题号：`(2)` / `（2）` / `②`；没有就返回 None。"""
+    import re
+    t = str(text or "").lstrip()
+    m = re.match(r"^[（(]\s*(\d{1,2})\s*[）)]", t)
+    if m:
+        return int(m.group(1))
+    m = re.match(r"^([①-⑳])", t)
+    if m:
+        return _CIRCLED_DIGITS.index(m.group(1)) + 1
+    return None
+
+
+def _looks_two_up(col_lines: list[list[dict]], y_tol: float) -> bool:
+    """判断一页是不是「左右并排两道小题各占半页」的 2-up 练习页。
+
+    真两栏卷是【先读完整左栏再读右栏】；但计算/解方程练习页常把同一道大题的
+    (1)(3) 排左、(2)(4) 排右。按栏读会把 (2) 接到下一题、(3)(4) 接到再下一题
+    （新下载 P5 第 5 页实测：17 只剩 (1)，20 只剩一个题号）。
+
+    判据：两栏内至少有两对【同一水平行、小题号相差 1】的行（左 (n) ↔ 右 (n+1)）。
+    一对可能是巧合；两对同时出现才翻成逐行读。三栏及以上不猜。
+    """
+    if len(col_lines) != 2:
+        return False
+    left, right = col_lines
+    if len(left) < 2 or len(right) < 2:
+        return False
+    span = max(12.0, float(y_tol) * 1.5)
+    used: set[int] = set()
+    pairs = 0
+    for li in left:
+        ln = _subitem_no(li["text"])
+        if ln is None:
+            continue
+        for ri in right:
+            if id(ri) in used:
+                continue
+            if _subitem_no(ri["text"]) != ln + 1:
+                continue
+            if abs(float(ri["y"]) - float(li["y"])) > span:
+                continue
+            pairs += 1
+            used.add(id(ri))
+            break
+    return pairs >= 2
+
+
+def _row_major(lines: list[dict], y_tol: float) -> list[dict]:
+    """按【行】读：先按 y 聚成行，行内按 x 从左到右。"""
+    rows: list[dict[str, Any]] = []
+    for ln in sorted(lines, key=lambda l: (float(l["y"]), float(l["x"]))):
+        if rows and abs(float(ln["y"]) - rows[-1]["y"]) <= y_tol:
+            rows[-1]["items"].append(ln)
+        else:
+            rows.append({"y": float(ln["y"]), "items": [ln]})
+    out: list[dict] = []
+    for r in rows:
+        out.extend(sorted(r["items"], key=lambda l: float(l["x"])))
+    return out
+
+
 def structure_page(items: list[dict], page_w: float, y_tol: float = 10.0,
                    bands: list[dict] | None = None) -> dict[str, Any]:
     """原始条目 → 分栏 → 栏内合并行 → 阅读顺序。P3a 主入口，顺序不可调换。
@@ -271,6 +343,13 @@ def structure_page(items: list[dict], page_w: float, y_tol: float = 10.0,
         for ln in group_lines(sorted(hoist, key=lambda i: (i["y"], i["x"])), y_tol):
             out.append({**ln, "col": -1})
 
-    out.sort(key=lambda l: (0 if l["col"] < 0 else 1, l["col"], l["y"]))
+    # 2-up 练习页：栏内 (n) 与隔壁栏 (n+1) 成对 → 逐行读；真两栏卷仍先读完整左栏。
+    col_lines = [[l for l in out if l["col"] == ci] for ci in range(len(bands))]
+    if _looks_two_up(col_lines, y_tol):
+        head = [l for l in out if l["col"] < 0]
+        body = [l for l in out if l["col"] >= 0]
+        out = head + _row_major(body, y_tol)
+    else:
+        out.sort(key=lambda l: (0 if l["col"] < 0 else 1, l["col"], l["y"]))
     return {"lines": [dict(l, order=i) for i, l in enumerate(out)],
             "columns": len(bands), "bands": bands}

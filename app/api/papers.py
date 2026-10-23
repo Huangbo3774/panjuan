@@ -22,9 +22,14 @@ from .store import STORE
 from ..paths import VAR, DATA
 from ..extractor import lines as L
 from ..extractor import ocr as OC
+from ..extractor import symbols as SY
 from ..extractor.figures import (find_figures, strip_text_inside_figures,
-                                 apply_graphic_notes, fold_figure_preamble_questions)
-from ..extractor.rules import extract, flatten_questions, mark_image_options
+                                 apply_graphic_notes, fold_figure_preamble_questions,
+                                 attach_span_fallbacks, strip_number_only_stems,
+                                 mark_unbalanced_brackets)
+from ..extractor.rules import (extract, fallback_uncertain_types,
+                               flatten_questions, mark_image_options,
+                               recount_blanks, trim_trailing_next_qno)
 from ..grading.engine import grade, make_uid
 from ..storage import db
 
@@ -79,15 +84,33 @@ def api_parse(id_str: str) -> dict:
     if not ok and not r["ann"]:
         raise HTTPException(422, f"这份材料需要 OCR 才能出题，但引擎不可用：{why}")
 
-    res = extract(r["lines"], title=paper.get("title", ""))
+    # 带上坐标：题号后紧跟数字（2.78÷3）、同页 OCR 读错题号这两类判据都靠它。
+    # 没有 ann 的入口（纯文本单测）会自动退回纯文本判据。
+    res = extract(r["lines"], title=paper.get("title", ""), ann=r.get("ann"))
+    # 大题标题里被 OCR 吞掉的作答标记（P6「打▲的要验算」读成「打的」）。
+    # 必须在 flatten 之前改 section 名：flatten 用 s["name"] 覆盖每题的 section。
+    # 原名存进 section["ocr_name"]，裁图时仍拿它定位大题标题那堵硬墙。
+    n_mark = 0
+    try:
+        n_mark = SY.repair_section_marks(res.get("sections") or [],
+                                         r.get("ann") or [], r)
+    except Exception:                       # 补标记失败不许拖垮整卷识别
+        n_mark = 0
     qs = flatten_questions(res)
+    trim_trailing_next_qno(qs)      # 上一题末尾粘着的下一题号（P4 Q1 "…3."）
 
     fig_note = ""
     try:
         spans = L.spans_for_questions(r["ann"], qs, pages=r.get("pages"),
                                       sections=res.get("sections"))
         sources = {}
-        for gp in sorted({int(s["page"]) for s in spans}):
+        span_pages = {int(s["page"]) for s in spans}
+        all_pages = {int(p.get("page") or 0) for p in (r.get("pages") or [])}
+        # 整题截图在页底截断时，下一页的续图也要裁（P4 六 Q4）。下一页通常
+        # 没有自己的 span，不预先载入就拿不到可裁剪的页面源。find_figures
+        # 只遍历 spans，多载的页不会被误当配图。
+        need_pages = span_pages | {gp + 1 for gp in span_pages if gp + 1 in all_pages}
+        for gp in sorted(need_pages):
             kind = next((f["kind"] for f in r["files"]
                          if f["first_page"] <= gp < f["first_page"] + max(1, len(f["pages"]))), ".pdf")
             src = L.open_page_source(kind, "", gp, r["page_sources"], r["files"])
@@ -101,13 +124,30 @@ def api_parse(id_str: str) -> dict:
                 qs[qi]["images"] = imgs
         # 图里的标注行先被 OCR 拼进题干、又被裁进图里 → 同一句话印两遍
         # （判据与真实反例见 docs 14.12-F）。
-        n_res = strip_text_inside_figures(qs, spans, got)
+        n_res = strip_text_inside_figures(qs, spans, got, sources=sources,
+                                          fig_dir=figures_dir(pid))
+        strip_number_only_stems(qs)      # 图注清完后只剩"2、"这种光题号
+        mark_unbalanced_brackets(qs)     # 清字把左括号删掉后只剩半边
         n_imgopt = mark_image_options(qs)
+        # 图内文字清完后重算空位：fill 但一个空位都不剩 → 退成 essay，
+        # 否则做题页按 fill 渲染、输入框 0 个，学生无处作答（P5 Q12/Q16）。
+        n_recount = recount_blanks(qs)
         # ── 图形算式（题干行里夹着番茄/黄瓜这类图标）：OCR 只读到图标之间的字，
         #    题干会留下十几格的空白；裁图已把【整行原样】切成一张原图挂在题下。
         #    这里把空白收成一个空格、补一句"图形见原图"——口径与审计渲染共用。
         n_graphic = apply_graphic_notes(qs, got)
+        # 最后一道保险：空题 / 明说有图却一张没裁出来的题，退化为整题区域原图。
+        # 这一步必须在 fold 之前：折叠伪题会让下标整体前移，兜底图就挂错题。
+        n_span = 0
+        try:
+            n_span = attach_span_fallbacks(qs, sources, spans, figures_dir(pid))
+        except Exception as e:
+            fig_note += f"，整题兜底图失败（{type(e).__name__}: {e}）"
         fig_note = f"，裁出配图 {sum(len(v) for v in got.values())} 张"
+        if n_mark:
+            fig_note += f"，补回大题作答标记 {n_mark} 处"
+        if n_span:
+            fig_note += f"，整题兜底原图 {n_span} 题"
         if n_graphic:
             fig_note += f"，图形算式原图 {n_graphic} 题"
         if n_imgopt:
@@ -121,7 +161,6 @@ def api_parse(id_str: str) -> dict:
         try:
             import numpy as np2
             import cv2 as cv2m
-            from ..extractor import symbols as SY
             for s in spans:
                 qi = int(s.get("q_index", -1))
                 src = sources.get(int(s["page"]))
@@ -143,6 +182,11 @@ def api_parse(id_str: str) -> dict:
                 fig_note += f"，折掉图前伪题 {n_fold} 道"
         except Exception as e:
             fig_note += f"，图前伪题合并失败（{type(e).__name__}: {e}）"
+        # 复杂题/判不清题型：不硬塞成单选或一个判断空，退成问答题给自由作答框。
+        # 必须放在折伪题之后（下标会前移）、落库之前。
+        n_type = fallback_uncertain_types(qs)
+        if n_type:
+            fig_note += f"，题型不确定改问答 {n_type} 道"
     except Exception as e:                                 # 配图失败不能拖垮整卷识别
         fig_note = f"，配图裁剪失败（{type(e).__name__}: {e}）"
 

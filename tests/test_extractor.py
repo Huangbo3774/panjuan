@@ -16,7 +16,9 @@ except Exception:
     pass
 
 from app.extractor.rules import extract, flatten_questions            # noqa: E402
+from app.extractor.rules import split_subqs                          # noqa: E402
 from app.extractor.rules import _parse_question_no as _parse          # noqa: E402
+from app.extractor.lines import split_question_ann, spans_for_questions  # noqa: E402
 
 ok_n = bad_n = 0
 
@@ -133,6 +135,63 @@ def picture_choice_is_flagged_not_turned_into_judge():
 t("图片选项的选择题：可作答 + 待校对", picture_choice_is_flagged_not_turned_into_judge)
 
 
+def fill_without_blanks_becomes_essay():
+    """图内文字清理会把只印在图里的空位删掉（P5 Q12/Q16）：题型还是 fill，
+    但空位 0 个。做题页按 fill 渲染就一个输入框都不给 —— 学生没法作答。
+    末尾重算：fill 且无空位 → essay（有作答框）；真有空位的 fill 不许动。
+    """
+    from app.extractor.rules import recount_blanks
+    q = [
+        {"qtype": "fill", "text": "观察下图，分别用不同的数表示图中阴影部分占整图的多少",
+         "images": [{"name": "x.png"}]},
+        {"qtype": "fill", "text": "这扇窗户的面积是（    ）平方米。"},
+        {"qtype": "choice", "text": "下面正确的是（  ）", "options": ["A.1", "B.2"]},
+        {"qtype": "essay", "text": "说说你的理由。"},
+    ]
+    assert recount_blanks(q) == 1
+    assert q[0]["qtype"] == "essay" and q[0]["blanks"] == 0, q[0]
+    assert q[1]["qtype"] == "fill", "有空位的填空题被误改：" + q[1]["qtype"]
+    assert q[2]["qtype"] == "choice" and q[3]["qtype"] == "essay"
+t("空位清光后的 fill 退成 essay（含反例）", fill_without_blanks_becomes_essay)
+
+
+def uncertain_types_fall_back_to_essay_answer_box():
+    """题型判不清/复杂到装不下 → 退成问答题，保证有一个自由作答框。
+
+    用户口径：复杂题判断不清题型时，不硬塞成单选或一个判断空。只动四类：
+    unknown、choice 选项不足两个、选择/判断带多个小问、填空小问多于空位。
+    真选择（≥2 选项）、真判断、空位齐全的填空一律不动（反例）。
+    """
+    from app.extractor.rules import fallback_uncertain_types
+    q = [
+        {"qtype": "unknown", "text": "松树种了多少棵？", "options": [], "blanks": 0},
+        {"qtype": "choice", "text": "商是几位数？", "options": ["①4"],
+         "blanks": 1},
+        {"qtype": "choice", "text": "下面哪幅图正确？", "options": ["A", "B", "C"],
+         "subqs": [{"no": 1, "text": "圈一圈"}, {"no": 2, "text": "写一写"}]},
+        {"qtype": "judge", "text": "判断各题。", "options": [],
+         "subqs": [{"no": 1, "text": "甲"}, {"no": 2, "text": "乙"}]},
+        {"qtype": "fill", "text": "填一填。", "blanks": 1,
+         "subqs": [{"no": 1, "text": "甲"}, {"no": 2, "text": "乙"}]},
+        # 反例：真选择、真判断、空位齐全的填空
+        {"qtype": "choice", "text": "选一选。", "options": ["A.1", "B.2", "C.3"]},
+        {"qtype": "judge", "text": "对的画√，错的画×。", "options": [], "blanks": 1},
+        {"qtype": "fill", "text": "窗户面积是（    ）平方米。", "blanks": 1},
+        {"qtype": "essay", "text": "说说你的理由。"},
+    ]
+    assert fallback_uncertain_types(q) == 5
+    assert all(x["qtype"] == "essay" for x in q[:5]), \
+        f"判不清题型的题没退成问答：{[x['qtype'] for x in q[:5]]}"
+    assert all(x["needs_review"] for x in q[:5]), "退成问答后没挂待校对"
+    assert all("问答题" in str(x.get("review_note") or "") for x in q[:5]), \
+        "没告诉家长为什么改成问答"
+    assert [x["qtype"] for x in q[5:]] == ["choice", "judge", "fill", "essay"], \
+        f"正常题型被误改：{[x['qtype'] for x in q[5:]]}"
+
+
+t("判不清题型退成问答框（含四个反例）", uncertain_types_fall_back_to_essay_answer_box)
+
+
 def real_judge_section_still_works():
     """反例保险：修掉乘号后，真正的判断题（大题名给的信号）不能跟着丢。"""
     lines = ["三、判断。（对的画√，错的画×）",
@@ -141,6 +200,26 @@ def real_judge_section_still_works():
     q = qs(extract(lines))
     assert all(x["qtype"] == "judge" for x in q), f"判断题丢了：{[x['qtype'] for x in q]}"
 t("真判断题仍然认（反例保险）", real_judge_section_still_works)
+
+
+def judge_word_inside_essay_is_not_judge():
+    """正文里出现"判断"两个字，不等于这道题是判断题。
+
+    P5 Q24「请做出判断并说明理由」、Q25「请你判断：这三个图形的周长相等吗？」
+    都是多问解答题。旧口径见"判断"就判 judge，导出时在题末凭空印
+    "判断：（    ）"——一道不存在的判断题，孩子不知道答什么，老师也没法批。
+    """
+    lines = ["五、解决问题（共5道小题）",
+             "24. 张老师记录了六（1）班和六（2）班男生的成绩。"
+             "请按成绩段整理数据，补全下表，并做出判断、说明理由。",
+             "25. 同学们设计出了三个新图形，请你判断：这三个图形的周长相等吗？"]
+    q = qs(extract(lines))
+    assert len(q) == 2, f"应切出 2 题：{[x['text'][:20] for x in q]}"
+    assert all(x["qtype"] != "judge" for x in q), \
+        f"正文里的'判断'把解答题判成了判断题：{[(x['text'][:18], x['qtype']) for x in q]}"
+    assert all(x["qtype"] == "essay" for x in q), \
+        f"应是无选项的解答题：{[x['qtype'] for x in q]}"
+t("正文含「判断」的解答题不许判成判断题", judge_word_inside_essay_is_not_judge)
 
 
 def header_not_question():
@@ -556,8 +635,8 @@ def photo_route_uses_real_page_size_and_margin_filter():
 
     以前照片路线直接用 OCR 框的最大右缘当页宽（左侧正文只到 ~840pt），
     45pt 页边规则算在 840 上 → 密封线 x≈850 全落在"页面中间"，一个都不丢。
-    这里把 OCR 换成固定条目（模具图用 PIL 真造 1000×700），只测接线：
-    页宽必须 = 720pt，noise 必须带出 10 个框，正文不许少。
+    这里把 OCR 换成固定条目（模具图用 PIL 真造 1700×1190），只测接线：
+    页宽必须 = 1224pt，noise 必须带出 8 个框，正文不许少。
     """
     import os
     import tempfile
@@ -565,21 +644,24 @@ def photo_route_uses_real_page_size_and_margin_filter():
     from app.extractor import lines as L
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, "照片.png")
-        Image.new("RGB", (1000, 700), (255, 255, 255)).save(path)
-        fake = [{"text": "6.你做过什么手工作品？", "x": 70, "y": 300,
-                 "w": 400, "h": 14, "conf": 0.95}]
+        # ⚠️ 长边必须 ≥ `ocr_image_auto` 的放大阈值（1600px）：否则模具图会被
+        # 先放大 2 倍 OCR、坐标再除回原图，假 OCR 的 x 也会被除半 ——
+        # 950px 的密封线跑到页面中间，这条接线测试就测不到页边过滤了。
+        Image.new("RGB", (1700, 1190), (255, 255, 255)).save(path)
+        fake = [{"text": "6.你做过什么手工作品？", "x": 120, "y": 500,
+                 "w": 700, "h": 24, "conf": 0.95}]
         for i, t in enumerate("密封线内请勿答题"):
-            fake.append({"text": t, "x": 950, "y": 60 + i * 55,
-                         "w": 9, "h": 12, "conf": 0.9})
+            fake.append({"text": t, "x": 1650, "y": 100 + i * 90,
+                         "w": 16, "h": 24, "conf": 0.9})
         old = L.O.ocr_image
         L.O.ocr_image = lambda _p: [dict(x) for x in fake]
         try:
             r = L.lines_from_image(path)
         finally:
             L.O.ocr_image = old
-        assert abs(r["pages"][0]["width_pt"] - 720.0) < 0.5, \
+        assert abs(r["pages"][0]["width_pt"] - 1224.0) < 0.5, \
             f"页宽没按图片尺寸算：{r['pages'][0]['width_pt']}"
-        assert abs(r["pages"][0]["height_pt"] - 504.0) < 0.5, r["pages"][0]
+        assert abs(r["pages"][0]["height_pt"] - 856.8) < 0.5, r["pages"][0]
         assert len(r.get("noise") or []) == 8, r.get("noise")
         assert r["pages"][0].get("margin_dropped") == 8, r["pages"][0]
         assert r["lines"] == ["6.你做过什么手工作品？"], r["lines"]
@@ -589,6 +671,122 @@ t("装订栏不许混进题干", margin_strip_never_enters_body_text)
 t("贴边正文行尾不许被当装订栏（反例）", margin_filter_must_not_eat_body_line_ends)
 t("照片边缘密封线整列要摘掉（含两个反例）", sealing_column_on_photo_edge_is_dropped)
 t("照片路线用真实页宽且接上页边过滤", photo_route_uses_real_page_size_and_margin_filter)
+
+
+def scan_page_columns_verified_with_ink():
+    """扫描页的栏界要用图片墨迹复核：单栏卷的图形投影会切出假栏。
+
+    新下载 P1（DOCX 里贴 6 张整页扫描图）实测：单栏页被切成 2–3 栏，
+    同一行的 A/B 选项分进不同栏，题干按"栏优先"排出来整段错位
+    （Q4 混入 Q7 的选项、Q18 落到下一大题、Q21 被拆成两半）。
+    """
+    import os
+    import tempfile
+    from PIL import Image, ImageDraw
+    from app.extractor import lines as L
+
+    with tempfile.TemporaryDirectory() as td:
+        # ⚠️ 长边 ≥1600px，避开 `ocr_image_auto` 的 2 倍放大：放大后坐标会被
+        # 除半，假 OCR 的两栏条目会挤进同一栏，这条测试就测不到墨迹复核了。
+        full = os.path.join(td, "full.png")
+        im = Image.new("RGB", (1600, 2400), "white")
+        d = ImageDraw.Draw(im)
+        for y in range(240, 2240, 160):
+            d.line([(80, y), (1520, y)], fill="black", width=12)
+        im.save(full)
+        bands = [{"x0": 0.0, "x1": 552.0}, {"x0": 552.0, "x1": 1152.0}]
+        got = L.verify_bands_with_image(full, bands, 1152.0)
+        assert len(got) == 1, f"单栏页的假栏缝没被墨迹否掉：{got}"
+
+        # 反例：真两栏（中间有贯通空白）不许被收成一栏
+        two = os.path.join(td, "two.png")
+        im2 = Image.new("RGB", (1600, 2400), "white")
+        d2 = ImageDraw.Draw(im2)
+        for y in range(240, 2240, 160):
+            d2.line([(80, y), (640, y)], fill="black", width=12)
+            d2.line([(960, y), (1520, y)], fill="black", width=12)
+        im2.save(two)
+        got2 = L.verify_bands_with_image(two, bands, 1152.0)
+        assert len(got2) == 2, f"真栏缝被墨迹吃掉了：{got2}"
+
+        # 接线：假 OCR 条目 + 全幅墨迹，阅读顺序必须按行（A、B 同一行）
+        fake = [{"text": t, "x": x, "y": 200 + i * 240, "w": 80, "h": 56, "conf": 0.9}
+                for i in range(8) for x, t in ((320, "A"), (880, "B"))]
+        old_ocr, old_detect = L.O.ocr_image, L.detect_columns
+        L.O.ocr_image = lambda _p: [dict(x) for x in fake]
+        L.detect_columns = lambda _items, _w: [dict(b) for b in bands]
+        try:
+            r = L.lines_from_image(full)
+        finally:
+            L.O.ocr_image, L.detect_columns = old_ocr, old_detect
+        assert r["pages"][0]["columns"] == 1, \
+            f"扫描图路线没接墨迹复核：{r['pages'][0]}"
+        assert len(r["lines"]) == 8 and "A" in r["lines"][0] and "B" in r["lines"][0], \
+            f"阅读顺序还是栏优先：{r['lines'][:3]}"
+t("扫描页栏界用图片墨迹复核（含真两栏反例）", scan_page_columns_verified_with_ink)
+
+
+def gutter_must_be_wide_and_unblocked():
+    """栏缝的三条底线：不贴页边、够宽、没有文字行横穿。
+
+    新下载 P2 第 3 页（竖式计算）与 P3 第 2 页（2-up 计算题）实测：
+    只检查"有一条空白带"时，字间 1–2% 的空隙、上下两组题之间的空白、
+    页边留白都会通过，把 ①②③④ 按列重新排序，②④ 被吞进下一大题。
+    """
+    import os
+    import tempfile
+    from PIL import Image, ImageDraw
+    from app.extractor import lines as L
+
+    with tempfile.TemporaryDirectory() as td:
+        bands = [{"x0": 0.0, "x1": 144.0}, {"x0": 144.0, "x1": 288.0}]
+
+        # ① 字间空隙：左右两段之间只有 6px（1.5% 页宽）的空白，不算栏缝
+        hair = os.path.join(td, "hair.png")
+        im = Image.new("RGB", (400, 600), "white")
+        d = ImageDraw.Draw(im)
+        for y in range(60, 560, 40):
+            d.line([(20, y), (197, y)], fill="black", width=3)
+            d.line([(203, y), (380, y)], fill="black", width=3)
+        im.save(hair)
+        got = L.verify_bands_with_image(hair, bands, 288.0)
+        assert len(got) == 1, f"1.5% 宽的字间空隙被当成栏缝：{got}"
+
+        # ② 2-up 排版：左右两题并排，但通栏标题横穿中间 → 必须按行读
+        twoup = os.path.join(td, "twoup.png")
+        im = Image.new("RGB", (400, 600), "white")
+        d = ImageDraw.Draw(im)
+        for y in range(50, 560, 150):       # 通栏标题/大题说明（细线，占高 <2%）
+            d.line([(30, y), (370, y)], fill="black", width=1)
+        for y in range(100, 560, 120):      # 左右并排的小题
+            d.line([(40, y), (150, y)], fill="black", width=3)
+            d.line([(250, y), (360, y)], fill="black", width=3)
+        im.save(twoup)
+        got2 = L.verify_bands_with_image(twoup, bands, 288.0)
+        assert len(got2) == 1, f"2-up 排版被切成两栏，②④会排到①③后面：{got2}"
+
+        # ③ 页边留白：候选靠近左边，但左边那条空白是版心外留白，不是栏缝
+        margin = os.path.join(td, "margin.png")
+        im = Image.new("RGB", (400, 600), "white")
+        d = ImageDraw.Draw(im)
+        for y in range(60, 560, 40):
+            d.line([(80, y), (380, y)], fill="black", width=3)
+        im.save(margin)
+        near_left = [{"x0": 0.0, "x1": 30.0}, {"x0": 30.0, "x1": 288.0}]
+        got3 = L.verify_bands_with_image(margin, near_left, 288.0)
+        assert len(got3) == 1, f"页边留白被当成栏缝：{got3}"
+
+        # 反例：真两栏（宽缝 + 无文字行横穿）必须保住
+        two = os.path.join(td, "two.png")
+        im = Image.new("RGB", (400, 600), "white")
+        d = ImageDraw.Draw(im)
+        for y in range(60, 560, 40):
+            d.line([(20, y), (160, y)], fill="black", width=3)
+            d.line([(240, y), (380, y)], fill="black", width=3)
+        im.save(two)
+        got4 = L.verify_bands_with_image(two, bands, 288.0)
+        assert len(got4) == 2, f"真栏缝被三条底线误杀：{got4}"
+t("栏缝要够宽且没有文字行横穿（含页边/2-up/真两栏反例）", gutter_must_be_wide_and_unblocked)
 
 
 def broken_brackets_get_closed():
@@ -618,6 +816,70 @@ def broken_bracket_repair_leaves_real_text_alone():
 
 t("读残的填空括号要补全", broken_brackets_get_closed)
 t("补括号不许误伤序号/选项/已配对空位（反例）", broken_bracket_repair_leaves_real_text_alone)
+
+
+def ocr_bracket_tail_digit_is_repaired():
+    """P4 一.1：OCR 把句尾「）。」读成「3.」——第二空消失，孩子只能填一个空。
+
+    证据：P4 证据包 06_questions.json 里 q1 blanks=1、题干收尾「读作（」；
+    真实卷该句是「读作（            ）。」。
+    """
+    from app.extractor.rules import repair_blanks
+    out, n = repair_blanks("读作（            3.")
+    assert n == 1, f"没认出被读成数字的右括号：{out!r}（补了 {n} 处）"
+    assert out.rstrip() == "读作（    ）.", f"补出来的空位不对：{out!r}"
+    # 反例：没有空白的小问编号/正文数字一个都不许动
+    for s in ["（3.求面积", "（3.）", "一共（            3）个", "（12分）"]:
+        out2, n2 = repair_blanks(s)
+        assert n2 == 0 and out2 == s, f"误伤：{s!r} → {out2!r}（补了 {n2} 处）"
+
+
+def circled_option_numbers_are_repaired():
+    """P4 三.2：OCR 把圈号 ② 读成数字 2 —— 选项只剩①②两条，孩子没法选。"""
+    from app.extractor.rules import _circled_options
+    opts = _circled_options("①缩小20倍         2扩大20倍         ③不变")
+    assert len(opts) == 3, f"选项还是只有 {len(opts)} 条：{opts}"
+    assert opts[1].startswith("②") and "扩大20倍" in opts[1], opts
+    # 反例一：真正的数字选项 26 不许被吃成「②6」
+    got = _circled_options("①13         26         ③39")
+    assert any("26" in o and not o.startswith("②") for o in got), f"把数字选项改坏了：{got}"
+    # 反例二：圈号齐全时一个字都不许动
+    s = "①东 ②南 ③西 ④北"
+    assert _circled_options(s) == ["①东", "②南", "③西", "④北"], _circled_options(s)
+
+
+t("句尾「）。」被 OCR 读成数字要补回空位（含小问编号反例）", ocr_bracket_tail_digit_is_repaired)
+t("圈号被 OCR 读成数字要补回（含纯数字选项反例）", circled_option_numbers_are_repaired)
+
+
+def dangling_tail_residue_is_stripped():
+    """题干句尾的孤立右括号、粘上的选项字母要清掉（P5 Q12/Q16/Q4 实测）。
+
+    真实卷：
+      · 12 "…占整图的多少， ） ）" —— 图里两个空位的右括号被读进题干；
+      · 16 "…拼成近似的长方形。 ）"；
+      · 4  "…是（        ） B            D" —— A/C 选项是图，只捡到 B、D。
+    反例：正常配对的空位、正文中间的半边括号不许动（后者交给待校对）。
+    """
+    from app.extractor.rules import strip_dangling_tail
+    assert strip_dangling_tail("…占整图的多少， ） ）") == "…占整图的多少"
+    assert strip_dangling_tail("…拼成近似的长方形。 ）") == "…拼成近似的长方形。"
+    assert strip_dangling_tail("…的是（        ） B            D") == "…的是（        ）"
+    for s in ["…填在（        ）里。", "…是（ ），后面是（ ）",
+              "…后面是（ 夜晚，…", "…（取3.14）", "…是（        )"]:
+        assert strip_dangling_tail(s) == s, f"误伤：{s!r} → {strip_dangling_tail(s)!r}"
+
+    # 接线：extract 出来的题干必须已经清理过
+    r = extract(["二、填空题。",
+                 "12.观察下图，分别用不同的数表示图中阴影部分占整图的多少， ） ）",
+                 "13.如下图所示，把一个圆分成若干等份后，可以拼成近似的长方形。 ）",
+                 "14.下面图形中，不是轴对称图形的是（        ） B            D"])
+    got = {q["q_no"]: q["text"] for q in qs(r)}
+    assert got[12].endswith("多少"), got[12]
+    assert got[13].endswith("长方形。"), got[13]
+    assert got[14].endswith("（        ）"), got[14]
+    assert "B" not in got[14] and "D" not in got[14], got[14]
+t("句尾孤立的右括号/选项字母要清掉（含反例）", dangling_tail_residue_is_stripped)
 
 
 def unbalanced_paren_after_repair_is_flagged_not_silently_showed():
@@ -808,6 +1070,12 @@ def subquestion_paren_markers_merge_into_their_question():
         f"小问（1）（2）被当成新题，出现重号：{[x.get('q_no') for x in q]}"
     assert "以上词语都可以用来描写" in q[0]["text"], q[0]["text"]
     assert "选词填空" in q[0]["text"], q[0]["text"]
+    # 小问号必须保留并各起一行：吞掉编号后四问会糊成一句，孩子分不清答哪问
+    # （独立复测 report_A P1-05：Q23 的 (1)…(2)…(3)…(4)… 全部消失）。
+    assert "（1）" in q[0]["text"] and "（2）" in q[0]["text"], q[0]["text"]
+    assert "\n" in q[0]["text"], f"小问被拼成一段：{q[0]['text']!r}"
+    subs = split_subqs(q[0]["text"])
+    assert [s["no"] for s in subs] == [1, 2], f"小问切不出来：{subs}"
 
     # 反例：整段都用（1）（2）平排编号的卷，它们就是各一道题，不许并
     q2 = qs(extract(["二、选一选。（10分）",
@@ -904,6 +1172,9 @@ def sub_questions_split_for_display_but_stay_one_question():
     assert split_subqs("（1）第一问。（3）第三问。") == [], "跳号也照样拆，会把小问标错"
     # 反例⑤：光杆编号（内容在表格里，OCR 只回"（1）（2）（3）"）→ 拆出来是三行空白
     assert split_subqs("数一数。（1）（2）（3）") == [], "把没有正文的编号拆成三个空行"
+    # 反例⑤b：编号之间有空格、都在断句边界上，但第一段是空的
+    # ——边界判据拦不住它，得靠 seg 为空就整条不拆（否则打印出一行空白小问）
+    assert split_subqs("（1） （2） 做一做") == [], "空小问被拆出来了"
     # 反例⑥：行内的普通数字（"第 1 组…第 2 组…"）—— 括号的【成对形状】才是小问号
     assert split_subqs("第 1 组有 5 个，第 2 组有 3 个，第 3 组有 7 个。") == [], \
         "括号可有可无时，量词数字被当成了小问号"
@@ -913,8 +1184,16 @@ def sub_questions_split_for_display_but_stay_one_question():
     assert lead and lead[0].get("lead") == "看图填一填。", f"引导语丢了：{lead}"
     assert len(lead) == 2 and [x["no"] for x in lead] == [1, 2], lead
 
+    # 反例⑦：班级编号不是小问号（P5 Q24「六（1）班、六（2）班」被拆成两段，
+    # 第一段只剩"班、六"，打印出来题干错位）。真正的（1）（2）在句读后，照切。
+    cls = split_subqs("张老师是六（1）班、六（2）班的体育老师。"
+                      "（1）按成绩段整理数据。（2）回答下面的问题。")
+    assert [x["no"] for x in cls] == [1, 2], f"班级编号被当小问号：{cls}"
+    assert cls[0].get("lead") == "张老师是六（1）班、六（2）班的体育老师。", \
+        f"引导语被班级编号截断：{cls}"
 
-t("（1）（2）（3）小问切得出来也不误伤空位（含六个反例）",
+
+t("（1）（2）（3）小问切得出来也不误伤空位（含七个反例）",
   sub_questions_split_for_display_but_stay_one_question)
 
 
@@ -1014,6 +1293,161 @@ def span_locates_the_number_glued_stem_row():
         f"行首数字对不上也把区间往上抬了：{sp2[1]['y0']}"
 t("题号粘在题干行首时，区间起点要落在这一行（含反例）",
   span_locates_the_number_glued_stem_row)
+
+
+def span_locates_a_cross_page_merged_line():
+    """跨页合并行要落到下一页页首那一行（含反例）。
+
+    P2 Q4："4、估算"在页底、四个算式在下一页页顶，OCR 把两行并成
+    "估算 901×8= …"。整条既不是任何 ann 行，也不是任何行的前缀/题号，
+    locate 返回 -1 → 这道题没有区间，拿不到整题图；OCR 把 "÷" 读成 "+"
+    也没法靠原图纠正。判据：页首那行是合并行的后缀时认它。
+    """
+    from app.extractor.lines import spans_for_questions
+    ann = [
+        {"text": "4、估算", "x": 34.2, "y": 528.8, "w": 46.8, "h": 15.1,
+         "page": 3, "col": 0},
+        {"text": "901×8=       98÷5≈   50÷7≈       989+605",
+         "x": 25.9, "y": 8.3, "w": 260.3, "h": 13.7, "page": 4, "col": 0},
+        {"text": "五、列式计算(5 分)", "x": 30, "y": 84.2, "w": 200, "h": 14,
+         "page": 4, "col": 0},
+    ]
+    questions = [{"q_no": 4,
+                  "text": "估算 901×8=       98÷5≈   50÷7≈       989+605",
+                  "source_lines": ["估算 901×8=       98÷5≈   50÷7≈       989+605"]}]
+    pages = [{"page": 3, "width_pt": 374.4, "height_pt": 589.0,
+              "bands": [{"x0": 0.0, "x1": 374.4}]},
+             {"page": 4, "width_pt": 374.4, "height_pt": 589.0,
+              "bands": [{"x0": 0.0, "x1": 374.4}]}]
+    spans = spans_for_questions(ann, questions, pages=pages,
+                                sections=[{"name": "五、列式计算(5 分)"}])
+    assert len(spans) == 1, f"跨页合并行没有区间：{spans}"
+    sp = spans[0]
+    assert int(sp["page"]) == 4 and abs(float(sp["y0"]) - 8.3) < 1, \
+        f"区间没落在下一页页首：{sp}"
+    assert abs(float(sp["y1"]) - 84.2) < 1, f"区间下界没收到下一道题：{sp}"
+
+    # 反例：页首那行不是合并行的后缀（OCR 错得连内容都对不上）→ 不许硬认
+    ann2 = [dict(a) for a in ann]
+    ann2[1]["text"] = "801×8=       98÷5≈   50÷7≈       989+605"
+    spans2 = spans_for_questions(ann2, questions, pages=pages)
+    assert spans2 == [], f"对不上内容的后缀也被认成了区间：{spans2}"
+t("跨页合并的题干要落到下一页页首（含反例）",
+  span_locates_a_cross_page_merged_line)
+
+
+def section_wall_uses_ocr_name_after_mark_repair():
+    """大题标题补了标记后（打的→打▲的），硬墙锚点仍要落在原 OCR 行上。
+
+    P6：改名后如果还拿新名字去找 ann，找不到标题 → 上一题的区间会越过
+    页底漫进下一大题，整题截图把下一大题的题面也裁进来。
+    """
+    from app.extractor.lines import spans_for_questions
+    ann = [
+        {"text": "1. 285×9=", "x": 20, "y": 40, "w": 100, "h": 12, "page": 1, "col": 0},
+        {"text": "四、笔算（打的要验算）（24%）", "x": 20, "y": 300, "w": 180,
+         "h": 12, "page": 1, "col": 0},
+        {"text": "2. 23÷7=", "x": 20, "y": 330, "w": 100, "h": 12, "page": 1, "col": 0},
+    ]
+    questions = [{"q_no": 1, "text": "285×9=", "source_lines": ["285×9="]},
+                 {"q_no": 2, "text": "23÷7=", "source_lines": ["23÷7="]}]
+    pages = [{"page": 1, "width_pt": 400, "height_pt": 550,
+              "bands": [{"x0": 0, "x1": 400}]}]
+    secs = [{"name": "四、笔算（打▲的要验算）（24%）",
+             "ocr_name": "四、笔算（打的要验算）（24%）"}]
+    sp = spans_for_questions(ann, questions, pages=pages, sections=secs)
+    assert len(sp) == 2, f"区间数不对：{sp}"
+    assert sp[0]["y1"] <= 300, f"第 1 题的区间越过了补过标记的大题标题：{sp[0]}"
+    # 反例：没有 ocr_name（旧数据）时，新名字定位不到标题 → 上界会漫到下一题。
+    # 这条反例证明「ocr_name 是硬墙还立着的唯一依据」，不是摆设。
+    sp2 = spans_for_questions(ann, questions, pages=pages,
+                              sections=[{"name": "四、笔算（打▲的要验算）（24%）"}])
+    assert sp2[0]["y1"] > 300, f"没有 ocr_name 却仍找到了标题，反例失效：{sp2[0]}"
+t("补过标记的大题标题仍是裁图硬墙（ocr_name 锚点）",
+  section_wall_uses_ocr_name_after_mark_repair)
+
+
+def span_expands_across_columns_for_cross_column_items():
+    """一道题的 (2)(4) 印在右栏时，区间必须横跨两栏（含两个反例）。
+
+    P5 第 5 页 Q17/Q18 实测：左栏是 (1)(3)，右栏是 (2)(4)，题锚点在左栏。
+    旧区间只到栏界 135.3pt，整题截图把右栏两道小题切掉 —— 四道题只剩两道，
+    孩子做不了。只认本题 source_lines 原样出现的行，隔壁题不许被框进来。
+    """
+    from app.extractor.lines import spans_for_questions
+    ann = [
+        {"text": "三、计算题（共2道小题）", "x": 46.8, "y": 25.2, "w": 73.4,
+         "h": 8, "page": 5, "col": 0},
+        {"text": "18.计算下面各题。", "x": 46.6, "y": 93.8, "w": 43.0,
+         "h": 8, "page": 5, "col": 0},
+        {"text": "(1)   4x3184", "x": 49.0, "y": 106.3, "w": 37.7,
+         "h": 8, "page": 5, "col": 0},
+        {"text": "(2)   279314497", "x": 149.3, "y": 107.8, "w": 44.4,
+         "h": 8, "page": 5, "col": 1},
+        {"text": "(3)         3", "x": 50.2, "y": 192.2, "w": 22.8,
+         "h": 8, "page": 5, "col": 0},
+        {"text": "(4)     25352571.7  x65", "x": 150.2, "y": 190.3, "w": 55.0,
+         "h": 8, "page": 5, "col": 1},
+        {"text": "四、解方程（共2道小题）", "x": 47.3, "y": 268.3, "w": 73.9,
+         "h": 8, "page": 5, "col": 0},
+        {"text": "20.", "x": 147.4, "y": 286.3, "w": 9.1, "h": 8,
+         "page": 5, "col": 1},
+    ]
+    questions = [{"q_no": 18, "section": "三、计算题（共2道小题）",
+                  "text": "计算下面各题。 (1)… (2)… (3)… (4)…",
+                  "source_lines": ["计算下面各题。", "(1)   4x3184",
+                                   "(2)   279314497", "(3)         3",
+                                   "(4)     25352571.7  x65"]}]
+    pages = [{"page": 5, "width_pt": 285.6, "height_pt": 404.16,
+              "bands": [{"x0": 0.0, "x1": 135.31},
+                        {"x0": 135.31, "x1": 285.6}]}]
+    secs = [{"name": "三、计算题（共2道小题）"},
+            {"name": "四、解方程（共2道小题）"}]
+    sp = spans_for_questions(ann, questions, pages=pages, sections=secs)
+    assert len(sp) == 1, sp
+    assert float(sp[0]["x1"]) >= 195.0, \
+        f"右栏的 (2)(4) 没被框进来：x1={sp[0]['x1']}"
+    assert float(sp[0]["x0"]) <= 1.0, f"左栏起点被挪了：x0={sp[0]['x0']}"
+
+    # 反例一：source_lines 里没有右栏行 → 区间必须留在本栏
+    q1 = [dict(questions[0], source_lines=["计算下面各题。", "(1)   4x3184",
+                                           "(3)         3"])]
+    sp1 = spans_for_questions(ann, q1, pages=pages, sections=secs)
+    assert float(sp1[0]["x1"]) <= 135.4, \
+        f"没引用右栏也扩栏了：x1={sp1[0]['x1']}"
+
+    # 反例二：右栏同文但 y 在区间之外（页脚）→ 不许把整栏扯进来
+    ann2 = [dict(a) for a in ann]
+    ann2.append({"text": "计算下面各题。", "x": 150.0, "y": 375.1, "w": 64.6,
+                 "h": 8, "page": 5, "col": 1})
+    sp2 = spans_for_questions(ann2, questions, pages=pages, sections=secs)
+    assert float(sp2[0]["x1"]) <= 210.0, \
+        f"区间外的右栏行把框拉长了：x1={sp2[0]['x1']}"
+t("跨栏小题：区间要横跨两栏（含两个反例）",
+  span_expands_across_columns_for_cross_column_items)
+
+
+def glued_item_number_is_separated_from_decimal():
+    """小题号粘在小数前面要拆开（含三个反例）。
+
+    P3 第三大题第 1 小题：源卷是 "1. 14.06×3.5=  2. 4.25×6.8=  3. 12.5×2×0.8="，
+    OCR 读成 "1.14.06×3.5= …"，看起来像 1.14×06×3.5。判据只认一个数里
+    两个小数点且后面紧跟乘除；正常小数和日期不许动。
+    """
+    from app.extractor.rules import separate_glued_item_numbers
+    raw = "1.14.06×3.5=            2.4.25×6.8=            3.12.5×2×0.8="
+    got = separate_glued_item_numbers(raw)
+    assert got.startswith("1、14.06×3.5="), f"第 1 小题没拆开：{got}"
+    assert "2、4.25×6.8=" in got and "3、12.5×2×0.8=" in got, f"后两小题没拆开：{got}"
+
+    # 反例①：正常小数（只有一个点）不许动
+    assert separate_glued_item_numbers("3.5×2=7") == "3.5×2=7", "正常小数被改坏了"
+    # 反例②：两个点但后面不是乘除（日期/版本号）不许动
+    assert separate_glued_item_numbers("2024.10.01") == "2024.10.01", "日期被改坏了"
+    # 反例③：两个点且是加法（不是小题号场景）不许动
+    assert separate_glued_item_numbers("1.14.06+3.5") == "1.14.06+3.5", "加法式被误拆"
+t("小题号粘在小数前要拆开（含三个反例）",
+  glued_item_number_is_separated_from_decimal)
 
 
 def stage_banner_is_furniture_not_a_figure():
@@ -1262,6 +1696,489 @@ def page_header_ads_are_not_questions():
     assert not is_furniture_text("小明做口算题，实际用时比计划少了3分钟。"), \
         "正常题干被当页眉抹掉了"
 t("页眉扫码批改广告不是题目（含反例）", page_header_ads_are_not_questions)
+
+
+def _ann(text, page=1, x=20.0, y=0.0, h=18.0):
+    return {"text": text, "page": page, "x": x, "y": y, "w": 260.0, "h": h}
+
+
+def decimal_like_question_numbers():
+    """题号后紧跟数字（2.78÷3、4.3600000000=）是真题的题首，不是小数续行。
+
+    新下载的 P2/P4/P5 实测：旧版为防 "3.5 元" 把这类行一律当续行，
+    2/3/4/5/7 题整段并进上一题，用户看到的就是"题目不全"。
+    """
+    lines = ["一、填空",
+             "1.34×7这个算式可以读作（ ），也可以读作（  ）",
+             "2.78÷3这个算式可以读作（  ），也可以读作（  ）",
+             "3.2米=（  ）分米   70厘米=（  ）分米",
+             "4.6000米=（  ）千米  4000千克=（  ）吨",
+             "5.60分米=（  ）厘米  3吨=（  ）千克"]
+    ann = [_ann(t, y=20 + i * 30) for i, t in enumerate(lines)]
+    got = qs(extract(lines, ann=ann))
+    assert [q["q_no"] for q in got] == [1, 2, 3, 4, 5], \
+        f"题号没分开：{[(q['q_no'], q['text'][:12]) for q in got]}"
+    assert got[1]["text"].startswith("78÷3"), f"第2题题干丢了：{got[1]['text']}"
+    assert got[3]["text"].startswith("6000米"), f"第4题题干丢了：{got[3]['text']}"
+
+    # 反例①：缩进 40pt 的 "2.78÷3" 是续行（起笔没对齐），不许另起一题
+    lines2 = ["一、填空", "1.34×7这个算式可以读作（  ）", "   2.78÷3这个算式可以读作（  ）"]
+    ann2 = [_ann(lines2[0], y=20), _ann(lines2[1], y=50),
+            _ann(lines2[2], x=60.0, y=80)]
+    got2 = qs(extract(lines2, ann=ann2))
+    assert [q["q_no"] for q in got2] == [1], f"缩进续行被当成新题：{got2}"
+    # 反例②：和上一行同一 y（OCR 把一行切成两段）也不许另起一题
+    ann3 = [_ann(lines2[0], y=20), _ann(lines2[1], y=50),
+            _ann(lines2[2], y=50)]
+    got3 = qs(extract(lines2, ann=ann3))
+    assert [q["q_no"] for q in got3] == [1], f"同一行的碎片被当成新题：{got3}"
+    # 反例③：对齐、换行，但数字不接上一题（1 后面直接 3.5）——是真小数续行
+    lines4 = ["一、填空", "1.34×7的积是多少", "3.5 米比 4 米短多少"]
+    ann4 = [_ann(t, y=20 + i * 30) for i, t in enumerate(lines4)]
+    got4 = qs(extract(lines4, ann=ann4))
+    assert [q["q_no"] for q in got4] == [1], f"不接号的 3.5 被当成新题：{got4}"
+t("题号后紧跟数字要认成新题（含三个反例）", decimal_like_question_numbers)
+
+
+def instruction_lines_are_not_questions():
+    """卷首/密封框的考试说明不是题（新下载 P1/P5 实测：第一页凭空多 4 道题）。"""
+    lines = ["1.本练习卷共8页，共五道大题。作答时长90分钟。",
+             "2.在练习卷和答题纸上准确填写学校、班级和姓名。",
+             "3.请仔细读题，按题目要求在答题纸相应位置作答。注意书写清晰。",
+             "4.作答结来后按照学校具体要求完成收交。",
+             "一、选择题（共2题）",
+             "1.3+4=（  ）",
+             "2.5+6=（  ）"]
+    got = qs(extract(lines))
+    assert len(got) == 2, f"考试说明被当成题：{[(q['q_no'], q['text'][:16]) for q in got]}"
+    assert [q["q_no"] for q in got] == [1, 2]
+    # 反例：长题干里引用"请仔细读题…答题"不能整行丢掉（限长 90 字）
+    long_q = ("请仔细读题，把下面这段话中关于答题顺序的要求用横线画出来，再说说为什么先做容易的题"
+              "再做难的题，这样安排对考试有什么好处；如果你在考场上遇到一时想不起来的题目，"
+              "应该先跳过去做后面的题，还是停下来反复想，请把你的做法和理由写在本子上，"
+              "并在小组里说一说，看看谁的办法更合理。")
+    assert len("".join(long_q.split())) > 90, "反例本身不够长，测不到限长判据"
+    got2 = qs(extract([long_q]))
+    assert got2 and got2[0]["text"] == long_q, "长题干被考试说明判据吞掉了"
+t("考试说明不进题目（含长题干反例）", instruction_lines_are_not_questions)
+
+
+def subsection_heading_is_not_a_question():
+    """「4、估算」这种只有运算名的编号行是小节标题，不是第 4 题（新下载 P2 实测重号）。"""
+    lines = ["一、口算", "1. 25+17=", "2. 40-8=", "3. 6×7=", "4、估算", "5. 39×21≈"]
+    r = extract(lines)
+    got = qs(r)
+    assert [q["q_no"] for q in got] == [1, 2, 3, 5], \
+        f"小节标题被当成题：{[(q['q_no'], q['text']) for q in got]}"
+    assert len(r["stage_markers"]) == 1, f"小节标题没进 stage_markers：{r['stage_markers']}"
+t("只有运算名的编号行是小节标题（含反例）", subsection_heading_is_not_a_question)
+
+
+def calc_section_circled_items_are_subitems():
+    """计算大题的 ①②③④ 是并排小题，不是 A/B/C/D 选项。
+
+    新下载 P2 第 3 页、P3 第 2 页实测：递等式/解方程的 4 个算式被拆成选项，
+    题目变成"选一个算式"，做题页只给单选框，孩子没有列竖式/写步骤的地方。
+    """
+    lines = ["三、计算（30分）",
+             "2.递等式计算（12分）",
+             "①0.125×9×8×0.3            ②4.62÷5÷0.66",
+             "③5.78×2.3+5.78+5.78×6.7    ④7.75×[20÷（3.24-3.04）]",
+             "3.解方程（12分）",
+             "①6X+15+7=141            ②15X+6X=168"]
+    r = extract(lines)
+    got = qs(r)
+    q2 = [q for q in got if "递等式" in q["text"]][0]
+    assert not q2["options"], f"计算小题被拆成选项：{q2['options']}"
+    assert q2["qtype"] != "choice", f"计算题被当成选择题：{q2['qtype']}"
+    for expr in ("0.125×9×8×0.3", "4.62÷5÷0.66", "7.75×[20÷"):
+        assert expr in q2["text"], f"小题丢了：{expr} / {q2['text']}"
+    q3 = [q for q in got if "解方程" in q["text"]][0]
+    assert not q3["options"] and "15X+6X=168" in q3["text"], q3
+
+    # 反例：真正的选择题里圆圈数字仍是选项
+    lines2 = ["三、选择题", "1.下面哪个方向是东？（  ）",
+              "①东 ②南 ③西 ④北"]
+    q = qs(extract(lines2))[0]
+    assert q["qtype"] == "choice" and len(q["options"]) == 4, q
+
+    # OCR 把小标题和第一行算式并成一行：也不许拆成选项
+    lines3 = ["三、计算（30分）",
+              "2.递等式计算：①0.125×9×8×0.3  ②4.62÷5÷0.66"]
+    q3 = qs(extract(lines3))[0]
+    assert not q3["options"] and "0.125" in q3["text"], q3
+
+    # 题干里带"选择"字样（"选择合适的方法"）也不许把计算小题拆成选项
+    lines4 = ["三、计算（30分）",
+              "2.用简便方法计算，选择最合适的一种：①0.125×9×8×0.3  ②4.62÷5÷0.66"]
+    q4 = qs(extract(lines4))[0]
+    assert not q4["options"] and "0.125" in q4["text"], q4
+t("计算大题的圆圈小题不拆成选项（含选择题反例）", calc_section_circled_items_are_subitems)
+
+
+def fill_section_circled_items_are_subitems():
+    """填空题里的 ①②③ 是并列小问，不是四选一（P2 Q8 独立复测）。
+
+    原卷："在□里填上>、<或=" 下面六行比较项（⑤⑥ 是图）。旧版把 ①–④ 拆成
+    四个选项，整题变成单选，六个空只能选一个，⑤⑥ 连控件都没有。
+    """
+    lines = ["一、填空（20分，每空1分）",
+             "8. 在□里填上“>”、“<”或“=”。",
+             "①23×0□23+0            ②32×2□76",
+             "③67厘米□7分米            ④989克□1千克"]
+    q = qs(extract(lines))[0]
+    assert not q["options"], f"比较项被拆成选项：{q['options']}"
+    assert q["qtype"] != "choice", f"填空题被当成选择题：{q['qtype']}"
+    for item in ("①23×0", "②32×2", "③67厘米", "④989克"):
+        assert item in q["text"], f"比较项丢了：{item} / {q['text']}"
+    # 六个空都得有地方写：退成问答（textarea）而不是单选
+    assert q["qtype"] in ("fill", "essay"), q["qtype"]
+
+    # 反例①：真正的大题「选择」里圆圈仍是选项
+    lines2 = ["三、选择题", "1.下面哪个方向是东？（  ）",
+              "①东 ②南 ③西 ④北"]
+    q2 = qs(extract(lines2))[0]
+    assert q2["qtype"] == "choice" and len(q2["options"]) == 4, q2
+
+    # 反例②：填空大题里题干要求"选出"时，圆圈仍是选项（按题干判，不按大题名一刀切）
+    lines3 = ["一、填空（20分）",
+              "3. 选出与其它三个不同类的图形（  ）",
+              "①三角形 ②正方形 ③圆形 ④长方形"]
+    q3 = qs(extract(lines3))[0]
+    assert q3["qtype"] == "choice" and len(q3["options"]) == 4, q3
+t("填空题的圆圈比较项不拆成四选一（含反例）", fill_section_circled_items_are_subitems)
+
+
+def bare_section_heading_without_numeral():
+    """OCR 把「一、」整段读丢时，标题仍是标题，计分表头也不能变成题。
+
+    新下载 P3 第 1 页实测：「一、填空（20分）」只剩「填空（20分）」，
+    产品把它当成一道 1 分的题，后面 13 道填空全部挂在空 section 下；
+    P6 第 1 页更只剩「、直接写出得数。（12%）」。
+    """
+    lines = ["人教版小学五年级数学期末考试卷",
+             "填空（20分）",
+             "二            三            四            五            总分",
+             "1. 2.15小时=（            ）分",
+             "2. 3.6吨=（            ）千克",
+             "二、判断（10分）",
+             "1. 两个面积相等的三角形一定可以拼成一个平行四边形。"]
+    r = extract(lines)
+    assert r["sections"][0]["name"] == "一、填空（20分）", \
+        f"丢号标题没认成大题：{r['sections'][0]['name']!r}"
+    assert [q["q_no"] for q in r["sections"][0]["questions"]] == [1, 2], \
+        f"题目挂错了段：{[(q['q_no'], q['text']) for q in r['sections'][0]['questions']]}"
+    assert r["sections"][1]["name"].startswith("二、"), r["sections"][1]["name"]
+    assert all("总分" not in (q.get("text") or "") for q in qs(r)), \
+        f"计分表头被当成题：{[q['text'] for q in qs(r)]}"
+
+    # 只剩一个顿号：「、直接写出得数。（12%）」也要认成标题，不是无号题
+    r2 = extract(["、直接写出得数。（12%）",
+                  "27+9=        20+35=        60×7=        450-20=        76-40=",
+                  "二、填空（10分）",
+                  "1. 一年有（  ）个月。"])
+    assert r2["sections"][0]["name"] == "一、直接写出得数。（12%）", \
+        f"顿号开头的标题没认出来：{r2['sections'][0]['name']!r}"
+    assert r2["sections"][0]["questions"][0]["text"].startswith("27+9="), \
+        f"口算行挂错段：{[q['text'] for q in qs(r2)]}"
+    assert r2["sections"][1]["questions"][0]["q_no"] == 1, r2["sections"][1]
+
+    # 反例：正文里的普通「计算下面各题」没有分值括号，不许当大题
+    r3 = extract(["一、计算", "1. 计算下面各题。", "25+17=        40-8="])
+    assert len(r3["sections"]) == 1 and r3["sections"][0]["questions"], r3["sections"]
+t("丢号的「填空（20分）」仍是大题（计分表头不当题）", bare_section_heading_without_numeral)
+
+
+def numbered_stage_with_content_becomes_a_question():
+    """「4、估算」后面跟着没编号的算式 → 它是一道题，内容不许并进上一题。
+
+    新下载 P2 第 3 页实测：估算的 4 个算式被并进第 3 题"用递等式计算"，
+    第 4 题凭空消失；若紧跟着第 5 题，则它只是小节标题（见上一条）。
+    """
+    lines = ["四、计算(30分)",
+             "3．用递等式计算(12分)",
+             "①34÷6            ②659×8",
+             "4、估算",
+             "901×8≈        98÷5≈        989+605≈"]
+    ann = [_ann(t, y=30 + i * 30) for i, t in enumerate(lines)]
+    got = qs(extract(lines, ann=ann))
+    assert [q["q_no"] for q in got] == [3, 4], \
+        f"估算题号丢了/并进上一题：{[(q['q_no'], q['text']) for q in got]}"
+    assert "901×8" in got[1]["text"] and "估算" in got[1]["text"], got[1]
+    assert "901×8" not in got[0]["text"], f"估算算式仍并在上题：{got[0]['text']}"
+t("带内容的编号小节标题是一道题（估算题不许丢）", numbered_stage_with_content_becomes_a_question)
+
+
+def same_page_wrong_number_is_repaired():
+    """同一页题号倒退/跳号多半是 OCR 读错数字，不是新的编号序列。"""
+    # 第 8 题被读成 5.（P4 实测）：同页倒退 → 接上一题改号，且不开"·续"
+    lines = ["一、填空"] + [f"{i}.第{i}题" for i in range(1, 8)] + ["5.第八题", "9.第九题"]
+    ann = [_ann(t, y=20 + i * 30) for i, t in enumerate(lines)]
+    r = extract(lines, ann=ann)
+    got = qs(r)
+    assert [q["q_no"] for q in got] == list(range(1, 10)), \
+        f"同页错号没修：{[q['q_no'] for q in got]}"
+    assert len(r["sections"]) == 1, f"同页错号多开了小节：{[s['name'] for s in r['sections']]}"
+
+    # 第 3 题被读成 9.（P4 实测）：后一题又回到 4 → 说明 9 是读错，不是重编号
+    lines2 = ["一、填空", "1.第一题", "2.第二题", "9.第三题", "4.第四题"]
+    ann2 = [_ann(t, y=20 + i * 30) for i, t in enumerate(lines2)]
+    got2 = qs(extract(lines2, ann=ann2))
+    assert [q["q_no"] for q in got2] == [1, 2, 3, 4], \
+        f"读大的题号没修：{[q['q_no'] for q in got2]}"
+
+    # 反例：跨页倒退是教辅"第N天"的新编号序列，仍要开"·续"
+    lines3 = ["一、填空", "1.第一题", "2.第二题", "1.新一天第一题"]
+    ann3 = [_ann(lines3[0], page=1, y=20), _ann(lines3[1], page=1, y=50),
+            _ann(lines3[2], page=1, y=80), _ann(lines3[3], page=2, y=20)]
+    r3 = extract(lines3, ann=ann3)
+    assert len(r3["sections"]) == 2, f"跨页倒退没分段：{r3['sections']}"
+    assert r3["sections"][1]["name"].endswith("·续"), r3["sections"][1]["name"]
+t("同页 OCR 错号要修、跨页倒退才分段（含反例）", same_page_wrong_number_is_repaired)
+
+
+def inline_merged_column_questions_split():
+    """两栏并排被 OCR 拼成一行："3. 3.6吨…  4.0.8公顷…" 要拆成两道题。"""
+    lines = ["一、填空",
+             "1. 2.15小时=（  ）分",
+             "2.（  ）米=18厘米",
+             "3. 3.6吨=（  ）千克    4.0.8公顷=（  ）平方米",
+             "5.4.15×0.53的积有（  ）位小数"]
+    ann = [_ann(t, y=20 + i * 30) for i, t in enumerate(lines)]
+    got = qs(extract(lines, ann=ann))
+    assert [q["q_no"] for q in got] == [1, 2, 3, 4, 5], \
+        f"并排题没拆开：{[(q['q_no'], q['text'][:18]) for q in got]}"
+    assert "0.8公顷" in got[3]["text"], f"第4题正文不对：{got[3]['text']}"
+    assert "0.8公顷" not in got[2]["text"], f"第4题还并第3题里：{got[2]['text']}"
+
+    # 反例：正文里只隔一个空格的 "4.5 与…" 是小数，不是题号 4
+    lines2 = ["一、填空", "1.第一题", "2.第二题", "3. 3.6吨=（  ）千克 4.5 与 8.1 比较"]
+    ann2 = [_ann(t, y=20 + i * 30) for i, t in enumerate(lines2)]
+    got2 = qs(extract(lines2, ann=ann2))
+    assert [q["q_no"] for q in got2] == [1, 2, 3], f"小数被拆成新题：{got2}"
+    assert "4.5" in got2[2]["text"], f"题干里的小数丢了：{got2[2]['text']}"
+t("OCR 并排题按下一题号拆开（含小数反例）", inline_merged_column_questions_split)
+
+
+def ann_split_for_side_by_side_questions():
+    """一行两题被 OCR 读成一个框：ann 要按文字比例拆成两条、x 分开。
+
+    真实卷 P1 第 17/18 题：文本层早已切成两题，ann 仍是一条整行框 ——
+    两题共用同一个 y 锚点，裁图时前者的区间被后者截断，两幅柱状图全丢。
+    """
+    ann = [{"text": "17. 松树种了多少棵？          18. 科技书有多少本？",
+            "page": 1, "col": 0, "x": 20.0, "y": 40.0, "w": 520.0, "h": 12.0}]
+    out = split_question_ann(ann)
+    assert len(out) == 2, f"应拆成两条：{[a['text'] for a in out]}"
+    assert out[0]["text"].startswith("17.") and out[1]["text"].startswith("18."), \
+        f"顺序/内容错：{[a['text'] for a in out]}"
+    assert out[0]["x"] < out[1]["x"], f"起点没分开：{[a['x'] for a in out]}"
+    assert out[0]["w"] > 40 and out[1]["w"] > 40, f"宽度不合理：{[a['w'] for a in out]}"
+    assert out[0]["x"] + out[0]["w"] <= 20.0 + 520.0 + 0.1
+    assert out[0]["y"] == out[1]["y"] == 40.0 and out[0]["page"] == out[1]["page"]
+
+    # 光杆题号（P3 第 1/2 小题一行："1.        2、"）：序号连续也要拆
+    bare = [{"text": "1.                2、", "page": 2, "col": 0,
+             "x": 20.0, "y": 437.0, "w": 360.0, "h": 12.0}]
+    ob = split_question_ann(bare)
+    assert len(ob) == 2 and ob[0]["x"] < ob[1]["x"], f"光杆题号没拆：{ob}"
+t("并排两题的 ann 整行框按比例拆开（P1/P3 正例）", ann_split_for_side_by_side_questions)
+
+
+def ann_split_rejects_non_questions():
+    """反例：小数、单个题号、不连续的光杆数字、行首有正文 —— 一律不切。"""
+    def one(text):
+        return len(split_question_ann([{"text": text, "page": 1, "col": 0,
+                                        "x": 20.0, "y": 20.0, "w": 300.0, "h": 12.0}]))
+    assert one("3.5 与 4.2 哪个大？") == 1, "小数被当两个题号"
+    assert one("17. 松树种了多少棵？") == 1, "单题被拆"
+    assert one("1.          3、") == 1, "不连续的光杆数字被拆"
+    assert one("答：17. 第一问          18. 第二问") == 1, "行首有正文也拆"
+    assert one("1.      2. 有正文") == 1, "一光杆一有正文被拆"
+t("ann 拆行不误伤小数/单题/不连续编号（反例）", ann_split_rejects_non_questions)
+
+
+def side_by_side_spans_are_not_cut_by_each_other():
+    """并排两题的区间下界要拿【本题自己的起点行】比，不能拿向上扩过的 y0。
+
+    旧判据 `o.y > y0 + 1` 在 y0 被抬到大题题头后，把同一行的另一道题也当成了
+    "下面的锚点"，两题区间都只剩题头+题干 —— P1 第 17/18 题各丢一张图。
+    """
+    lines = ["四、看图列式计算（共2道小题）",
+             "17. 松树种了多少棵？          18. 科技书有多少本？",
+             "五、解决问题（20分）"]
+    r = extract(lines, "并排题")
+    q = qs(r)
+    assert [x["q_no"] for x in q] == [17, 18], \
+        f"文本层没切成两题：{[(x['q_no'], x['text']) for x in q]}"
+    ann = split_question_ann([
+        {"text": lines[0], "page": 1, "col": 0, "x": 20.0, "y": 10.0,
+         "w": 300.0, "h": 12.0},
+        {"text": lines[1], "page": 1, "col": 0, "x": 20.0, "y": 40.0,
+         "w": 520.0, "h": 12.0},
+        {"text": lines[2], "page": 1, "col": 0, "x": 20.0, "y": 200.0,
+         "w": 300.0, "h": 12.0},
+    ])
+    assert len(ann) == 4, f"ann 没拆：{[a['text'] for a in ann]}"
+    spans = spans_for_questions(
+        ann, q, pages=[{"page": 1, "width_pt": 600.0, "height_pt": 800.0, "bands": []}],
+        sections=r["sections"])
+    by = {int(s["q_index"]): s for s in spans}
+    assert set(by) == {0, 1}, f"两题都要有区间：{sorted(by)}"
+    assert by[0]["y1"] >= 190 and by[1]["y1"] >= 190, \
+        f"区间被并排的另一题截断：{[(k, v['y0'], v['y1']) for k, v in by.items()]}"
+    assert by[0]["y0"] <= 10.5 and by[1]["y0"] <= 10.5, \
+        f"区间没向上够到大题题头：{[(k, v['y0']) for k, v in by.items()]}"
+t("并排两题的区间互不截断、都够到大题题头", side_by_side_spans_are_not_cut_by_each_other)
+
+
+def docx_scanned_pages_become_scan_pages():
+    """扫描页贴进 Word：每张整页图要当扫描页，不许只当 page_count=1 的配图。
+
+    新下载 P1/P2/P3 全是这种 DOCX：旧版识别 0 行 0 题，预览却能出 4–6 页。
+    """
+    import tempfile
+    from docx import Document
+    from docx.shared import Inches
+    from PIL import Image
+    from app.parsers.docx import parse_docx
+    from app.extractor.lines import _from_parsed_docx
+
+    with tempfile.TemporaryDirectory() as td:
+        img1 = os.path.join(td, "p1.png")
+        img2 = os.path.join(td, "p2.png")
+        Image.new("RGB", (600, 800), "white").save(img1)
+        Image.new("RGB", (580, 780), "white").save(img2)
+        doc = Document()
+        doc.add_picture(img1, width=Inches(4))
+        doc.add_picture(img2, width=Inches(4))
+        path = os.path.join(td, "scan.docx")
+        doc.save(path)
+        r = parse_docx(path, media_dir=os.path.join(td, "media"))
+        assert r["page_count"] == 2, f"页数不对：{r['page_count']}"
+        assert r["scan_pages"] == 2, f"扫描页数不对：{r['scan_pages']}"
+        assert [p["is_scan"] for p in r["pages"]] == [True, True]
+        assert all(os.path.isfile(p["rendered_image"]) for p in r["pages"]), \
+            "扫描页没有落出整页图"
+        # 文档流顺序：第一页应是 img1（旧版按包内顺序会颠倒/错页）
+        with Image.open(r["pages"][0]["rendered_image"]) as im0:
+            assert im0.size == (600, 800), f"页序错了：{im0.size}"
+
+        # 文字 DOCX 也必须返回 ann；旧版只给 lines，任务链路取 ann 时整份文字蒸发
+        text_parsed = {"pages": [{"page_no": 1, "is_scan": False,
+                                  "blocks": [{"kind": "text", "text": "1.第一题\n2.第二题"}]}]}
+        t2 = _from_parsed_docx({"parsed": text_parsed})
+        assert t2["lines"] == ["1.第一题", "2.第二题"], t2["lines"]
+        assert len(t2["ann"]) == 2 and t2["ann"][1]["y"] > t2["ann"][0]["y"], t2["ann"]
+t("Word 里的扫描页按页 OCR、文字页带坐标（含页序）", docx_scanned_pages_become_scan_pages)
+
+
+def wrapped_circled_option_keeps_its_tail():
+    """圆圈说法折行要接回说法，不能并进题干或被切断。
+
+    新下载 P5 Q7 实测：③ 被 OCR 拦腰断成两行，第二行 "命中率一定也是40%"
+    没有编号，旧版并回题干 → ③ 只剩半句（P1 级）。现在 ①②③ 本身是
+    "说法"，正确落点是题干（A-D 才是可勾选项），折行必须一起带过去。
+    """
+    lines = [
+        "一、选择题（每小题只有1个正确选项）",
+        "7. 淘气正在参加学校组织的一场套圈游戏，目前他已经套圈20次，这20次他的套圈",
+        "命中率为40%。以下三种说法中，正确的（）。",
+        "①在目前这20次套圈中，淘气套中了8次：",
+        "②在目前这20次套圈中，淘气没套中的次数占60%：",
+        "③在这场游戏中，如果淘气再接着套圈20次，那么接下来这20次他的套圈",
+        "命中率一定也是40%",
+        "A.只有②         B.只有①②         C.只有①③         D.只有②③",
+    ]
+    q = qs(extract(lines, "测试卷"))
+    assert len(q) == 1, f"应只有 1 题，实际 {len(q)}"
+    assert "命中率一定也是40%" in q[0]["text"], f"③ 的折行丢了：{q[0]['text']}"
+    assert "①在目前这20次套圈中，淘气套中了8次" in q[0]["text"], q[0]["text"]
+    assert [o[0] for o in q[0]["options"]] == ["A", "B", "C", "D"], \
+        f"说法被印成可勾选项：{q[0]['options']}"
+
+    # 反例一：上一句已经有句末标点 → 下一行不能塞进选项
+    lines2 = [
+        "一、选择题",
+        "1. 下面说法正确的是（）。",
+        "①圆的直径是半径的2倍。",
+        "请选择正确的选项。",
+        "A.①         B.①②",
+    ]
+    q2 = qs(extract(lines2, "测试卷"))
+    assert "请选择正确的选项" in q2[0]["text"], f"折行判断误伤题干：{q2[0]['text']}"
+    assert all("请选择" not in o for o in q2[0]["options"]), q2[0]["options"]
+
+    # 反例二：计算大题的圆圈小题，后面的算式行不许被吞进上一条
+    lines3 = [
+        "三、计算题",
+        "1. 直接写出得数。",
+        "①2.8:0.7              ②3.54:12",
+        "2. 脱式计算",
+        "①1.25×8                ②4.8÷0.6",
+    ]
+    q3 = qs(extract(lines3, "测试卷"))
+    assert all(not x["options"] for x in q3), \
+        f"计算小题被当成圆圈选项：{[(x['text'], x['options']) for x in q3]}"
+    all_text = " ".join(x["text"] or "" for x in q3)
+    assert "①2.8:0.7" in all_text and "①1.25×8" in all_text, \
+        f"算式被吞掉：{all_text}"
+t("圆圈选项折行接回选项（含两个反例）", wrapped_circled_option_keeps_its_tail)
+
+
+def bare_circled_marker_is_not_an_option():
+    """A-D 选项旁孤零零的圆圈序号是图注残渣，不是选项。
+
+    新下载 P5 Q3 实测：影子图里单独一行的 "③" 被当成选项，卷面多出一个
+    "☐③"；P1 Q7 更是一口气多了 ②③④ 三个。真实选项是 A-D 时必须清掉。
+    """
+    lines = [
+        "一、选择题",
+        "1. 下面说法正确的是（  ）",
+        "③",
+        "A.只有①         B.只有②         C.只有③         D.只有④",
+    ]
+    q = qs(extract(lines, "测试卷"))
+    assert [o[0] for o in q[0]["options"]] == ["A", "B", "C", "D"], \
+        f"图注残渣混进选项：{q[0]['options']}"
+
+    # 反例：整题选项就是圆圈条目（没有 A-D）→ 一条都不许删
+    lines2 = [
+        "一、选择题",
+        "1. 下面说法正确的是（  ）",
+        "①圆的直径是半径的2倍",
+        "②半圆的周长是圆周长的一半",
+    ]
+    q2 = qs(extract(lines2, "测试卷"))
+    stripped = [o for o in q2[0]["options"] if o.strip() not in ("①", "②")]
+    assert len(stripped) >= 1, f"圆圈选项被误删：{q2[0]['options']}"
+
+    # 反例二：三条圆圈说法 + A-D 选答案（P5 Q7）→ 说法挪回题干，选项只留 A-D
+    lines3 = [
+        "一、选择题",
+        "1. 以下三种说法中，正确的（  ）",
+        "①说法一",
+        "②说法二",
+        "③说法三的结论",
+        "A.只有②         B.只有①②         C.只有①③         D.只有②③",
+    ]
+    q3 = qs(extract(lines3, "测试卷"))
+    assert [o[0] for o in q3[0]["options"]] == ["A", "B", "C", "D"], \
+        f"三条说法还当成选项（会被印成三个 ☐）：{q3[0]['options']}"
+    assert all(x in q3[0]["text"] for x in ("说法一", "说法二", "说法三的结论")), \
+        f"说法被删掉了：{q3[0]['text']!r}"
+
+    # 正例二：只有一条圆圈图注 + A-D（P5 Q10）→ 图注要清掉
+    lines4 = [
+        "一、选择题",
+        "1. 下面四个情境中，两个量之比可以用2：3表示的（  ）",
+        "②付款20元购买30米线绳",
+        "A.只有①④         B.只有②④         C.只有①②④         D.只有①②③",
+    ]
+    q4 = qs(extract(lines4, "测试卷"))
+    assert [o[0] for o in q4[0]["options"]] == ["A", "B", "C", "D"], \
+        f"单条圆圈图注混进选项：{q4[0]['options']}"
+t("A-D 旁单独的圆圈序号不是选项（含四个反例）", bare_circled_marker_is_not_an_option)
 
 
 print(f"\n{ok_n} passed, {bad_n} failed")

@@ -19,6 +19,7 @@ from mutate_gate import Mutation, run                    # noqa: E402
 RULES = os.path.join(ROOT, "app", "extractor", "rules.py")
 LINES = os.path.join(ROOT, "app", "extractor", "lines.py")
 BADGES = os.path.join(ROOT, "app", "extractor", "badges.py")
+DOCX = os.path.join(ROOT, "app", "parsers", "docx.py")
 TEST = os.path.join(ROOT, "tests", "test_extractor.py")
 
 M = [
@@ -31,8 +32,8 @@ M = [
              r'NOISE_PAGENO_RE = re.compile(r"^[·•.。]?\s*\d{1,3}\s*[·•.。]+$")',
              "裸题号"),
     Mutation("关·编号倒退分段", RULES,
-             "            if last_no is not None and no < last_no and numbered_in_sec >= 2:",
-             "            if False:",
+             "                elif not same_page and no < last_no:",
+             "                elif False:",
              "编号倒退自动分段"),
     Mutation("关·大题序号递增判据", RULES,
              "        ordinal = (n is not None and expect_no is not None and n >= expect_no",
@@ -115,6 +116,24 @@ M = [
              '            elif out and re.match(r"[\\u4e00-\\u9fff]", ("".join(out)).rstrip()[-1:] or " "):',
              "            elif out:",
              "补括号不许误伤序号/选项/已配对空位（反例）"),
+    Mutation("旧·句尾孤立的右括号不清理（Q12/Q16 印出「， ） ）」）", RULES,
+             '    text = strip_dangling_tail(q["text"])',
+             "    text = q[\"text\"]",
+             "句尾孤立的右括号/选项字母要清掉（含反例）"),
+    Mutation("旧·句尾选项字母不清理（B/D 粘在题干后）", RULES,
+             r'_TAIL_OPTION_LETTERS_RE = re.compile(r"(?<=[）)])\s+[A-H](?:\s{2,}[A-H])+\s*$")',
+             r'_TAIL_OPTION_LETTERS_RE = re.compile(r"(?<=[）)])\s+[A-H](?:\s{2,}[A-H]){2,}\s*$")',
+             "句尾孤立的右括号/选项字母要清掉（含反例）"),
+    Mutation("过·不看配对，句尾有右括号就删（正常空位被吃掉）", RULES,
+             '        if t.count("（") + t.count("(") >= t.count("）") + t.count(")"):\n'
+             '            break\n'
+             '        t = t[:-1].rstrip(" \\t，,、；;：:")',
+             '        t = t[:-1].rstrip(" \\t，,、；;：:")',
+             "句尾孤立的右括号/选项字母要清掉（含反例）"),
+    Mutation("关·空位清光后仍留 fill（做题页没有输入框）", RULES,
+             '        if BLANK_RE.search(str(q.get("text") or "")):\n            continue',
+             "        if True:\n            continue",
+             "空位清光后的 fill 退成 essay（含反例）"),
     Mutation("关·不配对标待校对", RULES,
              '    q["needs_review"] = q["confidence"] < 0.7 or bool(q.get("review_note"))',
              '    q["needs_review"] = q["confidence"] < 0.7',
@@ -141,7 +160,8 @@ M = [
              "    if False:\n        return False",
              "卷首信息行不许吃掉带题号的第一题"),
     Mutation("关·裸题号单独成行也开题（整道题凭空消失）", RULES,
-             "        bare = _bare_number_starts_question(line, last_no, cur_q, numbered_in_sec)",
+             "        bare = _bare_number_starts_question(line, last_no, cur_q, numbered_in_sec,\n"
+             "                                           a, sec_q_x)",
              "        bare = None",
              "题号单独成行也要开一道题"),
     Mutation("过·裸题号不要求正好接上一题（图里孤立数字乱开题）", RULES,
@@ -309,10 +329,11 @@ M = [
              "彩色题号徽标"),
     # ---- 第九轮（用户截图：乘法题被判成判断题；图片选项的选择题没有尺在量）----
     Mutation("旧·判断信号带光秃秃的 ×（所有乘法题被判判断题）", RULES,
-             'JUDGE_HINT = ("对的打", "正确的打", "错的打", "判断", "对的画", "正确的画",\n'
-             '              "打√", "打×", "画√", "画×")',
-             'JUDGE_HINT = ("对的打", "正确的打", "错的打", "判断", "对的画", "正确的画",\n'
-             '              "打√", "打×", "画√", "画×", "×", "√")',
+             '    _JUDGE_STRONG = ("判断对错", "判断正误", "对的打", "正确的打", "错的打",\n'
+             '                     "对的画", "正确的画", "打√", "打×", "画√", "画×")',
+             '    _JUDGE_STRONG = ("判断对错", "判断正误", "对的打", "正确的打", "错的打",\n'
+             '                     "对的画", "正确的画", "打√", "打×", "画√", "画×",\n'
+             '                     "×", "√")',
              "乘法题不许被判成判断题"),
     Mutation("关·选择题信号（题干要「填序号」也不提醒）", RULES,
              'CHOICE_CUE = re.compile(\n'
@@ -339,7 +360,192 @@ M = [
              '    r"^附加题\\s*[。.．]?\\s*(?:[（(]\\s*共\\s*\\d+\\s*分\\s*[）)])?\\s*$")',
              'SECTION_BONUS_RE = re.compile(r"附加题")',
              "题干里的附加题不误分段（反例）"),
+    # ---- 新下载卷（P1–P5）：题号后紧跟数字 / 考试说明 / 同页 OCR 错号 / 并排题 / Word 扫描页 ----
+    Mutation("关·题号后紧跟数字不接成题（2.78÷3 并进上一题）", RULES,
+             '            if dec_no is not None:\n                no, rest = dec_no, dec_rest',
+             '            if False:\n                no, rest = dec_no, dec_rest',
+             "题号后紧跟数字要认成新题（含三个反例）"),
+    Mutation("过·题号后紧跟数字不核对下一题号（3.5 米也开题）", RULES,
+             '    if expected is None or no != expected:\n        return None, s',
+             '    if False:\n        return None, s',
+             "题号后紧跟数字要认成新题（含三个反例）"),
+    Mutation("关·考试说明不过滤（第一页凭空多 4 道题）", RULES,
+             '    if len(compact) <= 90 and INSTRUCTION_RE.search(compact):\n        return True',
+             '    if False:\n        return True',
+             "考试说明不进题目（含长题干反例）"),
+    Mutation("过·考试说明不设长度闸门（引用套话的长题干被吞）", RULES,
+             '    if len(compact) <= 90 and INSTRUCTION_RE.search(compact):',
+             '    if INSTRUCTION_RE.search(compact):',
+             "考试说明不进题目（含长题干反例）"),
+    Mutation("关·同页 OCR 错号不修（第 8 题读成 5. 就重号）", RULES,
+             '                if same_page and no != last_no + 1:',
+             '                if False:',
+             "同页 OCR 错号要修、跨页倒退才分段（含反例）"),
+    Mutation("过·同页/跨页不分（跨页的新编号被改成上一题+1）", RULES,
+             '                if same_page and no != last_no + 1:',
+             '                if no != last_no + 1:',
+             "同页 OCR 错号要修、跨页倒退才分段（含反例）"),
+    Mutation("关·并排题不拆（两栏被 OCR 拼成一行）", RULES,
+             '            inline = _take_inline_question(rest, no + 1)\n'
+             '            if inline is not None:\n'
+             '                rest, follow_no, follow_rest = inline',
+             '            inline = None\n'
+             '            if inline is not None:\n'
+             '                rest, follow_no, follow_rest = inline',
+             "OCR 并排题按下一题号拆开（含小数反例）"),
+    Mutation("过·并排判据只认一个空格（4.5 也被拆成题）", RULES,
+             'INLINE_NEXT_Q_RE = re.compile(r"\\s{2,}(\\d{1,2})\\.(?=\\d)")',
+             'INLINE_NEXT_Q_RE = re.compile(r"\\s+(\\d{1,2})\\.(?=\\d)")',
+             "OCR 并排题按下一题号拆开（含小数反例）"),
+    Mutation("关·只有运算名的编号行当题（4、估算 与第 4 题重号）", RULES,
+             '    if SUBSECTION_ONLY_RE.match(s):\n        return True',
+             '    if False:\n        return True',
+             "只有运算名的编号行是小节标题（含反例）"),
+    Mutation("关·Word 扫描页当普通配图（整份 0 行 0 题）", DOCX,
+             '    scan_only = text_chars < 40 and bool(scan_imgs)',
+             '    scan_only = False',
+             "Word 里的扫描页按页 OCR、文字页带坐标（含页序）"),
+    Mutation("旧·DOCX 只返回 lines（文字与扫描行全蒸发）", LINES,
+             '        pages.append({"page": local_page, "route": "docx", "lines": len(lines) - n0})\n'
+             '    return {"lines": lines, "ann": ann, "pages": pages,',
+             '        pages.append({"page": local_page, "route": "docx", "lines": len(lines) - n0})\n'
+             '    return {"lines": lines, "ann": [], "pages": pages,',
+             "Word 里的扫描页按页 OCR、文字页带坐标（含页序）"),
+    Mutation("关·扫描图栏界不复核（单栏卷被切成 2–3 栏）", LINES,
+             "    if len(cand) > 1:\n"
+             "        cand = verify_bands_with_image(path, cand, w_pt)",
+             "    if len(cand) > 1:\n"
+             "        cand = cand",
+             "扫描页栏界用图片墨迹复核（含真两栏反例）"),
+    Mutation("关·栏缝不看宽度（字间空隙也当栏）", LINES,
+             "    min_w = max(3, int(W * 0.02))",
+             "    min_w = max(3, int(W * 0.012))",
+             "栏缝要够宽且没有文字行横穿（含页边/2-up/真两栏反例）"),
+    Mutation("关·栏缝允许文字行横穿（2-up 被按列重排）", LINES,
+             "    max_cross = max(2, int(text_rows * 0.05))",
+             "    max_cross = text_rows",
+             "栏缝要够宽且没有文字行横穿（含页边/2-up/真两栏反例）"),
+    Mutation("关·页边留白也当栏缝", LINES,
+             "    runs = [(a, b) for a, b in runs if a > 0 and b < W]",
+             "    runs = list(runs)",
+             "栏缝要够宽且没有文字行横穿（含页边/2-up/真两栏反例）"),
+    Mutation("关·计算大题的圆圈小题拆成选项", RULES,
+             "        if not toks and not _section_takes_calc_items(_sec_name(cur_sec)):",
+             "        if not toks:",
+             "计算大题的圆圈小题不拆成选项（含选择题反例）"),
+    Mutation("关·编号小节后的内容并进上一题（估算题消失）", RULES,
+             "            if pending_stage is not None:",
+             "            if False:",
+             "带内容的编号小节标题是一道题（估算题不许丢）"),
+    Mutation("关·OCR 读丢序号的大题标题", RULES,
+             "    m = BARE_SECTION_RE.match(s)",
+             "    m = None",
+             "丢号的「填空（20分）」仍是大题"),
+    Mutation("旧·计分表头按含空格长度当长题干", RULES,
+             '    if len(re.sub(r"\\s+", "", s)) > 40:',
+             "    if len(s) > 40:",
+             "丢号的「填空（20分）」仍是大题"),
+    # ── 第二十三轮：一行并排两小题（ann 拆分 + 区间下界）──
+    Mutation("关·一行两题的 ann 不拆（两题共用锚点）", LINES,
+             "        parts = _question_ann_parts(text)\n        if len(parts) < 2:",
+             "        parts = []\n        if len(parts) < 2:",
+             "并排两题的 ann 整行框按比例拆开（P1/P3 正例）"),
+    Mutation("旧·区间下界拿向上扩过的 y0 比（并排题互相截断）", LINES,
+             '            if o["y"] > rec["y"] + 1 and o["y"] < y1:',
+             '            if o["y"] > y0 + 1 and o["y"] < y1:',
+             "并排两题的区间互不截断、都够到大题题头"),
+    Mutation("松·光杆题号不要求连续也拆", LINES,
+             "    if all(bare) and nums[1] != nums[0] + 1:",
+             "    if False:",
+             "ann 拆行不误伤小数/单题/不连续编号（反例）"),
+    Mutation("松·一光杆一有正文也拆", LINES,
+             "    if not (all(bare) or not any(bare)):",
+             "    if False:",
+             "ann 拆行不误伤小数/单题/不连续编号（反例）"),
+    Mutation("松·行首有正文也拆", LINES,
+             "    if len(marks) != 2 or line[:marks[0].start()].strip():",
+             "    if len(marks) != 2:",
+             "ann 拆行不误伤小数/单题/不连续编号（反例）"),
+    # P5 Q7 实测：①②③ 是"说法"，被印成三个 ☐ 和 A-D 并排；孩子会把说法
+    # 当答案勾，且 A-D 与说法之间没有可勾选项。修法＝说法挪回题干。
+    Mutation("旧·A-D 旁的圆圈说法留在选项里（印成 ☐）", RULES,
+             "                if circled_left:",
+             "                if False:",
+             "圆圈选项折行接回选项（含两个反例）"),
+    # P5 Q24 实测：六（1）班、六（2）班的班级编号被当成小问号，题干被拆错位。
+    Mutation("旧·班级编号当小问号（六（1）班被切开）", RULES,
+             "    marks = [m for m in marks if _subq_mark_at_boundary(t, m.start())]",
+             "    marks = list(marks)",
+             "小问切得出来也不误伤空位"),
+    # P5 Q24/Q25 实测：正文里的「判断」把多问解答题判成判断题，卷面凭空
+    # 多出"判断：（ ）"。
+    Mutation("旧·正文含判断就判判断题（凭空多一道判断题）", RULES,
+             "                    or any(k in section_hint for k in JUDGE_HINT)",
+             "                    or any(k in (text + section_hint) for k in JUDGE_HINT)",
+             "正文含「判断」的解答题不许判成判断题"),
+    # 用户口径：复杂题判断不清题型时要有自由作答框兜底，不能硬塞成单选/
+    # 一个判断空；反过来正常题型也不许被误改。
+    Mutation("关·判不清题型不退问答（复杂题没有作答框）", RULES,
+             "        if not why:\n            continue",
+             "        if False:\n            continue",
+             "判不清题型退成问答框（含四个反例）"),
+    Mutation("松·选项不足两个也当选择题（学生看不到选项）", RULES,
+             '        elif t == "choice" and len(opts) < 2:',
+             '        elif t == "choice" and len(opts) < 0:',
+             "判不清题型退成问答框（含四个反例）"),
+    Mutation("关·多小问的选择/判断不兜底（一个框装不下）", RULES,
+             '        elif t in ("choice", "judge") and len(subs) >= 2:',
+             "        elif False:",
+             "判不清题型退成问答框（含四个反例）"),
+    Mutation("过·正常选择题也被改成问答（题型被推翻）", RULES,
+             "        if not why:\n            continue",
+             '        if not why and t != "choice":\n            continue',
+             "判不清题型退成问答框（含四个反例）"),
+    # ── 本轮（P4 一.1「）。」被读成「3.」、P4 三.2 圈号②被读成数字2）新增 ──
+    Mutation("关·句尾「）。」读成数字不再补空位（第二空消失）", RULES,
+             "    if m_tail and depth > 0:",
+             "    if False:",
+             "句尾「）。」被 OCR 读成数字要补回空位"),
+    Mutation("过·句尾数字修复不看空白（把小问编号「（3.」吞成空位）", RULES,
+             r'    m_tail = re.search(r"[（(][ \t\u3000]{2,}\d{1,2}([.．。])?\s*$", t2)',
+             r'    m_tail = re.search(r"[（(]\d{1,2}([.．。])?\s*$", t2)',
+             "句尾「）。」被 OCR 读成数字要补回空位"),
+    Mutation("关·圈号 OCR 修复不接（选项②变成数字2，只剩两条）", RULES,
+             "    s = _repair_circled_ocr((line or \"\").strip())",
+             "    s = (line or \"\").strip()",
+             "圈号被 OCR 读成数字要补回"),
+    Mutation("关·补过标记的大题标题不再当硬墙（span 越过页底漫进下一大题）", LINES,
+             '        n = locate_text(sec.get("ocr_name") or name)',
+             "        n = locate_text(name)",
+             "补过标记的大题标题仍是裁图硬墙"),
+]
+
+COLUMNS = os.path.join(ROOT, "app", "layout", "columns.py")
+LAYOUT_TEST = os.path.join(ROOT, "tests", "test_layout.py")
+LM = [
+    Mutation("关·2-up 逐行读（回到栏优先）", COLUMNS,
+             "    if _looks_two_up(col_lines, y_tol):",
+             "    if False:",
+             "2-up 练习页逐行读"),
+    Mutation("松·一对小题号就翻成逐行", COLUMNS,
+             "    return pairs >= 2",
+             "    return pairs >= 1",
+             "2-up 判据：两对才翻"),
+    Mutation("关·行内从左到右（右题跑到左题前）", COLUMNS,
+             '        out.extend(sorted(r["items"], key=lambda l: float(l["x"])))',
+             '        out.extend(r["items"])',
+             "2-up 练习页逐行读"),
+    Mutation("关·小题号必须相差 1", COLUMNS,
+             '            if _subitem_no(ri["text"]) != ln + 1:',
+             "            if False:",
+             "真两栏带小题号仍先读完左栏"),
+    Mutation("关·同高判据（远隔的行也算一对）", COLUMNS,
+             '            if abs(float(ri["y"]) - float(li["y"])) > span:',
+             "            if False:",
+             "真两栏带小题号仍先读完左栏"),
 ]
 
 if __name__ == "__main__":
-    sys.exit(run(M, TEST))
+    rc = run(M, TEST)
+    rc |= run(LM, LAYOUT_TEST)
+    sys.exit(rc)

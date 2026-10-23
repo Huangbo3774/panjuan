@@ -28,6 +28,11 @@ def _clean_scans(parsed: dict, work: str, ink_saver: bool = False) -> dict:
         p = pg.get("rendered_image")
         if not pg.get("is_scan"):
             continue
+        # PDF / DOCX 里的扫描页已经是成品页图，不是手机拍的照片。自动档会做
+        # 中值滤波 + CLAHE + 放大，实测把低清扫描的字糊掉（P2 60 行 → 27 行、
+        # 28 题 → 9 题）。默认原样进 OCR；只有用户明确开省墨模式时才做二值化。
+        if pg.get("no_clean") and not ink_saver:
+            continue
         if not p or not os.path.exists(p):
             cand = next((b.get("path") for b in pg.get("blocks", [])
                          if b.get("kind") == "image" and b.get("path")

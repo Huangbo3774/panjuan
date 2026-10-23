@@ -45,7 +45,11 @@ class Task:
             "progress": round(self.progress, 3), "error": self.error,
             "files": [{"name": f["name"], "ok": f["ok"], "error": f.get("error"),
                        "bytes": f.get("bytes")} for f in self.files],
-            "pages": len(self.parsed), "previews": self.previews,
+            # 页数是【解析出来的实际页数】，不是上传文件数：Word 里贴 6 张扫描页
+            # 曾被报成 pages:1（测试员据此判"预览 6 页与接口 1 页自相矛盾"）。
+            "pages": (sum(len(p.get("pages") or []) for p in self.parsed)
+                      if self.parsed else 0),
+            "previews": self.previews,
             "export_ready": bool(self.export_path and os.path.isfile(self.export_path or "")),
             "options": self.options, "logs": self.logs[-40:],
         }

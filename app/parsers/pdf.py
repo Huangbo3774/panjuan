@@ -84,6 +84,10 @@ def parse_pdf(path: str, render_dir: str | None = None, dpi: int = 300) -> dict[
             entry: dict[str, Any] = {
                 "page_no": i + 1,
                 "is_scan": is_scan,
+                # PDF 里的一页已经是扫描/排版后的成品，不是手机拍的照片。
+                # 再做去噪/CLAHE/放大只会把低清字糊掉（实测 P2 60 行 → 27 行），
+                # 所以默认跳过清洗；省墨模式仍会单独二值化（见 api/pipeline.py）。
+                "no_clean": True,
                 "w_pt": round(w_pt, 1),
                 "h_pt": round(h_pt, 1),
                 "landscape": w_pt > h_pt,

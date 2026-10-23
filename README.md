@@ -56,7 +56,7 @@ did not move" cannot come back through browser caching.
 
 ### Easiest: no-install build (no Python needed)
 
-Grab **`panjuan-v1.2.5-windows.zip`** from [Releases](../../releases) (the asset is
+Grab **`panjuan-v1.2.6-windows.zip`** from [Releases](../../releases) (the asset is
 labelled 磐卷 免安装版 — GitHub keeps only ASCII in download URLs), **extract it**
 (do not run from inside the zip), double-click `PaperForge.exe`. Your browser opens
 `http://127.0.0.1:8000/` and you can drop homework files in. Python and every dependency

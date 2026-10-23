@@ -18,7 +18,7 @@ param(
     [switch]$SkipVenv,
     [switch]$NoZip,
     [switch]$Clean,
-    [string]$Version = "1.2.5"
+    [string]$Version = "1.2.6"
 )
 
 $ErrorActionPreference = "Stop"

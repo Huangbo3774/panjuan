@@ -195,6 +195,25 @@ def essay_never_auto_scored():
 t("问答题不计分，只给命中提示", essay_never_auto_scored)
 
 
+def essay_exact_match_is_correct():
+    """兜底成问答的题：作答与标准答案完全一致时必须判对。
+
+    独立复测 report_A P1-03：15 道题因选项是图片退成问答，标准答案 "A"、
+    作答也是 "A"，旧口径整卷只自动判 5 题。完全一致没有歧义，不该挂待确认。
+    """
+    qs = paper(("一、选择", 1, "essay", "她看到的情景是图（ ）", [], 0),
+               ("四、解答", 2, "essay", "还剩多少米？", [], 0))
+    k = {make_uid(qs[0], 0): "A", make_uid(qs[1], 1): "7/10"}
+    a = {make_uid(qs[0], 0): "A", make_uid(qs[1], 1): "0.7"}
+    r = grade(qs, k, a)
+    assert [x["verdict"] for x in r["results"]] == ["correct", "correct"], r["results"]
+    assert r["score"] == 2.0 and r["pending"] == 0, r
+    # 反例：措辞不同（不是完全一致）仍是待确认，不许拿关键词硬判
+    r2 = grade(qs, k, {make_uid(qs[0], 0): "图A"})
+    assert r2["results"][0]["verdict"] == "pending", r2["results"][0]
+t("兜底问答题：答案完全一致判对，措辞不同仍待确认（含反例）", essay_exact_match_is_correct)
+
+
 def manual_override_wins():
     qs = paper(("三、判断", 1, "judge", "6×3", [], 0),
                ("四、解答", 1, "essay", "写一写", [], 0))

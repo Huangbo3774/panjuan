@@ -11,10 +11,15 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 变异期间源码是"坏的"。进程被强杀/死机时 finally 不会执行，源码会停在坏态。
+# 所以开跑前把四个文件的原字节落盘；正常结束删掉；异常退出后由
+# tests/recover_mutations.py 还原（本文件检测到备份还在会拒绝再跑，防止叠加）。
+BACKUP = os.path.join(ROOT, "var", "_mut_backup")
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
@@ -23,6 +28,7 @@ except Exception:
 PY = sys.executable
 FIG = os.path.join(ROOT, "app", "extractor", "figures.py")
 LNS = os.path.join(ROOT, "app", "extractor", "lines.py")
+RUL = os.path.join(ROOT, "app", "extractor", "rules.py")
 AWR = os.path.join(ROOT, "app", "papers", "answer_writer.py")
 
 # (说明, 文件, 旧串, 新串, 期望哪条测试变红)
@@ -389,6 +395,36 @@ CASES = [
      '    by_q = {int(s.get("q_index", -1)): s for s in spans}',
      "    return 0\n" + '    by_q = {int(s.get("q_index", -1)): s for s in spans}',
      "图内重复文字要从题干里删掉（含反例）"),
+    # ── 题干第一行被截在图外 → 接进整题原图 ──
+    ("关·题干第一行不接进图框（成品停在半句）", FIG,
+     '        if sources is not None and len(imgs) == 1 and imgs[0].get("rect"):',
+     "        if False:",
+     "题干第一行接进整题原图（含三个反例）"),
+    ("关·整题都在图里也不清题干（同一句印两遍）", FIG,
+     "        if first_covered and not outside and len(imgs) == 1 \\\n"
+     '                and not q.get("options") and not q.get("subqs"):',
+     "        if False:",
+     "题干第一行接进整题原图（含三个反例）"),
+    ("过·完整句也收成整题图（完整题干被清空）", FIG,
+     "                    and not _stem_looks_complete(flat)",
+     "                    and True",
+     "图内重复文字要从题干里删掉（含反例）"),
+    ("过·单个图注也当整题截图（题干只剩小图）", FIG,
+     '                    and (imgs[0].get("stem_extended") or n_inside >= 2)):',
+     "                    and True):",
+     "图里只剩尺寸标注：题干可清空（含三个反例）"),
+    ("过·有选项也接成整题图（选项被导出吞掉）", FIG,
+     '    if q.get("options") or q.get("subqs"):\n        return False',
+     "    if False:\n        return False",
+     "题干第一行接进整题原图（含三个反例）"),
+    ("过·图里只有尺寸标注也接（普通配图吞掉题干行）", FIG,
+     "    if not inside_sentence:\n        return False",
+     "    if False:\n        return False",
+     "题干第一行接进整题原图（含三个反例）"),
+    ("过·图框上方那行不核对是不是本题题干（上一题被吞）", FIG,
+     "        if not body or not qflat.startswith(body):\n            continue",
+     "        if not body:\n            continue",
+     "题干第一行接进整题原图（含三个反例）"),
     ("过·压住一半也算图内文字（题干被削掉半句）", FIG,
      "RESIDUE_COVER_MIN = 0.90", "RESIDUE_COVER_MIN = 0.0",
      "图内重复文字要从题干里删掉（含反例）"),
@@ -517,14 +553,33 @@ CASES = [
      "裁框下沿不许吞掉本题末行题干（含九个反例）"),
     ("过·所有行都当标签行（q30/q23 的题干全裁不动）", FIG,
      '    parts = [p for p in re.split(r"\\s{2,}", (text or "").strip()) if p.strip()]\n'
-     '    if len(parts) < 3:\n'
+     '    if len(parts) < 2:\n'
      '        return False\n'
+     '    if len(parts) == 2:\n'
+     '        # 两段的行只认「纯序号标签」：③ ④ 被 OCR 读成 "3    4"，\n'
+     '        # 单段全是括号/运算符的题干行（q30 算式空行）不能算。\n'
+     '        toks = [re.sub(r"\\s+", "", p) for p in parts]\n'
+     '        return all(re.fullmatch(r"[①-⑳A-Ha-h1-9]", t) for t in toks)\n'
      '    short = [p for p in parts\n'
      '             if len(re.sub(r"\\s+", "", p)) <= 3\n'
      '             and not re.search(r"[（(）)□×＋+－=＝]", p)]\n'
      '    return len(short) >= 2',
      "    return True",
      "裁框下沿不许吞掉本题末行题干（含九个反例）"),
+    ("关·两段序号标签行退回「≥3 段」（③④ 只剩上半截）", FIG,
+     "    if len(parts) == 2:\n"
+     "        # 两段的行只认「纯序号标签」：③ ④ 被 OCR 读成 \"3    4\"，\n"
+     "        # 单段全是括号/运算符的题干行（q30 算式空行）不能算。\n"
+     "        toks = [re.sub(r\"\\s+\", \"\", p) for p in parts]\n"
+     "        return all(re.fullmatch(r\"[①-⑳A-Ha-h1-9]\", t) for t in toks)",
+     "    if len(parts) == 2:\n        return False",
+     "两段序号标签行也要把下沿放下去（含题干反例）"),
+    ("关·图下的选项行又被当图注裁进图里（P1 Q7 重复选项）", FIG,
+     "        if _looks_like_options_row(t):\n"
+     "            continue                       # 选项行已按文字印过，不再裁进图里重复\n"
+     "        if not _figure_edge_label_like(t):",
+     "        if not _figure_edge_label_like(t):",
+     "图下的选项行不裁进图里重复（含正反例）"),
     # ---- 第十三轮（p7 第 2 题选项文字残影 / 达标B 第 5 题两条作答横线）----
     ("关·小窄块文字覆盖率判据（残影一律放行）", FIG,
      "    return int((sub & inside).sum()) / float(total) >= TEXT_BLOCK_COVER_MIN",
@@ -729,9 +784,9 @@ CASES = [
      "最后修边接线检查（edge-trim）"),
     ("关·64 密封线裁切没接线", FIG,
      "        clipped = _clip_seal_strip(\n"
-     '            trimmed, noise_by_page.get(c["page"], []), c["src"].width_pt,\n'
+     '            regrown, noise_by_page.get(c["page"], []), c["src"].width_pt,\n'
      '            src=c["src"], k=DPI_PROBE / 72.0)',
-     "        clipped = trimmed",
+     "        clipped = regrown",
      "密封线裁切接线检查（edge-trim）"),
     ("关·64 密封列不看纵向空档（散落地图标签被裁掉）", FIG,
      "        return max(gaps) <= 0.16 * page_h",
@@ -821,19 +876,50 @@ CASES = [
      "题干首行只丢图注、正文必须留（含三个反例）"),
     # ---- 第十八轮续：裁框从表格行中间切过 / 跨题图蹭边 ----
     ("关·66 并整行图注没接线（表头仍留在框外）", FIG,
-     "        grown = _grow_over_cut_label_rows(rect, page_boxes.get(c[\"page\"], []))",
+     "        grown = _grow_over_cut_label_rows(rect, page_boxes.get(c[\"page\"], []),\n"
+     "                                          top_limit=(c.get(\"band\") or [0, 0, 0, 0])[1])",
      "        grown = rect",
      "并整行图注接线检查（label-grow）"),
     ("关·66 带逗号的正文也并进图（题干被吞）", FIG,
-     "        if not _diagram_label_like(t):\n            continue",
-     "        if False:\n            continue",
+     "        if _looks_like_options_row(t):\n"
+     "            continue                       # 选项行已按文字印过，不再裁进图里重复\n"
+     "        if not (_figure_edge_label_like(t) or edge_tail):\n"
+     "            continue\n"
+     "        rows.append((by0, by1))\n"
+     "    if top_limit is not None:",
+     "        if _looks_like_options_row(t):\n"
+     "            continue                       # 选项行已按文字印过，不再裁进图里重复\n"
+     "        if False:\n"
+     "            continue\n"
+     "        rows.append((by0, by1))\n"
+     "    if top_limit is not None:",
      "裁框从表格行中间切过：整行连表头并进图（含三个反例）"),
     ("关·66 伸出框外的正文行也并进图", FIG,
-     "        if bx0 < x0 - 2.0 or bx1 > x1 + 2.0:\n            continue",
-     "        if False:\n            continue",
+     "        if (bx0 < x0 - 2.0 or bx1 > x1 + 2.0) and not edge_tail:\n"
+     "            continue                       # 行伸出框外：不是图注，是正文\n"
+     "        if _looks_like_options_row(t):\n"
+     "            continue                       # 选项行已按文字印过，不再裁进图里重复\n"
+     "        if not (_figure_edge_label_like(t) or edge_tail):\n"
+     "            continue\n"
+     "        rows.append((by0, by1))\n"
+     "    if top_limit is not None:",
+     "        if False:\n"
+     "            continue                       # 行伸出框外：不是图注，是正文\n"
+     "        if _looks_like_options_row(t):\n"
+     "            continue                       # 选项行已按文字印过，不再裁进图里重复\n"
+     "        if not (_figure_edge_label_like(t) or edge_tail):\n"
+     "            continue\n"
+     "        rows.append((by0, by1))\n"
+     "    if top_limit is not None:",
      "裁框从表格行中间切过：整行连表头并进图（含三个反例）"),
     ("关·66 跨题蹭边收回没接线（邻题人头留在上题）", FIG,
+     "    ok = _recheck_merged(ok, report, np, cv2)\n"
+     "\n"
+     "    # 上一题的图底只蹭进下一题的图几个点（缝合把邻题的人头并进来了）→ 收回底沿\n"
      "    ok = _trim_cross_question_graze(ok, report)",
+     "    ok = _recheck_merged(ok, report, np, cv2)\n"
+     "\n"
+     "    # 上一题的图底只蹭进下一题的图几个点（缝合把邻题的人头并进来了）→ 收回底沿\n"
      "    ok = ok",
      "跨题蹭边收回接线检查（cross-graze）"),
     ("关·66 表格底边被当成邻题人头削掉", FIG,
@@ -993,6 +1079,286 @@ CASES = [
      '                glyph = _extend_cut_glyph(rect, src, k, np, "right", wr)\n',
      "                glyph = rect\n",
      "切字接边接线检查（glyph-extend）"),
+    # ---- 第二十一轮：图注生长不许越区间 / 叠缝题干行 / 看图兜底中线切 ----
+    ("关·图注向上长越过本题区间（上一题图注被吞）", FIG,
+     "    if top_limit is not None:\n",
+     "    if False:\n",
+     "图注生长不许越过本题区间（含正反例）"),
+    ("关·图注向下长越过本题区间（下一题正文被吞）", FIG,
+     "    if bottom_limit is not None:\n",
+     "    if False:\n",
+     "图注生长不许越过本题区间（含正反例）"),
+    ("关·叠缝里夹着题干行也缝（上一题的图混进下一题）", FIG,
+     "                    if bridged:\n",
+     "                    if False:\n",
+     "叠缝里夹着题干行：两块不许缝（含短题号正例）"),
+    ("关·兜底截图不看中线空白缝（左右两问混成一张）", FIG,
+     "    if best is None:\n        return None\n    return (best[0] + best[1]) // 2",
+     "    return None",
+     "看图兜底的中线切分接线检查（side-split）"),
+    ("关·兜底截图不接线（Q17 整段截图混进 Q18）", FIG,
+     "        if side_later:\n",
+     "        if False:\n",
+     "看图兜底的中线切分接线检查（side-split）"),
+    ("关·共用题号行不算并排证据（Q17 图里混进 Q18）", FIG,
+     "                                and (cur_h <= 24.0 or _span_mentions_qno(\n",
+     "                                and (cur_h <= 24.0 or False and _span_mentions_qno(\n",
+     "看图兜底的中线切分接线检查（side-split）"),
+    ("关·侧边尺寸标注不算图注（8cm 漏在图外）", FIG,
+     "        if not (_figure_edge_label_like(t) or edge_tail):\n"
+     "            continue\n"
+     "        by0 = float(tb[\"y\"])\n"
+     "        by1 = by0 + float(tb.get(\"h\") or 0)\n"
+     "        if by1 - by0 <= 0.5 or by1 - by0 > 14.0:\n"
+     "            continue\n"
+     "        if by1 < y0 + 0.5 or by0 > y1 - 0.5:",
+     "        if False:\n"
+     "            continue\n"
+     "        by0 = float(tb[\"y\"])\n"
+     "        by1 = by0 + float(tb.get(\"h\") or 0)\n"
+     "        if by1 - by0 <= 0.5 or by1 - by0 > 14.0:\n"
+     "            continue\n"
+     "        if by1 < y0 + 0.5 or by0 > y1 - 0.5:",
+     "图形侧边的尺寸标注要横向长进图（含四个反例）"),
+    ("关·侧边标注隔 240pt 也长（把邻栏正文拉进图）", FIG,
+     "DIAGRAM_SIDE_GAP_PT = 24.0", "DIAGRAM_SIDE_GAP_PT = 240.0",
+     "图形侧边的尺寸标注要横向长进图（含四个反例）"),
+    ("关·侧边标注不看纵向（别的行的尺寸也拉进来）", FIG,
+     "        if by1 < y0 + 0.5 or by0 > y1 - 0.5:\n",
+     "        if False:\n",
+     "图形侧边的尺寸标注要横向长进图（含四个反例）"),
+    # ---- 第二十一轮续：清字后的三件收尾 ----
+    ("关·光题号没有图也清（可能清掉仅有的内容）", FIG,
+     "        if not q.get(\"images\"):\n            continue",
+     "        if False:\n            continue",
+     "清字收尾：光题号/半边括号/粘来的下一题号（含反例）"),
+    ("关·清字后不剥句尾半边括号（P5 题干留「） ）」）", FIG,
+     "            if imgs:\n"
+     "                text = strip_dangling_tail(text)\n",
+     "            if False:\n"
+     "                text = strip_dangling_tail(text)\n",
+     "图内重复文字要从题干里删掉（含反例）"),
+    ("关·括号配对判断写反（半边不标、配对反标）", FIG,
+     '        if (t.count("（") + t.count("(")) != (t.count("）") + t.count(")")):',
+     '        if (t.count("（") + t.count("(")) == (t.count("）") + t.count(")")):',
+     "清字收尾：光题号/半边括号/粘来的下一题号（含反例）"),
+    ("关·粘来的题号不看同大题有没有该题（正常句尾也摘）", RUL,
+     "        if not any(x.get(\"section\") == sec and x.get(\"q_no\") == no\n"
+     "                   for x in qs[i + 1:]):\n"
+     "            continue",
+     "        if False:\n            continue",
+     "清字收尾：光题号/半边括号/粘来的下一题号（含反例）"),
+    # ---- 第二十二轮：左沿题干尾巴 / 矮块图长回真边 / 收底沿看自己的墨 ----
+    ("关·77 左沿题干尾巴不看字数（短标签也被当正文切）", FIG,
+     "LEFT_TAIL_MIN_CHARS = 12",
+     "LEFT_TAIL_MIN_CHARS = 0",
+     "裁框左沿切进题干长行：收到文字与图之间（含四个反例）"),
+    ("关·77 左段贯穿全高也切（表格左栏被当文字尾巴）", FIG,
+     "LEFT_TAIL_MAX_LEFT_ROWS = 0.60",
+     "LEFT_TAIL_MAX_LEFT_ROWS = 1.01",
+     "裁框左沿切进题干长行：收到文字与图之间（含四个反例）"),
+    ("关·77 缝右没有图也切（把图裁没）", FIG,
+     "        if right_cols < LEFT_TAIL_MIN_RIGHT_COLS or right_rows < LEFT_TAIL_MIN_RIGHT_ROWS:",
+     "        if False:",
+     "裁框左沿切进题干长行：收到文字与图之间（含四个反例）"),
+    ("关·77 左沿修边没接线", FIG,
+     '        tailed = _trim_left_text_tail(trimmed, page_boxes.get(c["page"], []),\n'
+     '                                      c["src"], np, DPI_PROBE / 72.0)',
+     "        tailed = trimmed",
+     "左沿文字尾巴接线检查（left-tail-trim）"),
+    ("关·77 矮块图长进上一题题干", FIG,
+     "        if len(t) >= 15 or (bx1 - bx0 >= 80.0 and by1 - by0 >= 10.0):\n"
+     "            return True",
+     "        if False:\n"
+     "            return True",
+     "矮图上下沿切在图形中间：沿连续墨迹长回真边（含四个反例）"),
+    ("关·77 高图也长回真边（吞掉上一题）", FIG,
+     "BAND_GROW_MAX_H_PT = 60.0",
+     "BAND_GROW_MAX_H_PT = 1000.0",
+     "矮图上下沿切在图形中间：沿连续墨迹长回真边（含四个反例）"),
+    ("关·77 长回真边没接线", FIG,
+     '        regrown = _grow_small_figure_over_band(tailed, c["src"],\n'
+     '                                               page_boxes.get(c["page"], []),\n'
+     '                                               np, DPI_PROBE / 72.0)',
+     "        regrown = tailed",
+     "矮图长回真边接线检查（band-grow）"),
+    ("关·77 收底沿不看上题自己的墨（底框线被削）", FIG,
+     "                floor = _content_bottom_outside(a, b)",
+     "                floor = None",
+     "收上题底沿按上题自己的墨停（含两个反例）"),
+    ("关·77 上题墨不避开重叠区（下题图算上题内容）", FIG,
+     "            ink[:, c0 - px0:c1 - px0] = False",
+     "            pass",
+     "收上题底沿按上题自己的墨停（含两个反例）"),
+    # ---- 第二十三轮：并排两小题的竖缝/拆框/回吸，页边点线，尺寸标注 ----
+    ("关·页边点线不掏（装饰线与图连成一片）", FIG,
+     "    h, w = gray.shape\n    out: list[tuple[int, int]] = []\n"
+     "    sides: list[tuple[str, int, int]] = []",
+     "    return []\n    h, w = gray.shape\n    out: list[tuple[int, int]] = []\n"
+     "    sides: list[tuple[str, int, int]] = []",
+     "页边点线装饰整列掏掉（含五个反例）"),
+    ("旧·内侧只扫 30pt（贴边的表格线看不见，装饰线被误掏）", FIG,
+     "    scan = int(EDGE_DECOR_BAND_PT * 2.0 * k)",
+     "    scan = int(EDGE_DECOR_BAND_PT * k)",
+     "整题截图要在削题干行之前丢"),
+    ("松·页边线内侧有墨也算孤立", FIG,
+     "and gap_pt >= MARGIN_RULE_GAP_PT ",
+     "and True ",
+     "页边点线装饰整列掏掉（含五个反例）"),
+    ("松·页边线外侧有墨也算装饰", FIG,
+     "if (int(outer.max()) < need if outer.size else True) ",
+     "if (True) ",
+     "页边点线装饰整列掏掉（含五个反例）"),
+    ("松·页边线不限宽（宽表格线也掏）", FIG,
+     "            if width_pt <= MARGIN_RULE_MAX_PT and on_edge:",
+     "            if width_pt <= 1000.0 and on_edge:",
+     "页边点线装饰整列掏掉（含五个反例）"),
+    ("旧·被上沿切穿的图注不吸回（只剩半截字）", FIG,
+     "        if by1 < y0 - 0.5:\n            continue",
+     "        if by1 < y0 - 0.5 or by1 > y0 + 0.5:\n            continue",
+     "并排图拆框：切穿图注回吸 + 最终修边夹回竖缝（含三个反例）"),
+    ("松·只看每列墨量（稀疏虚线带被当贯通缝）", FIG,
+     "        if frac > 0.30 or float(cs[a:b].mean()) > tol * 0.5:\n"
+     "            continue",
+     "        if False:\n            continue",
+     "并排两小题：配对与贯通空白竖缝（含六个反例）"),
+    ("松·缝一边太窄也拆（图边留白当缝）", FIG,
+     "        if half.shape[1] / k < SIDE_PAIR_HALF_MIN_PT:\n            return None",
+     "        if False:\n            return None",
+     "并排两小题：配对与贯通空白竖缝（含六个反例）"),
+    ("松·不同大题同高也配成并排", FIG,
+     "        if not sa or sa != sb:\n            continue",
+     "        if not sa:\n            continue",
+     "并排两小题：配对与贯通空白竖缝（含六个反例）"),
+    ("关·并排图不拆（两幅图并成一张给别人）", FIG,
+     "    pairs = _side_pairs(spans)\n    if not pairs:\n        return cands",
+     "    pairs = []\n    if not pairs:\n        return cands",
+     "并排图拆框：切穿图注回吸 + 最终修边夹回竖缝（含三个反例）"),
+    ("关·拆完的图不夹回竖缝（左图长进右题）", FIG,
+     '    sp = cand.get("side_pair") or {}',
+     "    return rect\n" + '    sp = cand.get("side_pair") or {}',
+     "并排图拆框：切穿图注回吸 + 最终修边夹回竖缝（含三个反例）"),
+    ("关·右图不夹回竖缝（只夹左边）", FIG,
+     "    if qi == qb:\n        return (max(rect[0], sx + 0.5), rect[1],"
+     " rect[2], rect[3])",
+     "    if qi == qb:\n        return rect",
+     "并排图拆框：切穿图注回吸 + 最终修边夹回竖缝（含三个反例）"),
+    ("关·只含尺寸标注的题干不清（页面上留 24cm 残渣）", FIG,
+     '                if _DIM_LABEL_RE.match(str(t or "")):',
+     "                if False:",
+     "图里只剩尺寸标注：题干可清空（含三个反例）"),
+    # ── 本轮 P5 实测：算式整题截图又带上了大题标题/页脚/半页空白；
+    #    题干清空后还硬印一个 "20."，版面一挤就变成页底孤儿题号 ──
+    ("关·算式整题截图收紧（标题/页脚/空白全回来）", FIG,
+     "        if calc_block:",
+     "        if False:",
+     "算式整题截图切掉大题标题/页脚/空白（含看图题反例）"),
+    ("旧·整题原图仍印题号（页底孤儿 + 重复）", AWR,
+     "        if (whole_span and not stem) or whole_q:",
+     "        if False:",
+     "整题原图已含题号：不许再印孤立的题号"),
+    # ── P5 Q24 实测：两个班的成绩表被 OCR 横着串成一行行数字，只裁到下半截
+    #    表格时学生看不到原始成绩；页脚也被扫进整题截图 ──
+    ("关·统计表横串兜底（留下串行文字 + 半截表）", FIG,
+     "        table_garbage = _has_interleaved_table(q)",
+     "        table_garbage = False",
+     "统计表横串：整题截图 + 清空串行 + 切页脚"),
+    ("旧·跨段兜底也当整题原图（另一段文字被藏）", FIG,
+     '        made_imgs[0]["whole_question"] = covered_all',
+     '        made_imgs[0]["whole_question"] = True',
+     "统计表横串：整题截图 + 清空串行 + 切页脚"),
+    ("关·整题截图切页脚（六年级数学第6页共8页进图）", FIG,
+     "            x0, y0, x1, y1 = _trim_page_footer(\n"
+     '                (x0, y0, x1, y1), boxes_g, float(gsrc.height_pt))',
+     "            pass",
+     "统计表横串：整题截图 + 清空串行 + 切页脚"),
+    # P5 Q25 实测：小问号（1）（2）（3）全被图吞掉，只剩三段残句 + 图跑到下一页。
+    ("关·小问号全丢仍用残句（图与题干分家）", FIG,
+     "        lost_subq = _lost_subq_numbers(q)",
+     "        lost_subq = False",
+     "小问号全丢：整题截图代替三段残句"),
+    # P5 Q25 实测：只剩（1）（3）两问，旧的"少于 2 个"判据放过，图里的（2）
+    # 让题干顺序变成 1→3→2。缺任意一问都必须整题截图。
+    ("旧·只数小问号个数（缺第2问仍放过）", FIG,
+     "    return bool(src_nums - have)",
+     "    return len(have) < 2",
+     "缺一个小问号：整题截图（含三个反例）"),
+    # P6 五 Q1 实测：3/10、4/10 被读成 "310""410"，题干条件直接错（P1）。
+    ("关·拍平分数不兜底（310/410 仍当条件）", FIG,
+     "            or lost_subq or flat_fraction or inline_gap or lost_fraction \\",
+     "            or lost_subq or False or inline_gap or lost_fraction \\",
+     "分数被拍平 310/410：整题截图（含三个反例）"),
+    # P3 判断 Q3 卡片被吞 / P2 判断 Q5 分数拍平成 "101"：
+    # 没有图的题要把整题截图当题干，已有图的题不许被顶掉。
+    ("关·行内长空格不兜底（卡片被吞仍当正文）", FIG,
+     "        inline_gap = bool(no_img and _INLINE_GAP_RE.search(text))",
+     "        inline_gap = False",
+     "行内卡片被吞/分数被拍平：换整题截图（含两个反例）"),
+    ("关·拍平分数不兜底（1/10 仍读成 101）", FIG,
+     "        lost_fraction = bool(no_img and _LOST_FRACTION_RE.search(\n"
+     "            \"\\n\".join(str(x) for x in (q.get(\"source_lines\") or []))))",
+     "        lost_fraction = False",
+     "行内卡片被吞/分数被拍平：换整题截图（含两个反例）"),
+    ("关·算式符号被读成字母不兜底（X/O 仍当正文）", FIG,
+     "        op_garble = bool(no_img\n"
+     "                         and len(_OPERATOR_GARBLE_RE.findall(text)) >= 2)",
+     "        op_garble = False",
+     "行内卡片被吞/分数被拍平：换整题截图（含两个反例）"),
+    ("一处 X 也当符号错（正常乘法写法被整题截图顶掉）", FIG,
+     "        op_garble = bool(no_img\n"
+     "                         and len(_OPERATOR_GARBLE_RE.findall(text)) >= 2)",
+     "        op_garble = bool(no_img\n"
+     "                         and len(_OPERATOR_GARBLE_RE.findall(text)) >= 1)",
+     "行内卡片被吞/分数被拍平：换整题截图（含两个反例）"),
+    ("关·行内缺口不清字（残句和原图并排印）", FIG,
+     "                or flat_fraction or inline_gap or lost_fraction or op_garble \\\n"
+     "                or lost_box:",
+     "                or flat_fraction or False or lost_fraction or op_garble \\\n"
+     "                or lost_box:",
+     "行内卡片被吞/分数被拍平：换整题截图（含两个反例）"),
+    # ── P4 六 Q4 实测：整题截图在第 3 页页底截断，第 4 页的坐标纸和
+    #    (1)(2)(3) 没有 span 认领，导出时整页丢失 ──
+    ("关·页底整题截图不补续页（统计图下半页丢了）", FIG,
+     "        if covered_all and last_src is not None \\\n"
+     '                and last_y1 >= float(last_src.height_pt) - 2.0:',
+     "        if False:",
+     "页底整题截图要补下一页续图（含三个反例）"),
+    ("过·下一页有别的题也补续图（下一题被吞）", FIG,
+     "            if next_src is not None and not other_q and not q_next:",
+     "            if next_src is not None:",
+     "页底整题截图要补下一页续图（含三个反例）"),
+    # ── 用户口径：复杂题跨栏/跨页时宁可整块原卷，也不许多张碎图丢内容 ──
+    ("关·复杂题只裁第一段（跨栏题后半段丢失）", FIG,
+     "        for (gp, gcol), grp in sorted(groups.items()):",
+     "        for (gp, gcol), grp in sorted(groups.items())[:1]:",
+     "复杂题跨栏跨页：每栏一张完整图（含缺页反例）"),
+    ("松·缺一栏也算整题原图（残段文字被清空）", FIG,
+     "        covered_all = (not missing_group) and len(made_imgs) == len(groups)",
+     "        covered_all = bool(made_imgs)",
+     "复杂题跨栏跨页：每栏一张完整图（含缺页反例）"),
+    ("过·跨栏整题图串成一栏（右栏并进左图）", FIG,
+     '            groups.setdefault((int(o.get("page") or 0),\n'
+     '                               int(o.get("col") or 0)), []).append(o)',
+     '            groups.setdefault((int(o.get("page") or 0), 0), []).append(o)',
+     "复杂题跨栏跨页：每栏一张完整图（含缺页反例）"),
+    # ── 统计图题（P4 六 Q4）：数据表 + 下一页空白坐标纸必须整块给 ──
+    ("关·统计图不换整块截图（只剩数据表，空白坐标纸丢失）", FIG,
+     "        chart_gap = draw_chart and any(",
+     "        chart_gap = False and any(",
+     "画统计图：数据表+空白坐标纸整块截图（含反例）"),
+    ("关·统计图截图退回文字区宽（纵轴刻度/图例被切）", FIG,
+     "            if draw_chart:\n",
+     "            if False:\n",
+     "画统计图：数据表+空白坐标纸整块截图（含反例）"),
+    ("关·统计图不清 OCR 文字/小问（网页与原图重复一遍）", FIG,
+     "        if draw_chart and covered_all:",
+     "        if False and covered_all:",
+     "画统计图：数据表+空白坐标纸整块截图（含反例）"),
+    # ── 方框被 OCR 吞掉的比较题（P2 填空 Q8）：碎片图必须换整题原图 ──
+    ("关·方框丢失的填写题不兜底（②读成另一道乘法）", FIG,
+     '            lost_box_gap = lost_box and not _images_cover_span(q["images"], s)',
+     "            lost_box_gap = False",
+     "方框被 OCR 吞掉的比较题换整题截图（含三个反例）"),
 ]
 
 
@@ -1011,36 +1377,55 @@ def main() -> int:
     if only and not cases:
         print("没有名字匹配的变异：" + "、".join(only))
         return 1
-    orig = {p: open(p, "rb").read() for p in (FIG, LNS, AWR)}
-    # 锚点预检：每条变异都要跑一遍 52 个测试，跑到第 N 条才发现某个旧串
-    # 已经过期（源码在上一轮被改过）＝白等好几分钟。先把 119 条全查完再开跑。
+    if os.path.isdir(BACKUP):
+        print("★发现上次异常退出留下的变异备份（源码可能还是坏的）。先运行：\n"
+              "    py -3.11 tests/recover_mutations.py\n"
+              "再重跑本门禁。为防叠加，本次不执行。")
+        return 1
+    orig = {p: open(p, "rb").read() for p in (FIG, LNS, RUL, AWR)}
+    # 锚点预检：每条变异都要跑一遍 115 个测试，跑到第 N 条才发现某个旧串
+    # 已经过期（源码在上一轮被改过）＝白等好几分钟。先把 256 条全查完再开跑。
     stale = [(name, orig[path].count(old.encode("utf-8")))
              for name, path, old, new, want in cases]
     stale = [(n, c) for n, c in stale if c != 1]
+    # 插入型变异（new = old + 插入行）在替换后 old 仍然存在，光数 old 查不出
+    # "上次强杀留下的 return False"。干净源码里 new 整串必须一次都不出现。
+    for name, path, old, new, want in cases:
+        if old in new and orig[path].count(new.encode("utf-8")):
+            stale.append((name, -orig[path].count(new.encode("utf-8"))))
     if stale:
         for n, c in stale:
-            print("★锚点过期：%s（%d 处）" % (n, c))
+            print("★锚点过期/已残留：%s（%d）" % (n, c))
         print("\n0/%d：锚点没过预检，一条测试都没跑" % len(cases))
         return 1
+    os.makedirs(BACKUP, exist_ok=True)
+    for p in orig:
+        open(os.path.join(BACKUP, os.path.basename(p)), "wb").write(orig[p])
     missed = []
-    for name, path, old, new, want in cases:
-        raw = orig[path]
-        enc = old.encode("utf-8")
-        assert raw.count(enc) == 1, "锚点不唯一或已变：%s（%d 处）" % (name, raw.count(enc))
-        open(path, "wb").write(raw.replace(enc, new.encode("utf-8"), 1))
-        try:
-            rc, out = run_tests()
-        finally:
-            open(path, "wb").write(raw)
-            assert open(path, "rb").read() == raw, "还原后字节不一致：" + path
-        red = rc != 0
-        named = any(w in out for w in ("FAIL " + want, "ERROR " + want))
-        lines = [l.strip() for l in out.splitlines() if l.strip().startswith(("FAIL", "ERROR", "PASS"))]
-        print("  %-34s → %s  %s" % (name, "测试变红" if red else "★仍然全绿★",
-                                    "｜".join(l[:34] for l in lines[:3])))
-        if not (red and named):
-            tag = "（没红）" if not red else "（红了，但不是预期那条）"
-            missed.append(name + tag)
+    try:
+        for name, path, old, new, want in cases:
+            raw = orig[path]
+            enc = old.encode("utf-8")
+            assert raw.count(enc) == 1, "锚点不唯一或已变：%s（%d 处）" % (name, raw.count(enc))
+            open(path, "wb").write(raw.replace(enc, new.encode("utf-8"), 1))
+            try:
+                rc, out = run_tests()
+            finally:
+                open(path, "wb").write(raw)
+                assert open(path, "rb").read() == raw, "还原后字节不一致：" + path
+            red = rc != 0
+            named = any(w in out for w in ("FAIL " + want, "ERROR " + want))
+            lines = [l.strip() for l in out.splitlines() if l.strip().startswith(("FAIL", "ERROR", "PASS"))]
+            print("  %-34s → %s  %s" % (name, "测试变红" if red else "★仍然全绿★",
+                                        "｜".join(l[:34] for l in lines[:3])))
+            if not (red and named):
+                tag = "（没红）" if not red else "（红了，但不是预期那条）"
+                missed.append(name + tag)
+    finally:
+        # 正常/异常退出一律还原；被强杀时这段不执行，备份留到下次恢复。
+        for p, raw in orig.items():
+            open(p, "wb").write(raw)
+        shutil.rmtree(BACKUP, ignore_errors=True)
 
     print("\n%d/%d 处退回旧行为被抓到" % (len(cases) - len(missed), len(cases)))
     if missed:

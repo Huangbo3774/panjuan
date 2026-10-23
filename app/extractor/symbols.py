@@ -35,6 +35,7 @@ OCR 读到的碎片拼回这一行。拼不回来就【整行放弃】，绝不�
 """
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -369,3 +370,192 @@ def scan_span(src: Any, span: dict, np, cv2) -> dict[str, Any]:
         n_shapes += len(shapes)
     return {"lines": [l for l in lines if l.strip()], "n_shapes": n_shapes,
             "n_unknown": n_unknown, "rows": items}
+
+
+# ── 大题标题里的作答标记：P6「四、笔算（打▲的要验算）」被 OCR 读成「打的」 ──
+# 为什么单独做：这个 ▲ 只有 6.5pt 高，RapidOCR 把整块吞掉（放大 4/8 倍重跑也认不出），
+# 只剩「打的」两个字。可它是【全大题的要求】——漏了它，孩子不知道哪些竖式要验算，
+# 27 道题都做错方向，属于 P1。只能回到墨迹里认。
+#
+# 规则的保守口径：只在「打…的」这一处缺口上工作，且必须在这一行里找到
+# 【唯一一个字形大小的标记】。找不到 / 找到两个 / 候选位置不在缺口附近 —— 一律
+# 原样保留。宁可少补一个符号，也绝不许把「、」的小墨点或某个汉字的偏旁塞进标题。
+SEC_MARK_RE = re.compile(r"打[ \t\u3000]{0,2}的")
+MARK_LABELS = ("triangle", "star", "square", "diamond", "circle", "ring")
+
+
+def _mark_char(label: str, fill: float) -> str:
+    """标记类别 + 填充率 → 字符。用打印字体里确实有的字形（见 CHARS 的说明）。"""
+    if label == "triangle":
+        return "▲" if fill >= 0.40 else "△"
+    if label == "star":
+        return "★" if fill >= 0.45 else "☆"
+    if label == "circle":
+        return "●" if fill >= 0.60 else "○"
+    if label == "square":
+        return "■" if fill >= 0.60 else "□"
+    if label == "diamond":
+        return "◆" if fill >= 0.50 else "◇"
+    return ""
+
+
+def _char_unit(ch: str) -> float:
+    """估算一个字符占几个全角字宽（数字/字母/半角空格按半个）。"""
+    if ch == "\u3000":
+        return 1.0
+    if ch.isspace() or ord(ch) < 128:
+        return 0.5
+    return 1.0
+
+
+def _norm_line(s: str) -> str:
+    return re.sub(r"\s+", "", s or "")
+
+
+def _section_mark_from_source(src: Any, a: dict, np, cv2) -> str:
+    """标题行 → 被吞掉的标记字符；认不出 / 不唯一就返回空串。
+
+    单独拆出来是给测试用的：合成的标题图能直接喂进来，不必伪造整份任务。
+    """
+    try:
+        from .figures import _scan
+        page = int(a.get("page") or 1)
+        text = str(a.get("text") or "")
+        if not SEC_MARK_RE.search(text):
+            return ""
+        # 只扫标题这一行：左右各留 6pt、上下各留 1.5pt。
+        # text_boxes 必须为空 —— 带着本行文字框进 _scan 会把整行字挖成洞（P6 实测 0 块墨）。
+        span = {"q_index": -1, "page": page, "col": int(a.get("col") or 0),
+                "x0": max(0.0, float(a["x"]) - 6.0),
+                "x1": float(a["x"]) + float(a["w"]) + 6.0,
+                "y0": float(a["y"]) - 1.5,
+                "y1": float(a["y"]) + float(a["h"]) + 1.5,
+                "text_boxes": []}
+        sc = _scan(src, span, np, cv2)
+        if not sc:
+            return ""
+        band, k = sc["band"], sc["k"]
+        if band.size == 0:
+            return ""
+        nc, _lab, stats, _cent = cv2.connectedComponentsWithStats(
+            band.astype(np.uint8) * 255, connectivity=8)
+        comps: list[tuple[float, float, float, float, int]] = []
+        heights: list[float] = []
+        for i in range(1, nc):
+            x, y, w, h, _area = [int(v) for v in stats[i]]
+            w_pt, h_pt = w / k, h / k
+            if w_pt < 0.8 or h_pt < 1.0:
+                continue
+            comps.append(((x + sc["cx0"]) / k, (y + sc["y0"]) / k, w_pt, h_pt, i))
+            if h_pt >= 2.0:
+                heights.append(h_pt)
+        if not comps or not heights:
+            return ""
+        cols = band.any(axis=0)
+        nz = np.nonzero(cols)[0]
+        if len(nz) == 0:
+            return ""
+        ix0 = (int(nz[0]) + sc["cx0"]) / k
+        ix1 = (int(nz[-1]) + 1 + sc["cx0"]) / k
+        row_h = float(np.median(heights))
+        # 缺字槽：OCR 行少了这一个字符，所以按「有标记」的字符数算总宽。
+        mt = SEC_MARK_RE.search(text)
+        if not mt:
+            return ""
+        cut = mt.start() + 1
+        units = [_char_unit(c) for c in text]
+        total = sum(units) + 1.0
+        u_units = (ix1 - ix0) / max(1e-6, total)
+        # 两种尺取平均：按字符数均分（标点/数字宽度会偏）＋ 中文字高（等宽字体
+        # 的字宽常等于字高）。P6 实测两种各偏 1pt 以内，平均后落点±0.5 字宽。
+        u = 0.5 * (u_units + row_h)
+        sx0 = ix0 + sum(units[:cut]) * u
+        slot_c = sx0 + 0.5 * u
+        # 标记是一个字那么大：比「、」的墨点大得多，比配图小得多。
+        min_h = 0.55 * row_h
+        min_w = 0.30 * row_h
+        cands: list[tuple[float, str]] = []
+        for x, y, w_pt, h_pt, i in comps:
+            if h_pt < min_h or w_pt < min_w or w_pt > 2.6 * row_h:
+                continue
+            xc = x + w_pt / 2.0
+            if not (ix0 - 2.0 <= xc <= ix1 + 2.0):
+                continue
+            # ⚠️ 不能要求「整行只有一个标记」：数字 4 的墨块会被判成 star
+            #    （P6 实测 fill=0.56），和真的 ▲ 撞车。只认【落在缺口附近】
+            #    的那一个 —— 缺口是行内唯一说得通的位置。
+            if abs(xc - slot_c) > 1.6 * u:
+                continue
+            x, y, w, h, _area = [int(v) for v in stats[i]]
+            fe = features(band[y:y + h, x:x + w], np)
+            lab = classify(fe) if fe else None
+            if lab not in MARK_LABELS:
+                continue
+            ch = _mark_char(lab, float(fe.get("fill") or 0.0))
+            if ch:
+                cands.append((xc, ch))
+        return cands[0][1] if len(cands) == 1 else ""
+    except Exception:
+        return ""
+
+
+def repair_section_marks(sections: list[dict], ann: list[dict], r: dict) -> int:
+    """补回大题标题里被 OCR 吞掉的作答标记（如「打▲的」读成「打的」）。
+
+    返回补了几个大题。改名时把原 OCR 行文本存进 `sec["ocr_name"]`：
+    裁图链路（lines.spans_for_questions）要拿它定位大题标题这堵「硬墙」，
+    否则标题一改，span 就找不到锚点、会越过页底漫到下一大题。
+    """
+    if not sections or not ann or not r:
+        return 0
+    try:
+        import numpy as np
+        import cv2
+        from . import lines as L
+    except Exception:                                  # 缺 OCR/OpenCV 的纯文本入口
+        return 0
+    fixed = 0
+    cursor = 0
+    for sec in sections:
+        name = str(sec.get("name") or "")
+        m = SEC_MARK_RE.search(name)
+        if not m:
+            continue
+        key = _norm_line(sec.get("ocr_name") or name)
+        n = -1
+        for j in range(cursor, len(ann)):
+            if _norm_line(str(ann[j].get("text") or "")) == key:
+                n = j
+                break
+        if n < 0:
+            continue
+        cursor = n + 1
+        a = ann[n]
+        try:
+            page = int(a.get("page") or 1)
+            files = r.get("files") or []
+            fi = (r.get("page_sources") or {}).get(page)
+            if fi is None or not (0 <= int(fi) < len(files)):
+                continue
+            f = files[int(fi)]
+            kind = str(f.get("kind") or "")
+            if not kind:
+                kind = os.path.splitext(str(f.get("name") or f.get("path") or ""))[1].lower()
+            src = L.open_page_source(kind, "", page, r.get("page_sources") or {}, files)
+            if not src:
+                continue
+            ch = _section_mark_from_source(src, a, np, cv2)
+            if not ch:
+                continue
+            sec["ocr_name"] = str(sec.get("ocr_name") or name)
+            # 插在「打」后面；OCR 若在中间留了空格，顺手收掉，别印成「打▲ 的」。
+            new_name = (name[:m.start() + 1] + ch
+                        + name[m.start() + 1:].lstrip(" \t\u3000"))
+            sec["name"] = new_name
+            for q in sec.get("questions") or []:
+                if q.get("section"):
+                    q["section"] = new_name
+            fixed += 1
+        except Exception:
+            continue                                   # 单个标题失败不拖垮整卷
+    return fixed

@@ -18,6 +18,7 @@ except Exception:
 from mutate_gate import Mutation, run                    # noqa: E402
 
 SYM = os.path.join(ROOT, "app", "extractor", "symbols.py")
+PAPERS = os.path.join(ROOT, "app", "api", "papers.py")
 TEST = os.path.join(ROOT, "tests", "test_symbols.py")
 
 SHAPE = "十四种形状各画一遍必须认对"
@@ -27,6 +28,8 @@ REFUSE = "四道反例：没等号 / 带中文 / 有认不出的块 / 扫描 log
 EQ = "两根杠＝一个等号"
 NAME = "scan_span 把弯月/花朵印成名字"
 NEG = "真卷配图（蘑菇/青蛙）"
+TITLE = "标题「打▲的」的实心三角能从墨迹补回"
+TITLE_NEG = "标题补标记的三个反例"
 
 M = [
     Mutation("过·汉字笔画不再挡（一个「国」字会被认成方框）", SYM,
@@ -112,6 +115,22 @@ M = [
              "    return {\"lines\": [], \"n_shapes\": 0, \"n_unknown\": 0, \"rows\": []}\n"
              "    lines, n_shapes, n_unknown = [], 0, 0",
              LINE),
+    # ── 本轮（P6 大题标题「打▲的」被 OCR 读成「打的」）新增判据 ──
+    Mutation("关·缺口位置筛（缺口外的三角也补进标题）", SYM,
+             "            if abs(xc - slot_c) > 1.6 * u:\n                continue",
+             "            if False:\n                continue",
+             TITLE_NEG),
+    Mutation("反·实心三角判成空心（▲ 印成 △）", SYM,
+             '        return "▲" if fill >= 0.40 else "△"',
+             '        return "△" if fill >= 0.40 else "▲"',
+             TITLE),
+    # ── 本轮实测事故：api_parse 里再导入一次 SY，模块级别名被遮蔽，
+    #    前半段的补标题抛 UnboundLocalError 又被 except 吞掉（单测全绿、真卷没补） ──
+    Mutation("关·api_parse 局部再导入 SY（补标题静默失效）", PAPERS,
+             "    qs = flatten_questions(res)",
+             "    from ..extractor import symbols as SY  # noqa: F811\n"
+             "    qs = flatten_questions(res)",
+             "api_parse 不许在函数内再导入 SY"),
 ]
 
 if __name__ == "__main__":

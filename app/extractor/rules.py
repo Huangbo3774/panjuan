@@ -35,6 +35,11 @@ Q_NUM_RE = re.compile(
     r"^(?:(\d{1,3})[、．]\s*"          # 1、 2．
     r"|（(\d{1,3})）[、.]?\s*"          # （1） (2)、
     r"|(\d{1,3})\.(?!\d)\s*)(.*)$")    # 1. 但不能是 3.5
+# 题号后面紧跟数字（"2.78÷3…"、"4.3600000000=…"）在真实卷上极常见：
+# 它不是小数，是"题号 2."+"78÷3…"。旧版为了防 "3.5 元" 把这种行一律当续行，
+# 结果新下载的四份卷里 2/3/4/5/7 题整段并进上一题，用户看到的就是"题目不全"。
+# 只在【数字正好等于本大题下一题号】时才认，且用坐标/缩进挡掉真正的续行。
+DECIMAL_Q_RE = re.compile(r"^(\d{1,3})\.(\d.*)$")
 Q_CIRCLED_RE = re.compile(r"^([①-⑳])[.、．]?\s*(.*)$")
 # 整行只剩一个数字（"3" / "3."）—— 扫描卷上"题号在图顶上、题干在图底下"时，
 # OCR 会把题号单独切成一行，中间隔着一整张图（实测：第三单元练习题 第 4 天 第 3 题
@@ -45,6 +50,9 @@ BARE_NUM_RE = re.compile(r"^(\d{1,2})\s*[.、．]?$")
 SUBQ_RE = re.compile(r"^[（(](\d{1,2})[）)][、.．]?\s*")
 # 选项 A. B、 C． A)
 OPT_RE = re.compile(r"^([A-H])\s*[.、．)]\s*(.*)$")
+# 图里单独一行圆圈序号（"③"）会被当成一个选项。真实选项是 A-D 时，
+# 这种没内容的圆圈条目一律是图注残渣（P5 Q3／P1 Q7 实测）。
+_BARE_CIRCLED_RE = re.compile(r"^[①-⑳][、.．:：]?$")
 # 空位：下划线 / 括号里一整串空白（空位就是"括号 + 一段留白"）
 # ⚠️ 空白【不限长度】。旧版卡 1–4 个空格，而扫描件上的一道空位常被 OCR 读成
 # 6–8 个空格（实测 E:\数学卷子\第三单元练习题.pdf 第 1 页：卷面 33 个空位，
@@ -81,6 +89,7 @@ CN_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7,
 
 CN_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7,
           "八": 8, "九": 9, "十": 10, "十一": 11, "十二": 12}
+CN_BY_INT = {v: k for k, v in CN_NUM.items()}
 
 
 def _cn2int(s: str) -> int | None:
@@ -105,6 +114,17 @@ SECTION_MISC_RE = re.compile(
 # 把「附加题。(共10分)」和两道填空一起吞成位图——正文里一个字都没有。
 SECTION_BONUS_RE = re.compile(
     r"^附加题\s*[。.．]?\s*(?:[（(]\s*共\s*\d+\s*分\s*[）)])?\s*$")
+# OCR 把大题序号整段读丢，只留下「填空（20分）」/「、直接写出得数。（12%）」。
+# 新下载 P3 第 1 页实测：标题丢了「一、」，产品把它当成一道 1 分的题，
+# 后面的 13 道填空全部挂在空 section 下；P6 第 1 页标题丢了「一」只剩「、直接写出得数」。
+# 只在「关键词 + 分值括号」这种强标题形状下认，正文里的「计算（12分）」本来也是段标题。
+BARE_SECTION_RE = re.compile(
+    r"^(?:[、.．]\s*)?"
+    r"((?:直接写出得数|口算|估算|笔算|简算|脱式计算|递等式计算|竖式计算|"
+    r"填空|判断|选择|计算|解答|解决问题|应用题|操作|作图|画一画|填一填|"
+    r"选一选|算一算|列式计算|解方程)"
+    # 括号里必须有数字（分值）。没有数字的「填一填：（  ）」是题干，不是大题标题。
+    r"[^（(]{0,10}[（(]\s*(?:共\s*)?\d{1,3}\s*(?:分|%)?[^）)]{0,8}[）)])\s*[。.]?$")
 
 # 扫描 App 水印 / 页眉页脚 / 页码：这些一定不是题目内容。
 # 真实样本里每一页都带「夸克扫描王 / 极速扫描，就是高效 / 拍照秒批 / 视频讲解」，
@@ -159,6 +179,15 @@ NOISE_BANNER_RE = re.compile(r"(教材变式练|能力进阶练|拓展培优练)
 # 它不是下一题的题干。真实卷（综合实践单元(1) p1）：横幅被 OCR 接在第 5 题末尾。
 NOISE_STAGE_BANNER_RE = re.compile(
     r"^第[一二三四五六七八九十]+关[—\-一]?.{0,14}(大本营|我能行|闯关|挑战)")
+# 卷首/密封框里的【考试说明】。它们常常自己也带 1. 2. 3. 4. 编号，旧版会把
+# 四条说明当四道题（新下载卷实测：第一页凭空多出 4 道"题"，题号从 5 开始）。
+# 只认套话，不认"请仔细读题"这种可能出现在题干里的短句。
+INSTRUCTION_RE = re.compile(
+    r"本(?:练习|试卷|试题)卷\s*共\s*\d+\s*页"
+    # "在练习卷上…" / "在练习卷和答题纸上…"（P5 实测就是后者，只认单个"卷"会漏）
+    r"|在[^。；]{0,24}(?:卷|纸|卡)上[^。；]{0,16}填写[^。；]{0,24}(?:学校|班级|姓名)"
+    r"|请仔细读题.*(?:答题|作答)"
+    r"|作答结[束来后].*(?:学校|收交|交回)")
 
 
 def _noise_rest(s: str, pat: re.Pattern) -> str:
@@ -171,6 +200,9 @@ def _is_noise(line: str) -> bool:
     if not s:
         return True
     compact = re.sub(r"\s+", "", s)
+    # 考试说明：一整行都是套话才丢（限长，避免把引用套话的长题干也砍掉）
+    if len(compact) <= 90 and INSTRUCTION_RE.search(compact):
+        return True
     if NOISE_PAGENO_RE.match(s) or NOISE_FOOT_RE.search(s):
         return True
     if NOISE_ANSWER_REF_RE.search(s):
@@ -226,8 +258,16 @@ def is_furniture_text(line: str) -> bool:
     return _is_stage(s)
 
 
+# "4、估算"这种【只有运算名、后面没有题】的编号行是小节标题，不是一道题。
+# 新下载 P2 第 3 页底部实测：它被当成第 4 题，与前面的第 4 题重号，卷面多一道空题。
+SUBSECTION_ONLY_RE = re.compile(
+    r"^(\d{1,2})\s*[、.．]\s*(?:口算|估算|笔算|简算|脱式计算|递等式计算|竖式计算|直接写得数)\s*$")
+
+
 def _is_stage(line: str) -> bool:
     s = line.strip()
+    if SUBSECTION_ONLY_RE.match(s):
+        return True
     return len(s) <= 16 and not Q_NUM_RE.match(s) and any(k in s for k in STAGE_KW)
 
 
@@ -282,6 +322,12 @@ def _is_section(line: str, expect_no: int | None = None) -> tuple[bool, str, str
         return True, "", _clean_title(s)
     if len(s) <= 24 and not Q_NUM_RE.match(s) and SECTION_MISC_RE.match(s):
         return True, "", _clean_title(s)
+    m = BARE_SECTION_RE.match(s)                  # 序号被 OCR 读丢的「填空（20分）」
+    if m:
+        # 序号补成"下一个期望的大题序号"（与上面「序号连续递增」同一套口径）。
+        # 只在真的缺号时走到这里；正常卷永远先命中 SECTION_RE。
+        no = CN_BY_INT.get(expect_no) if expect_no else ""
+        return True, no or "", _clean_title(m.group(1))
     # 附加题：没有中文序号，也不是「综合练习」这类词，但确确实实另起一段。
     if SECTION_BONUS_RE.match(s):
         return True, "", _clean_title(s)
@@ -341,10 +387,90 @@ def _parse_question_no(line: str, circled_as_no: bool = False) -> tuple[int | No
     return None, s
 
 
+INLINE_NEXT_Q_RE = re.compile(r"\s{2,}(\d{1,2})\.(?=\d)")
+
+
+def _take_inline_question(rest: str, expected: int | None) -> tuple[str, int, str] | None:
+    """题干里被 OCR 并进来的下一题（两栏并排）："3. 3.6吨…    4.0.8公顷…"。
+
+    只认【正好等于下一题号】且前面有明显栏间距的编号；正文按"题号 4."+"0.8公顷…"
+    拆开。找不到就返回 None，原样当续行。
+    """
+    if expected is None:
+        return None
+    s = str(rest or "")
+    for m in INLINE_NEXT_Q_RE.finditer(s):
+        no = int(m.group(1))
+        if no != expected:
+            continue
+        body = s[m.end():].strip()
+        head = s[:m.start()].strip()
+        if len(re.sub(r"\s+", "", body)) < 3:
+            continue
+        if len(re.sub(r"\s+", "", head)) < 3:
+            continue
+        return head, no, body
+    return None
+
+
+def _decimal_question_no(line: str, last_no: int | None, numbered_in_sec: int,
+                        prev_ann: dict | None = None, cur_ann: dict | None = None,
+                        sec_q_x: float | None = None) -> tuple[int | None, str]:
+    """识别"题号后紧跟数字"的题首（2.78÷3、4.3600000000=）。
+
+    只在【数字正好是本大题下一题号】时才认。没有坐标时（单测/纯文本入口）
+    再要求正文至少 6 个非空字符；有坐标时要求：
+      · 这一行在上一行下方有明显间距（换行，不是同一行被拆开）；
+      · 起笔 x 与本大题第一题对齐（±18pt）—— 续行通常缩进更深。
+    真小数（上一题答案是 1，下一行"2.5 米…"）在 x 或间距上会被后两条挡住。
+    """
+    s = str(line or "").strip()
+    m = DECIMAL_Q_RE.match(s)
+    if not m:
+        return None, s
+    no = int(m.group(1))
+    expected = (last_no + 1) if last_no is not None else (1 if numbered_in_sec == 0 else None)
+    if expected is None or no != expected:
+        return None, s
+    rest = m.group(2).strip()
+    if len(re.sub(r"\s+", "", rest)) < 3:
+        return None, s
+    if prev_ann is not None and cur_ann is not None:
+        try:
+            py, ph = float(prev_ann.get("y") or 0), float(prev_ann.get("h") or 0)
+            cy, ch = float(cur_ann.get("y") or 0), float(cur_ann.get("h") or 0)
+            if cy <= py:
+                return None, s
+            # 行距按【上一行顶到本行顶】算，不能按两个外框的缝隙算：
+            # OCR 框常比字高，密排卷（P3 实测行距 19.4pt、框高 18pt）缝隙只剩 1pt，
+            # 按缝隙判会把真的下一题当成同一行的碎片。
+            if cy - py < max(2.0, 0.35 * max(ch, 1.0)):
+                return None, s
+            cx = float(cur_ann.get("x") or 0)
+            if sec_q_x is not None and abs(cx - float(sec_q_x)) > 18.0:
+                return None, s
+        except (TypeError, ValueError):
+            pass
+    elif len(re.sub(r"\s+", "", rest)) < 6:
+        return None, s
+    return no, rest
+
+
 # 一道大题里的"（1）（2）（3）"小问。它们【不是独立的题】（题号、分值、批改都跟着大题走），
 # 但必须【各占一行、各答各的空】—— 否则卷面上三问挤成一段，孩子不知道哪一空答哪一问
 # （用户原话："一个题目里面有三个小题，非得挤在一个框子里，怎么分别作答呢？"）。
 SUBQ_MARK_RE = re.compile(r"[（(]\s*(\d{1,2})\s*[）)]")
+# 小问号必须站在"断句边界"上：行首、空白后，或句读标点后。
+# P5 Q24 实测："六（1）班、六（2）班"里的班级编号被当成小问，整道统计题
+# 被拆成两段（第一段只有"班、六"），打印出来题干错位。
+_SUBQ_LEAD_OK = set("：:；;。.！!？?、，,\n")
+
+
+def _subq_mark_at_boundary(t: str, start: int) -> bool:
+    if start <= 0:
+        return True
+    prev = t[start - 1]
+    return prev.isspace() or prev in _SUBQ_LEAD_OK
 
 
 def split_subqs(text: str) -> list[dict[str, Any]]:
@@ -361,6 +487,8 @@ def split_subqs(text: str) -> list[dict[str, Any]]:
     if not t:
         return []
     marks = [m for m in SUBQ_MARK_RE.finditer(t)]
+    # 6（1）班 / 三年级（2）班 这种班级编号不是小问号（P5 Q24 实测）。
+    marks = [m for m in marks if _subq_mark_at_boundary(t, m.start())]
     if len(marks) < 2:
         return []
     # 只保留"从 1 开始、每次 +1"的那串标记（后面的杂散括号一律不当小问号）
@@ -391,14 +519,19 @@ def split_subqs(text: str) -> list[dict[str, Any]]:
     return out
 
 def _bare_number_starts_question(line: str, last_no: int | None,
-                                 cur_q: dict | None, numbered_in_sec: int) -> int | None:
+                                 cur_q: dict | None, numbered_in_sec: int,
+                                 ann: dict | None = None,
+                                 sec_q_x: float | None = None) -> int | None:
     """整行只有一个数字 → 只有"正好接在上一题后面"时才算题号。
 
-    ⚠️ 三条全中才算，每条挡一类误伤：
+    ⚠️ 四条全中才算，每条挡一类误伤：
       · last_no 是数字且【正好差 1】—— 图里那些孤立的"3"（连线题的一项、算式余数、
         数轴刻度）不会刚好接在上一题号后面；
       · 上一题已经有 ≥4 个字的题干 —— 否则"1 2 3"这种连着排的数字会被切成三道空题；
-      · 本大题至少已有一道带题号的题 —— 大题开头就冒出一个数字多半是别的东西。
+      · 本大题至少已有一道带题号的题 —— 大题开头就冒出一个数字多半是别的东西；
+      · 有坐标时还必须与本大题第一题左对齐 —— 2 倍放大后 OCR 会多检出算式里的
+        孤立"2"（P2 第 3 页口算行，x=301 而题号列在 x=35），它正好等于上一题号 +1，
+        旧版据此开出一道空题，整段口算被算成第 2 题。
     """
     if last_no is None or numbered_in_sec < 1:
         return None
@@ -407,6 +540,12 @@ def _bare_number_starts_question(line: str, last_no: int | None,
     m = BARE_NUM_RE.match((line or "").strip())
     if not m:
         return None
+    if ann is not None and sec_q_x is not None:
+        try:
+            if abs(float(ann.get("x") or 0) - float(sec_q_x)) > 24.0:
+                return None
+        except (TypeError, ValueError):
+            pass
     n = int(m.group(1))
     return n if n == last_no + 1 else None
 
@@ -457,8 +596,12 @@ def _append_stem(cur_q: dict[str, Any], line: str) -> None:
     cur_q["text"] = (prev + sep + line.strip()).strip()
 
 
-def extract(lines: list[str], title: str = "") -> dict[str, Any]:
-    """行列表 → 题目结构。lines 必须是【已按阅读顺序排好】的行。"""
+def extract(lines: list[str], title: str = "", ann: list[dict] | None = None) -> dict[str, Any]:
+    """行列表 → 题目结构。lines 必须是【已按阅读顺序排好】的行。
+
+    ann 可选：与 lines 一一对应的带坐标行（page/x/y/w/h）。给了就能用
+    "换行间距 + 起笔缩进"区分【新题号】和【续行里的小数】，没给就退回纯文本判据。
+    """
     sections: list[dict] = []
     cur_sec: dict | None = None
     cur_q: dict | None = None
@@ -505,15 +648,55 @@ def extract(lines: list[str], title: str = "") -> dict[str, Any]:
 
     # 先把"一行含多题"的输入拆开（扫描卷 OCR 常把选项和下一题号并进同一行）
     expanded: list[str] = []
-    for raw in lines:
-        expanded += _split_multi_question_line(raw) if raw and raw.strip() else []
+    expanded_ann: list[dict | None] = []
+    for li, raw in enumerate(lines):
+        a = ann[li] if ann and li < len(ann) else None
+        parts = _split_multi_question_line(raw) if raw and raw.strip() else []
+        for p in parts:
+            expanded.append(p)
+            expanded_ann.append(a)
 
     answer_key: list[str] = []
     last_no: int | None = None          # 当前大题里最后见到的题号（用于识别"重新编号"）
     numbered_in_sec = 0
     seen_numbered = False               # 整卷是否已出现带题号的题（卷首信息区的边界）
+    sec_q_x: float | None = None        # 本大题第一道题的起笔 x（小数题号判据要用）
+    last_q_page: int | None = None      # 上一道题所在页（同页题号倒退＝OCR 把数字读错）
+    # "4、估算"这类编号小节标题：后面若跟着没编号的算式，它就是一道题（新下载 P2）。
+    # 若紧接着出现带题号的下一题（如"5.省略…"），它只是小节标题，不另造题。
+    pending_stage: tuple[int | None, str] | None = None
+    prev_a: dict | None = None
 
-    for raw in expanded:
+    def note_question_pos(a: dict | None) -> None:
+        """记下新题的起笔 x（每大题只记第一题）和所在页。"""
+        nonlocal sec_q_x, last_q_page
+        if not a:
+            return
+        try:
+            if sec_q_x is None:
+                sec_q_x = float(a.get("x") or 0.0)
+            last_q_page = int(a.get("page") or 0)
+        except (TypeError, ValueError):
+            return
+
+    def next_question_no(start: int) -> int | None:
+        """向后找最近的一个题号。只用来判断当前题号是不是 OCR 读错（见下面的跳号分支）。"""
+        for j in range(start + 1, min(start + 16, len(expanded))):
+            s = (expanded[j] or "").strip()
+            if not s or _is_noise(s) or _is_stage(s):
+                continue
+            if _is_section(s, expect_sec_no)[0]:
+                return None
+            n, _ = _parse_question_no(
+                s, circled_as_no=_section_wants_circled((cur_sec or {}).get("name", "")))
+            if n is not None:
+                return n
+        return None
+
+    for li, raw in enumerate(expanded):
+        a = expanded_ann[li] if li < len(expanded_ann) else None
+        a_prev = prev_a
+        prev_a = a
         line = (raw or "").strip()
         if not line:
             continue
@@ -522,6 +705,12 @@ def extract(lines: list[str], title: str = "") -> dict[str, Any]:
             continue
         if _is_stage(line):
             markers.append(line)
+            m = SUBSECTION_ONLY_RE.match(line)
+            if m:
+                # 小节标题切断了上一题：后面的算式绝不能并进上一题。
+                pending_stage = (int(m.group(1)),
+                                 re.sub(r"^\d{1,2}\s*[、.．]\s*", "", line.strip()))
+                cur_q = None
             if any(k in line for k in SIDEBAR_KW):
                 cur_q = None             # 提示栏不是上一题的续行
                 sidebar = True
@@ -537,6 +726,9 @@ def extract(lines: list[str], title: str = "") -> dict[str, Any]:
             sidebar = False
             last_no = None
             numbered_in_sec = 0
+            sec_q_x = None
+            last_q_page = None
+            pending_stage = None
             continue
 
         if _looks_like_header(line) and not seen_numbered:
@@ -552,7 +744,12 @@ def extract(lines: list[str], title: str = "") -> dict[str, Any]:
             new_section("")
 
         opt = OPT_RE.match(line)
-        toks = _opt_tokens(line) or _circled_options(line)
+        toks = _opt_tokens(line)
+        if not toks and not _section_takes_calc_items(_sec_name(cur_sec)):
+            # 填空/比较题的 ①②③ 是并列小问（P2 Q8 实测），留给下面的续行逻辑
+            # 并进题干；当成选项会把六个比较空变成一个四选一。
+            toks = ([] if _circled_row_is_fill_items(line, cur_q, _sec_name(cur_sec))
+                    else _circled_options(line))
         if toks and cur_q is not None:
             cur_q["options"].extend(toks)
             cur_q["source_lines"].append(line)
@@ -562,6 +759,7 @@ def extract(lines: list[str], title: str = "") -> dict[str, Any]:
         # 否则正文里单独一行的 ①… 仍然留在题干里（连线/排序题另有题号逻辑）。
         if (cur_q is not None and CIRCLED_OPT_RE.match(line.strip())
                 and not _section_wants_circled(_sec_name(cur_sec))
+                and not _section_takes_calc_items(_sec_name(cur_sec))
                 and (cur_q.get("options") or _looks_choice_context(cur_q, _sec_name(cur_sec)))):
             cur_q["options"].append(line.strip())
             cur_q["source_lines"].append(line)
@@ -576,7 +774,15 @@ def extract(lines: list[str], title: str = "") -> dict[str, Any]:
                 last_no = lead_no
                 numbered_in_sec += 1
                 seen_numbered = True
+                pending_stage = None
+                note_question_pos(a)
                 continue
+            # "2.78÷3" 这类题号后紧跟数字的行：Q_NUM_RE 为了防小数把它排除了，
+            # 但新卷实测它正是下一道题的开头。只在序号正好接上时认。
+            dec_no, dec_rest = _decimal_question_no(
+                line, last_no, numbered_in_sec, a_prev, a, sec_q_x)
+            if dec_no is not None:
+                no, rest = dec_no, dec_rest
         if no is not None and cur_q is not None and cur_q.get("no_form") == "plain" \
                 and SUBQ_RE.match(line) and len(str(cur_q.get("text") or "").strip()) >= 4:
             # 【小问不另起一题】"1. 先把词语补充完整，再完成练习。" 下面的
@@ -584,26 +790,62 @@ def extract(lines: list[str], title: str = "") -> dict[str, Any]:
             # 当成新题就会出现【两道第 1 题】（审计器报"重号"，卷面上多一道假题）。
             # ⚠️ 只有【上一题是"1."这种平排题号】时才并：整段都用（1）（2）（3）编号的卷
             #    （"选一选。（1）…（2）…"）它们就是平级的题目，并起来反而少题。
-            cur_q["text"] = (cur_q["text"] + " " + rest).strip()
+            # ⚠️ 并入时必须【保留小问号并另起一行】：旧版写 `" " + rest`，把 (1)(2)(3)(4)
+            #    连编号一起吞掉，四问糊成一句（独立复测 report_A P1-05：Q23 的
+            #    "(1)…(2)…(3)…(4)…" 全消失，孩子看不出哪句答哪问）。
+            cur_q["text"] = (str(cur_q.get("text") or "").rstrip() + "\n"
+                             + line.strip()).strip()
             cur_q["source_lines"].append(line)
             _split_inline_options(cur_q, _sec_name(cur_sec))
             continue
         if no is not None and not _looks_like_answer_only(rest):
-            # 题号在本大题内【倒退】→ 这是一段新的编号序列（第N天/新一关/漏认的大题标题）。
+            # 题号在本大题内【倒退】→ 通常是一段新的编号序列（第N天/新一关/漏认的大题标题）。
             # 实测：教辅书每页从 1 重新编号，标题行被水印挤散时，倒退就是唯一的分段信号。
-            if last_no is not None and no < last_no and numbered_in_sec >= 2:
-                prev = cur_sec.get("name", "") if cur_sec else ""
-                open_section(f"{prev}·续" if prev else "")
-                cur_q = None
+            # ⚠️ 但【同一页】倒退多半是 OCR 把数字读错：P4 实测第 8 题被读成"5."，
+            #    旧版当场多开一个"一、填空·续"，卷面出现假小标题、题号也回退。
+            #    同页倒退按"接上一题"改号；跨页倒退才当新编号序列。
+            if last_no is not None and numbered_in_sec >= 2:
+                same_page = False
+                if a is not None and last_q_page:
+                    try:
+                        same_page = int(a.get("page") or 0) == last_q_page
+                    except (TypeError, ValueError):
+                        same_page = False
+                if same_page and no != last_no + 1:
+                    if no < last_no:
+                        no = last_no + 1        # OCR 把题号读小（P4 第 8 题读成 5.）
+                    elif next_question_no(li) == last_no + 2:
+                        no = last_no + 1        # OCR 把题号读大（P4 第 3 题读成 9.）
+                    # 其它同页跳号：可能是 OCR 漏了一整题或原卷本就缺号，保持原样，
+                    # 不能一律改成"上一题+1" —— 那会把真·第 4 题印成第 3 题。
+                elif not same_page and no < last_no:
+                    # 跨页倒退才是"新的编号序列"（教辅每页/每天从 1 重编）。
+                    # 跨页的重复号/跳号不在这里开"·续"：新下载卷 P2 第 3 页开头
+                    # 的"4、估算"就因此多出一个假小节。
+                    prev = cur_sec.get("name", "") if cur_sec else ""
+                    open_section(f"{prev}·续" if prev else "")
+                    cur_q = None
+                    sec_q_x = None
+                    last_q_page = None
+            inline = _take_inline_question(rest, no + 1)
+            if inline is not None:
+                rest, follow_no, follow_rest = inline
             push_question(no, rest, cur_sec,
                           "plain" if SUBQ_RE.match(line) is None else "paren")
             _split_inline_options(cur_q, _sec_name(cur_sec))
             last_no = no
             numbered_in_sec += 1
             seen_numbered = True
+            pending_stage = None
+            note_question_pos(a)
+            if inline is not None:
+                # 同一 OCR 行里被并进来的下一题：插回待处理队列，按正常题号链继续切。
+                expanded.insert(li + 1, f"{follow_no}. {follow_rest}")
+                expanded_ann.insert(li + 1, a)
             continue
 
-        bare = _bare_number_starts_question(line, last_no, cur_q, numbered_in_sec)
+        bare = _bare_number_starts_question(line, last_no, cur_q, numbered_in_sec,
+                                           a, sec_q_x)
         if bare is not None:
             # 题号单独成行（题干在图底下）→ 开一道新题，题干等后面的行补进来。
             # 不认的话这道题就凭空消失（实测：第三单元练习题 第 4 天整卷少第 3 题）。
@@ -611,12 +853,36 @@ def extract(lines: list[str], title: str = "") -> dict[str, Any]:
             last_no = bare
             numbered_in_sec += 1
             seen_numbered = True
+            pending_stage = None
+            note_question_pos(a)
             continue
 
         if sidebar:
             skipped.append(line)          # 提示栏正文：不是题，也不许另起假题
             continue
+        if (cur_q is not None and cur_q.get("options")
+                and CIRCLED_OPT_RE.match(str(cur_q["options"][-1]).strip())
+                and str(cur_q["options"][-1]).rstrip()[-1:] not in "。．.；;：:！!？?"
+                and not _section_wants_circled(_sec_name(cur_sec))
+                and not _section_takes_calc_items(_sec_name(cur_sec))):
+            # 圆圈选项的折行：P5 Q7 的 ③ 被 OCR 拦腰断成两行，第二行
+            # "命中率一定也是40%"没有编号，旧版并回题干，③ 就成了半句话，
+            # 孩子没法判断 A-D。没有编号、上一句又没收尾的续行接回最后一条。
+            cur_q["options"][-1] = (str(cur_q["options"][-1]).rstrip() + line.strip())
+            cur_q["source_lines"].append(line)
+            continue
         if cur_q is None:
+            if pending_stage is not None:
+                pno, ptitle = pending_stage
+                push_question(pno, (ptitle + " " + line).strip(), cur_sec)
+                pending_stage = None
+                if pno is not None:
+                    last_no = pno
+                    numbered_in_sec += 1
+                    seen_numbered = True
+                note_question_pos(a)
+                _split_inline_options(cur_q, _sec_name(cur_sec))
+                continue
             push_question(None, line, cur_sec)
             continue
 
@@ -658,6 +924,35 @@ def extract(lines: list[str], title: str = "") -> dict[str, Any]:
                 sections.pop(0)
 
     for s in sections:
+        for q in s["questions"]:
+            opts = q.get("options") or []
+            letters = [o for o in opts if OPT_RE.match(str(o).strip())]
+            if len(letters) >= 2:
+                keep = [o for o in opts
+                        if not _BARE_CIRCLED_RE.match(str(o).strip())]
+                # 只剩一条有内容的圆圈项、其余都是 A-D：那一条是图注
+                # （P5 Q10 右栏图下的 "②付款20元…" 被并成假选项）→ 丢掉。
+                circled_left = [o for o in keep
+                                if CIRCLED_OPT_RE.match(str(o).strip())]
+                if circled_left:
+                    # ①②③ 是题干里的"说法"，真正要选的是 A-D（P5 Q7：三条
+                    # 说法被印成三个 ☐，孩子会把说法当答案勾）。有内容的挪回
+                    # 题干，选项只留 A-D；内容一个字都不丢。光秃秃的"③"是图注
+                    # 残渣，直接丢。
+                    body = str(q.get("text") or "").rstrip()
+                    add = []
+                    for o in circled_left:
+                        t = str(o).strip()
+                        if _BARE_CIRCLED_RE.match(t):
+                            continue
+                        if t not in body:
+                            add.append(t)
+                    if add:
+                        q["text"] = (body + "\n" + "\n".join(add)).strip()
+                    keep = [o for o in keep if o not in circled_left]
+                q["options"] = keep
+
+    for s in sections:
         # 中文卷每个大题都从 1 重新编号，所以"重号"必须【在大题内部】判定。
         # 全文档查重号会把正常结构误判成异常（实测扫描卷 8 个假重号）。
         local = 0
@@ -683,6 +978,19 @@ def _split_multi_question_line(line: str) -> list[str]:
     marks = list(re.finditer(r"(?<![.\d])(\d{1,2})[、．.](?!\d)\s*", line))
     if len(marks) < 2:
         return [line]
+    # 只认【后面真有一道题正文】的编号。P2 实测：题干末尾的"98.（"被当成
+    # 题号 98 切出来，凭空多一道 q98；而"2.( )米=18厘米"这种正常列并排要保留。
+    good: list[re.Match] = []
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(line)
+        seg = line[m.start():end].strip()
+        qm = Q_NUM_RE.match(seg)
+        rest = (qm.group(4) if qm else seg) or ""
+        if re.sub(r"[\s（()）_＿.、．:：,，;；\"'“”‘’]+", "", rest):
+            good.append(m)
+    if len(good) < 2:
+        return [line]
+    marks = good
     parts: list[str] = []
     head = line[: marks[0].start()]
     if head.strip():
@@ -695,7 +1003,7 @@ def _split_multi_question_line(line: str) -> list[str]:
     return parts if len(parts) >= 2 else [line]
 
 
-HEADER_HINTS = ("班级", "姓名", "得分", "满分", "时间：", "时长", "评分",
+HEADER_HINTS = ("班级", "姓名", "得分", "满分", "总分", "时间：", "时长", "评分",
                 "第 1 页", "第1页", "共 4 页", "共4页", "答案", "达标练习", "模拟卷", "单元测试",
                 # 教辅的牌子/版本行。真实卷：横版那张第一行是"测评卷  5·3天天练小学数学
                 # 二年级上册BSD"，不当表头就会被切成"第 1 题"，于是它旁边那坨
@@ -708,7 +1016,9 @@ HEADER_HINTS = ("班级", "姓名", "得分", "满分", "时间：", "时长", "
 def _looks_like_header(line: str) -> bool:
     """判断是不是卷首信息行（只在还没进入任何大题时使用）。"""
     s = line.strip()
-    if len(s) > 40:
+    # 计分表头「二   三   四   五   总分」中间是排版空格，含空格长度会超过 40，
+    # 但它去掉空白只有 6 个字。按【非空白字数】量，仍保留"长行更可能是题干"的护栏。
+    if len(re.sub(r"\s+", "", s)) > 40:
         return False                       # 长行更可能是题干，不当表头
     # ⚠️ 带题号的行永远不是卷首信息行：真实题干里会出现"答案/得分"这些词
     #    （"1. 看图填方向，把答案写在括号里。"），而这条判据跑在【第一道带题号的题】
@@ -719,6 +1029,40 @@ def _looks_like_header(line: str) -> bool:
 
 
 CIRCLED_ITEM_SECTIONS = ("连线", "排序", "搭配", "连一连", "排一排")
+# 计算大题里的 ①②③④ 是【小题】，不是选项：新下载 P2/P3 实测
+# "①0.125×9×8×0.3 ②4.62÷5÷0.66" 被拆成 A/B/C/D，题目变成"选一个算式"，
+# 学生没有列竖式的答题位。只有明确带"选择/选一选"字样的才仍按选项处理。
+CALC_SECTIONS = ("计算", "口算", "估算", "笔算", "竖式", "递等式", "脱式",
+                 "解方程", "化简", "求值")
+CHOICE_SECTIONS = ("选择", "选一选", "填序号")
+# 填空题里的 ①②③④ 和计算题一样是【并列小问】，不是 A/B/C/D 选项。
+# 新下载 P2 Q8 实测："在□里填上>、<或=" 下面六行比较项，①–④ 被拆成四选一，
+# ⑤⑥ 成了两张没有作答控件的图 —— 六个空只能选一个，孩子没法逐空作答。
+FILL_SECTIONS = ("填空", "填一填", "填空题")
+FILL_ITEM_CUE = re.compile(
+    r"[□○◇△◯].{0,8}里填|里填(?:上|入|人)|填(?:上|入)合适|填(?:上|入)合适的")
+
+
+def _fill_items_context(text: str, section_name: str) -> bool:
+    """这段文字/大题是否处在「逐空填写」语境（圆圈条目该当小问而不是选项）。"""
+    sec = section_name or ""
+    if any(k in sec for k in CHOICE_SECTIONS):
+        return False
+    t = str(text or "")
+    # 题干自己要求"选出/正确的是"时，圆圈仍是选项，不能因为在大题里就吞掉
+    if CHOICE_CUE.search(t):
+        return False
+    return any(k in sec for k in FILL_SECTIONS) or bool(FILL_ITEM_CUE.search(t))
+
+
+def _circled_row_is_fill_items(line: str, q: dict | None, section_name: str) -> bool:
+    """填空/比较题的一行 ①②… 是并列小问，不该当选项收走。"""
+    if len(CIRCLED_OPT_RE.findall(line or "")) < 2:
+        return False
+    if _section_wants_circled(section_name) or _section_takes_calc_items(section_name):
+        return False
+    return _fill_items_context(str((q or {}).get("text") or ""), section_name)
+
 
 
 def _section_wants_circled(section_name: str) -> bool:
@@ -726,17 +1070,81 @@ def _section_wants_circled(section_name: str) -> bool:
     return any(k in (section_name or "") for k in CIRCLED_ITEM_SECTIONS)
 
 
+def _section_takes_calc_items(section_name: str) -> bool:
+    """计算大题的 ①②③④ 是并排的小题，不许拆成选项。"""
+    s = section_name or ""
+    return (any(k in s for k in CALC_SECTIONS)
+            and not any(k in s for k in CHOICE_SECTIONS))
+
+
 def _sec_name(sec: dict | None) -> str:
     return str((sec or {}).get("name") or "")
 
 
 CIRCLED_OPT_RE = re.compile(r"[①-⑳]")
+_CIRCLED_CHARS = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
+
+
+def _circled_char(n: int) -> str:
+    return _CIRCLED_CHARS[n - 1] if 1 <= n <= 20 else ""
+
+
+def _repair_circled_ocr(line: str) -> str:
+    """OCR 把圈号读成阿拉伯数字时补回圈号（P4 三.2/三.4 实测 ②→2）。
+
+    只在【同一行已有圈号】且能确定缺哪一号时动手：
+      · 行内已有圈号的最大序号 N 与已出现的号，1..N 里缺的才是候选；
+      · 候选数字必须夹在相邻两个圈号之间、且以缺号起头：
+          - `2扩大20倍`（数字后面直接接正文）：`②扩大20倍`；
+          - `26`（前一个圈号后面只剩空白）：`②6`，这是"①5 ②6 ③7"被读成
+            "①            26            ③7"的那种残法。
+    反例必须不动：`①13     26     ③39` 里 26 前面已有 ① 的内容 13，
+    不能把纯数字选项 26 吃成"②6"。
+    """
+    s = (line or "").replace("\u3000", " ")
+    marks = list(CIRCLED_OPT_RE.finditer(s))
+    if len(marks) < 2:
+        return line
+    nums = [(_CIRCLED_CHARS.find(m.group(0)) + 1) for m in marks]
+    top = max(nums)
+    if top < 2:
+        return line
+    missing = [n for n in range(1, top + 1) if n not in set(nums)]
+    if not missing:
+        return line
+    out = s
+    for idx, m in enumerate(marks):
+        nxt = marks[idx + 1].start() if idx + 1 < len(marks) else len(s)
+        seg = out[m.start():nxt]
+        # 第一种残法：数字后直接接正文（"2扩大20倍"）。
+        for dm in re.finditer(r"(?<= {2})(\d{1,2})(?=[^\d\s])", seg):
+            try:
+                n = int(dm.group(1))
+            except ValueError:
+                continue
+            if n in missing:
+                out = out[:m.start() + dm.start()] + _circled_char(n) + out[m.start() + dm.end():]
+                missing.remove(n)
+                break
+        else:
+            # 第二种残法：整段只有一个数字词（"①            26            "），
+            # 且 ① 后面除空白外没有别的正文 —— 前一位是圈号、后一位是圈号。
+            body = seg[1:]
+            bare = list(re.finditer(r"(?<=\s{2})(\d{1,2})(?=\s{2,}|$)", body))
+            if len(bare) == 1 and not body[:bare[0].start()].strip():
+                raw = bare[0].group(1)
+                if len(raw) >= 2 and int(raw[0]) in missing:
+                    n = int(raw[0])
+                    pos = m.start() + 1 + bare[0].start()
+                    out = out[:pos] + _circled_char(n) + out[pos + 1:]
+                    missing.remove(n)
+    return out
 
 
 def _circled_options(line: str) -> list[str]:
     """圆圈选项行：①东 ②南 ③西 ④北 —— 中文卷的选择题选项常用圆圈。
     要求一行内至少 2 个圆圈且开头就是圆圈，否则可能是正文里引用了 ①。"""
-    s = (line or "").strip()
+    s = _repair_circled_ocr((line or "").strip())
     if not s or not CIRCLED_OPT_RE.match(s):
         return []
     parts = [p.strip() for p in re.split(r"(?=[①-⑳])", s) if p.strip()]
@@ -800,7 +1208,12 @@ def _circled_inline_options(text: str, section_hint: str = "") -> tuple[str, lis
     """
     if _section_wants_circled(section_hint):
         return None
-    s = (text or "").replace("\u3000", " ").strip()
+    s = _repair_circled_ocr((text or "").replace("\u3000", " ").strip())
+    # 填空/比较题的圆圈条目已经由 _append_stem 并进题干；这里再拆一次，
+    # 六个比较空会重新变成"四选一"（P2 Q8 实测）。题干明确要求"选出/正确的是"
+    # 时 _fill_items_context 返回 False，真正的选择题照旧拆。
+    if _fill_items_context(s, section_hint):
+        return None
     marks = list(CIRCLED_OPT_RE.finditer(s))
     if len(marks) < 2:
         return None
@@ -878,10 +1291,41 @@ def repair_blanks(text: str) -> tuple[str, int]:
         else:
             out.append(ch)
     t2 = "".join(out).rstrip()
+    # OCR 把句尾空位的右括号读成数字：`读作（            3.` 其实是
+    # `读作（            ）。`（P4 一.1 实测，整卷唯一一处把"）。"读成"3."）。
+    # 只认【括号后至少两格空白 + 1~2 位数字（可带句点）】收尾 —— "（3."这种
+    # 小问编号没有空白，绝不能被吞成空位。
+    m_tail = re.search(r"[（(][ \t\u3000]{2,}\d{1,2}([.．。])?\s*$", t2)
+    if m_tail and depth > 0:
+        t2 = t2[:m_tail.start()] + "（    ）" + (m_tail.group(1) or "")
+        fixed += 1
+        depth -= 1
     if 0 < depth <= 3 and re.search(r"[（(]\s*$", t2):
         t2 += "    ）" * depth
         fixed += depth
     return (t2 if fixed else str(text or "")), fixed
+
+
+_TAIL_OPTION_LETTERS_RE = re.compile(r"(?<=[）)])\s+[A-H](?:\s{2,}[A-H])+\s*$")
+
+
+def strip_dangling_tail(text: str) -> str:
+    """清掉题干句尾的 OCR 残渣：孤立的右括号、粘上的选项字母。
+
+    真实卷（P5）实测三种：
+      · Q12 "…占整图的多少， ） ）" —— 图里两个空位的右括号被读进题干；
+      · Q16 "…拼成近似的长方形。 ）" —— 同上；
+      · Q4  "…不是轴对称图形的是（        ） B            D" —— 选项 A/C
+        是图，OCR 只捡到 B、D 两个字母粘在句尾。
+    只动句尾：正文中间的括号可能是有意的空位，交给 repair_blanks 与待校对。
+    """
+    t = str(text or "").rstrip()
+    t = _TAIL_OPTION_LETTERS_RE.sub("", t).rstrip()
+    while t and t[-1] in "）)":
+        if t.count("（") + t.count("(") >= t.count("）") + t.count(")"):
+            break
+        t = t[:-1].rstrip(" \t，,、；;：:")
+    return t
 
 
 def _classify(q: dict, section_hint: str = "") -> None:
@@ -891,7 +1335,9 @@ def _classify(q: dict, section_hint: str = "") -> None:
        （"B. 4乘以7"、"4×7 读作"），实测会把选择题误判成判断题。
        只有「恰好两个选项且都是对/错类词」或「题干/大题名有判断信号」才算 judge。
     """
-    text = q["text"]
+    text = strip_dangling_tail(q["text"])
+    if text != q["text"]:
+        q["text"] = text
     # 多行题干（条目行/小问行）里，行尾孤零零的「（」是 OCR 读丢的空位：
     # 整段 repair_blanks 只看段尾，补不到它。先按行补，再走整段兜底。
     line_fixed = 0
@@ -911,7 +1357,16 @@ def _classify(q: dict, section_hint: str = "") -> None:
     _, blanks = _norm_blank_runs(text)
     q["blanks"] = blanks
     opts = [o.strip() for o in q["options"]]
-    judge_signal = any(k in text for k in JUDGE_HINT) or any(k in section_hint for k in JUDGE_HINT)
+    # "判断"必须是一道题的【指令】，不能是正文里的一个词。P5 Q24「请做出判断
+    # 并说明理由」、Q25「请你判断：这三个新图形…」都是多问解答题，旧口径把
+    # 它们判成 judge，卷面上凭空印出"判断：（ ）"（无中生有的一道判断空）。
+    # 信号只认三种：大题名里的判断、题首的"判断…"、对错画勾的固定说法。
+    _JUDGE_STRONG = ("判断对错", "判断正误", "对的打", "正确的打", "错的打",
+                     "对的画", "正确的画", "打√", "打×", "画√", "画×")
+    judge_signal = (any(k in text for k in _JUDGE_STRONG)
+                    or any(k in section_hint for k in JUDGE_HINT)
+                    or bool(re.match(r"^\s*(?:[（(]?\d{1,2}[）)]?[.、．]?\s*)?判断",
+                                     text)))
     yes_no_pair = len(opts) == 2 and all(
         re.fullmatch(r"[A-H]\s*[.、．)]?\s*(对|错|√|×|T|F|正确|错误)\.?", o, re.I) for o in opts)
     conf = 0.5
@@ -952,6 +1407,68 @@ def _classify(q: dict, section_hint: str = "") -> None:
     q["needs_review"] = q["confidence"] < 0.7 or bool(q.get("review_note"))
 
 
+def recount_blanks(qs: list[dict]) -> int:
+    """按【最终题干】重算空位；题型是 fill 却一个空位都没有 → 退成 essay。
+
+    为什么必须放在识别链路末尾：图内重复文字清理会把只印在图里的空位一起删掉
+    （P5 Q12/Q16 实测），DB 读的时候 blanks 会按 text 重算成 0，但 qtype 还是
+    classify 时定下的 fill。做题页按 qtype 渲染，空位 0 就一个输入框都不给 ——
+    学生看着配图会做，却没有地方写答案（P1）。退成 essay 至少给一个作答框，
+    卷面配图仍在，能写能判。
+    返回改了题型的题数。
+    """
+    n = 0
+    for q in qs:
+        if q.get("qtype") != "fill":
+            continue
+        if BLANK_RE.search(str(q.get("text") or "")):
+            continue
+        q["qtype"] = "essay"
+        q["blanks"] = 0
+        n += 1
+    return n
+
+
+def fallback_uncertain_types(qs: list[dict]) -> int:
+    """题型拿不准/复杂到装不下时，退成问答题（自由作答框）。
+
+    用户口径：复杂题目判断不清题型时，不要硬塞成单选或一个判断空，给一个
+    问答框让学生按题目真正的意图写。只收"题型本身不确定"的四类：
+      · unknown：没选项、没空位、判断信号也没有，题干又短；
+      · choice 但有效选项少于 2 个（做题页单选按钮点不出完整答案）；
+      · choice/judge 带两个以上小问（一组单选/一个判断空答不了各问）；
+      · fill 的小问数多于空位数（有问没地方写）。
+    真选择、真判断、空位齐全的填空一律不动；fill 无空位由 recount_blanks 管。
+    """
+    n = 0
+    for q in qs:
+        t = (q.get("qtype") or "unknown").lower()
+        opts = [o for o in (q.get("options") or []) if str(o).strip()]
+        subs = q.get("subqs") or []
+        try:
+            blanks = int(q.get("blanks") or 0)
+        except (TypeError, ValueError):
+            blanks = 0
+        why = ""
+        if t == "unknown":
+            why = "题型无法判定"
+        elif t == "choice" and len(opts) < 2:
+            why = "选项不足两个"
+        elif t in ("choice", "judge") and len(subs) >= 2:
+            why = "含多个小问，单一选择/判断框装不下"
+        elif t == "fill" and len(subs) >= 2 and blanks < len(subs):
+            why = "小问数多于空位数"
+        if not why:
+            continue
+        q["qtype"] = "essay"
+        q["needs_review"] = True
+        note = "题型不确定（%s），已按问答题留作答框" % why
+        old = str(q.get("review_note") or "").strip()
+        q["review_note"] = (old + "；" + note) if old else note
+        n += 1
+    return n
+
+
 def mark_image_options(qs: list[dict]) -> int:
     """把「题干要求选一个、选项却全在配图里」的题明确标成 image_options。
 
@@ -975,9 +1492,52 @@ def mark_image_options(qs: list[dict]) -> int:
     return n
 
 
+_GLUED_ITEM_DECIMAL_RE = re.compile(
+    r"(?<![\d.])(\d{1,2})\.(\d{1,4}\.\d+)(?=\s*[×÷])")
+
+
+def separate_glued_item_numbers(text: str) -> str:
+    """把"1.14.06×3.5="还原成"1、14.06×3.5="。
+
+    OCR 把小题号和小数点吞在一起（P3 第三大题第 1 小题）："1. 14.06×3.5="
+    读成 "1.14.06×3.5="，孩子会当成 1.14×06×3.5。判据只认【一个数里出现
+    两个小数点且后面紧跟乘除】——正常小数（3.5×2）和日期（2024.10.01）
+    都没有两个点，不会被动。
+    """
+    return _GLUED_ITEM_DECIMAL_RE.sub(r"\1、\2", str(text or ""))
+
+
 def flatten_questions(res: dict[str, Any]) -> list[dict]:
     out = []
     for s in res["sections"]:
         for q in s["questions"]:
-            out.append({**q, "section": s["name"]})
+            row = {**q, "section": s["name"]}
+            row["text"] = separate_glued_item_numbers(row.get("text") or "")
+            out.append(row)
     return out
+
+
+_TRAILING_QNO_RE = re.compile(r"\s{2,}(\d{1,2})\s*[.、．]\s*$")
+
+
+def trim_trailing_next_qno(qs: list[dict]) -> int:
+    """摘掉题干末尾被并进来的下一题题号（"…读作（    3."）。
+
+    真实卷（P4 第一题）：第 3 题的行首"3."被 OCR 粘到上一题末尾，排版时
+    会印成"…读作（ 3." —— 孩子以为要读作 3。只在与同大题后面某道题的
+    题号一致、且前面隔着 2 个以上空格时才摘，正常算式句尾的"3."不动。
+    """
+    n = 0
+    for i, q in enumerate(qs):
+        t = str(q.get("text") or "")
+        m = _TRAILING_QNO_RE.search(t)
+        if not m:
+            continue
+        no = int(m.group(1))
+        sec = q.get("section")
+        if not any(x.get("section") == sec and x.get("q_no") == no
+                   for x in qs[i + 1:]):
+            continue
+        q["text"] = t[:m.start()].rstrip()
+        n += 1
+    return n

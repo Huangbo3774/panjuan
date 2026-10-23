@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
 import threading
 import uuid
 from typing import Any
@@ -87,6 +89,47 @@ def ocr_image(path: str) -> list[dict[str, Any]]:
     # 教辅活页的 1/2/4 这类白字彩色题号检测不到 → 整页并成一道无号题
     _add_badges(eng, path, out)
     return out
+
+
+def ocr_image_auto(path: str, min_long_side: int = 1600,
+                   factor: float = 2.0) -> list[dict[str, Any]]:
+    """单张扫描页 → 文本条目；短边太小时先放大 2 倍再 OCR。
+
+    为什么需要：DOCX/图片路线按原始像素进 OCR，真实材料只有 455–611px 宽
+    （相当于 60–80dpi 的 A4 扫描），RapidOCR 会漏掉页边独立题号、把密集行
+    粘成一行。实测 P2 第 1 页放大后补回了左边距的"7."（1 倍时整块没检出），
+    P3 判断第 3 题补回了中间被吞掉的一截题干。
+    PDF 路线在 300dpi 渲染，长边远超阈值，这里不会二次放大。
+    返回坐标统一换算回【原图像素】，调用方不需要知道放大倍数。
+    """
+    up_path = None
+    tmp_dir = None
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            w, h = im.size
+            if max(w, h) < min_long_side and factor > 1.0:
+                tmp_dir = tempfile.mkdtemp(prefix="pf_ocr_")
+                up_path = os.path.join(tmp_dir, "page.png")
+                im.convert("RGB").resize(
+                    (max(1, round(w * factor)), max(1, round(h * factor))),
+                    Image.LANCZOS).save(up_path)
+    except Exception:
+        up_path = None
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir = None
+    try:
+        if up_path:
+            out = ocr_image(up_path)
+            for it in out:
+                for k in ("x", "y", "w", "h"):
+                    it[k] = round(float(it[k]) / factor, 1)
+            return out
+        return ocr_image(path)
+    finally:
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def ocr_pdf(path: str, work_dir: str | None = None, dpi: int = 300,

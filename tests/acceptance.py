@@ -232,10 +232,11 @@ def main():
             s = wait(r["task_id"])
             p, kb = download(s["task_id"], "a")
             f = pdf_facts(p)
-            # 源页合计 3×1 + 3 + 1 = 7；重排会把稀疏内容合并，所以判「≥ 源页数」而非等于
-            src_pages = sum(int(l.split("→")[1].split("页")[0]) for l in s["logs"] if "→" in l and "页" in l)
+            # 源页合计 3×1 + 3 + 1 = 7。接口 pages 现在是【解析出的实际源页数】
+            # （Word 内嵌扫描页按真实页数报），不是上传文件数 5；导出页不得少于源页。
+            src_pages = s["pages"]
             all_ok = all(x["ok"] for x in s["files"])
-            ok = all_ok and f["sizes"] == {(595, 842)} and f["pages"] >= 5 and s["pages"] == 5
+            ok = all_ok and f["sizes"] == {(595, 842)} and f["pages"] >= 7 and src_pages == 7
             return ok, (f"5 个文件全部解析成功={all_ok}，源页 {src_pages} → 出 {f['pages']} 页 "
                         f"{f['kb']}KB A4={f['sizes']}")
         case("F02 混合格式合并为一份", f02)

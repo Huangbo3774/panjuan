@@ -15,7 +15,7 @@ except Exception:
 
 from app.layout.columns import (detect_columns, group_lines, structure_page,   # noqa: E402
                                 _exact_gap_split)
-from app.layout.engine import build_layout, wrap_text                         # noqa: E402
+from app.layout.engine import build_layout, wrap_text, _QNO_LINE_RE           # noqa: E402
 from app.layout.options import LayoutOptions, MM                              # noqa: E402
 
 ok_n = bad_n = 0
@@ -148,6 +148,69 @@ def reading_order():
     assert all(s.startswith("右") for s in seq[6:]), f"后 6 行应全右栏: {seq[6:]}"
 t("双栏：左栏全部先于右栏", reading_order)
 
+def two_up_page():
+    """计算练习页：同一大题的 (1)(3) 排左、(2)(4) 排右，必须逐行读。
+
+    真实新卷（P5 第 5 页）：按栏优先会把 (2) 接到下一题，Q17 只剩 (1)、Q20 只剩题号。
+    """
+    return [
+        I(46, 40, 100, "三、计算题（共2道小题）"),
+        I(46, 62, 70, "17.化简。"),
+        I(46, 80, 70, "(1) 2.8:0.7"),
+        I(150, 78, 70, "(2) 3.5:12"),
+        I(46, 120, 80, "18.计算下面各题。"),
+        I(46, 140, 70, "(1) 4×3/18"),
+        I(150, 142, 70, "(2) 27/9×4/9"),
+        I(46, 180, 70, "(3) 7/25×1/35"),
+        I(150, 178, 70, "(4) 7/25×65"),
+        I(46, 240, 70, "19. 15%x=75"),
+        I(150, 241, 90, "20. 4/7x-1/2x=3"),
+    ]
+
+
+def two_up_reads_row_major():
+    st = structure_page(two_up_page(), 285.6)
+    seq = [l["text"] for l in st["lines"]]
+    want = ["(1) 2.8:0.7", "(2) 3.5:12", "(1) 4×3/18", "(2) 27/9×4/9",
+            "(3) 7/25×1/35", "(4) 7/25×65"]
+    pos = [seq.index(w) for w in want]
+    assert pos == sorted(pos), f"2-up 没逐行读：{seq}"
+    assert seq.index("17.化简。") < seq.index("(1) 2.8:0.7") < seq.index("18.计算下面各题。"), \
+        f"题头与小题目顺序错：{seq}"
+    assert seq.index("19. 15%x=75") < seq.index("20. 4/7x-1/2x=3"), \
+        f"并排两题丢了右题：{seq}"
+t("2-up 练习页逐行读（(1)左/(2)右成对）", two_up_reads_row_major)
+
+
+def two_up_needs_two_pairs():
+    """只有一对 (1)/(2) 同高 → 可能是巧合，保持栏优先。
+
+    反例必须能改变结论：把第二对挪远后，顺序必须回到左栏先读。
+    """
+    items = two_up_page()
+    for it in items:
+        if it["text"].startswith("(2) 27/9") or it["text"].startswith("(4)"):
+            it["y"] += 60
+    st = structure_page(items, 285.6)
+    seq = [l["text"] for l in st["lines"]]
+    assert seq.index("(1) 4×3/18") < seq.index("(2) 3.5:12"), \
+        f"仅一对也翻成逐行读了：{seq}"
+t("2-up 判据：两对才翻，一对保持栏优先", two_up_needs_two_pairs)
+
+
+def true_two_col_with_subitems_stays_column_first():
+    """真两栏：左右各有完整的 (1)(2)(3)(4)，但同号不同高 —— 仍先读完整左栏。"""
+    items = []
+    for i in range(4):
+        items += [I(50, 100 + i * 30, 90, f"({i+1}) 左小题{i+1}"),
+                  I(380, 100 + i * 30, 90, f"({i+1}) 右小题{i+1}")]
+    st = structure_page(items, 600)
+    seq = [l["text"] for l in st["lines"]]
+    assert all("左小题" in s for s in seq[:4]), f"真两栏被逐行读了：{seq}"
+    assert all("右小题" in s for s in seq[4:]), f"真两栏被逐行读了：{seq}"
+t("真两栏带小题号仍先读完左栏", true_two_col_with_subitems_stays_column_first)
+
+
 def wide_title():
     items = [I(180, 30, 240, "第三单元达标练习（通栏大标题）")] + two_col()
     st = structure_page(items, 600)
@@ -205,6 +268,40 @@ def two_up_halves():
     b = build_layout(pages, LayoutOptions(two_up=True), title="x")
     assert len(b["pages"]) == (len(a["pages"]) + 1) // 2, f"{len(a['pages'])}→{len(b['pages'])}"
 t("2合1 页数减半", two_up_halves)
+
+print("\n[分页：一道题的选项不许被甩到下一页]")
+def option_letter_stays_with_its_stem():
+    """P5 第 7 题真机导出：A–C 在页底，D 单独出现在下一页顶部。
+
+    修复判据不是"页数不变"，而是【同一题号组的所有行必须落在同一页】。
+    """
+    lines = ["1. 第一题。"] + [f"条件{i}。" for i in range(22)]
+    lines += ["7. 淘气正在参加套圈游戏，下面说法正确的是（ ）。",
+              "①目前套中了8次。", "②没套中的次数占60%。",
+              "③再接20次命中率也是40%。", "A.只有②", "B.只有①②",
+              "C.只有①③", "D.只有②③"]
+    blocks = [{"kind": "text", "text": t, "bbox": [60, 80 + i * 24, 520, 100 + i * 24]}
+              for i, t in enumerate(lines)]
+    m = build_layout([{"is_scan": False, "page_no": 1, "blocks": blocks}],
+                     LayoutOptions(), title="t")
+    p7 = {"7. 淘气正在参加套圈游戏，下面说法正确的是（ ）。",
+          "①目前套中了8次。", "②没套中的次数占60%。",
+          "③再接20次命中率也是40%。", "A.只有②", "B.只有①②",
+          "C.只有①③", "D.只有②③"}
+    where = {}
+    for pi, pg in enumerate(m["pages"]):
+        for b in pg["blocks"]:
+            for ln in b.get("lines", []):
+                if ln in p7:
+                    where.setdefault(ln, set()).add(pi)
+    assert len(where) == len(p7), f"有行丢了：{p7 - set(where)}"
+    pages_for_q7 = set().union(*where.values())
+    assert len(pages_for_q7) == 1, \
+        f"第 7 题被拆到 {len(pages_for_q7)} 页：{ {k: sorted(v) for k, v in where.items()} }"
+    # 反例保险：题号识别不能把小数当题号（否则 3.14 行会另起一组）
+    assert not _QNO_LINE_RE.match("3.14 是圆周率"), "小数被当成题号行"
+    assert not _QNO_LINE_RE.match("第5课时 练习"), "课时序号被当成题号行"
+t("选项 D 不许被甩到下一页", option_letter_stays_with_its_stem)
 
 print(f"\n{ok_n} passed, {bad_n} failed")
 sys.exit(1 if bad_n else 0)
