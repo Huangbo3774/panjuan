@@ -60,14 +60,20 @@ did not move" cannot come back through browser caching.
 
 ### Easiest: no-install build (no Python needed)
 
-Grab **`panjuan-v1.2.6-windows.zip`** from [Releases](../../releases) (the asset is
-labelled 磐卷 免安装版 — GitHub keeps only ASCII in download URLs), **extract it**
-(do not run from inside the zip), double-click `PaperForge.exe`. Your browser opens
-`http://127.0.0.1:8000/` and you can drop homework files in. Python and every dependency
-(including the OCR models) are inside the folder — still fully local, no network, no account.
-That console window *is* the server: close it and the app stops; your papers live in `data\`
-next to the exe. Windows may warn "protected your PC" on first run — choose
-*More info → Run anyway* (the build is unsigned; see [docs](docs/打包与发布.md)).
+Grab **`panjuan-v1.3.0-windows.zip`** from [Releases](../../releases) (the asset is
+labelled 磐卷 桌面窗口版 — GitHub keeps only ASCII in download URLs), **extract it**
+(do not run from inside the zip), double-click `PaperForge.exe`. A **native app window**
+opens — no browser tab, no console — and you pick the homework files with the
+file button. Python and every dependency (including the OCR models) are inside the
+folder — still fully local, no network, no account. Closing the window quits the app;
+your papers live in `data\` next to the exe. Want the old browser behaviour (e.g. to
+share the server over LAN)? Run `PaperForge.exe --browser`. Windows may warn
+"protected your PC" on first run — choose *More info → Run anyway* (the build is
+unsigned; see [docs](docs/打包与发布.md)).
+
+> Window-mode caveat: dragging files from Explorer into the window does not work
+> (WebView2 gives the page no file objects) — use the pick button. The browser
+> build (`--browser`) keeps full drag & drop.
 
 ### From source
 
