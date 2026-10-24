@@ -9,7 +9,10 @@ uvicorn>=0.29
 #    教训：凡是"代码里用到的东西"必须写在自己的清单上，不能靠环境里恰好有。
 python-multipart>=0.0.9
 
-pymupdf>=1.24
+# ⚠️ 钉死 <2：PyMuPDF 2.0 新增的 layout 模块自带 onnx 资源（layout/resources/onnx/*.yaml），
+#    PyInstaller 的 pymupdf 钩子收不全，冻结态一启动就弹「Unhandled exception」死掉（2026-10-24 实测）。
+#    v1.2.6 成品就是在 1.x 上验收通过的，升 2.0 属于另一件事，不混进窗口版这次改动。
+pymupdf>=1.24,<2
 python-docx>=1.1
 pillow>=10.0
 opencv-python-headless>=4.9
@@ -18,3 +21,6 @@ reportlab>=4.1
 
 # V1.1 才用到，但扫描版占比高（真实材料 6 份 PDF 里 5 份是扫描件），提前装好
 rapidocr-onnxruntime>=1.3
+
+# V1.3 桌面窗口版：把本机页面装进原生窗口（Windows 用系统自带 WebView2，不额外带浏览器内核）
+pywebview>=5.1

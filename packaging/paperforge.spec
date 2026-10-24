@@ -39,11 +39,19 @@ hiddenimports = [
 ]
 
 # OCR：模型与配置都在包里，必须整包收走（漏了不报错，只是扫描卷认不出题）
-for pkg in ("rapidocr_onnxruntime",):
+# webview：桌面窗口版的 js/css 资源与平台后端同样是"漏了不报错、功能静默坏"的货
+for pkg in ("rapidocr_onnxruntime", "webview"):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
     hiddenimports += h
+
+hiddenimports += [
+    # pywebview 按 gui 参数动态挑后端，静态分析看不见这两层
+    "webview.platforms.winforms", "webview.platforms.edgechromium",
+    "clr",           # pythonnet：edgechromium 后端靠它调 .NET/WinForms
+    "bottle", "proxy_tools",   # pywebview 的运行时依赖
+]
 
 # 原生 DLL：pymupdf(mupdf) / onnxruntime 的加载在部分环境里靠钩子不够，显式收一遍
 for pkg in ("pymupdf", "onnxruntime", "cv2"):
@@ -79,7 +87,9 @@ exe = EXE(
     debug=False,
     strip=False,
     upx=False,                      # UPX 压过的 exe 是杀软误报的头号来源，公开下载别用
-    console=True,                   # 留一个窗口：那就是服务本身，关掉=停止
+    console=False,                  # V1.3 桌面窗口版：双击=开原生窗口，不再有黑色控制台
+    # 关窗即退出（entry.run_window 里 os._exit），服务线程是 daemon 跟着走。
+    # 老浏览器版行为仍可用：PaperForge.exe --browser（但无控制台，横幅看不见，仅自用调试）。
     # icon=os.path.join(ROOT, "packaging", "paperforge.ico"),
 )
 

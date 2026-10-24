@@ -1,8 +1,8 @@
 ﻿# 磐卷 PaperForge · 一键打成「免安装包」
 #
 # 产物：dist\PaperForge\（exe + _internal）与 dist\panjuan-v<版本>-windows.zip
-# 家长侧的使用方式：下载 zip → 解压 → 双击 PaperForge.exe → 浏览器自动打开。
-# 不需要 Python、不需要 PowerShell、不需要命令行。
+# 家长侧的使用方式（V1.3 桌面窗口版）：下载 zip → 解压 → 双击 PaperForge.exe → 直接弹出应用窗口。
+# 不需要 Python、不需要 PowerShell、不需要命令行、不需要自己开浏览器。
 #
 # 为什么在【干净 venv】里构建，而不是直接用这台机的 Python：
 #   本机全局 3.11 的 site-packages 里有 1.8GB 无关包（polars / playwright / gradio /
@@ -18,7 +18,7 @@ param(
     [switch]$SkipVenv,
     [switch]$NoZip,
     [switch]$Clean,
-    [string]$Version = "1.2.6"
+    [string]$Version = "1.3.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -92,15 +92,23 @@ foreach ($d in @("data", "var")) {
 }
 $readme = Join-Path $appdir "使用说明.txt"
 @"
-磐卷 PaperForge · 免安装版
+磐卷 PaperForge · 免安装桌面窗口版（V1.3）
 --------------------------------------------------
 怎么用
   1. 把整个文件夹解压到任意位置（【不要】在压缩包里直接双击运行）
-  2. 双击 PaperForge.exe
-  3. 浏览器会自动打开 http://127.0.0.1:8000/ ，把老师发的作业拖进去
+  2. 双击 PaperForge.exe —— 会直接弹出一个应用窗口，不再开浏览器
+  3. 点「选择文件」把老师发的作业丢进去（照片/PDF/Word 都行）
 
-那个黑色窗口是什么
-  就是程序本身。关掉它 = 停止磐卷；数据不会丢，下次双击 exe 继续用。
+怎么关掉
+  关掉窗口 = 退出磐卷。数据不会丢，下次双击继续用。
+
+导出在哪
+  点「下载 PDF」或「打印」会弹出系统"另存为"对话框，
+  挑个位置存成 PDF，再交给打印机即可。
+
+已知差异（相对 v1.2 浏览器版）
+  · 从资源管理器往窗口里【拖拽】文件目前不生效，请用「选择文件」按钮
+  · 想用老浏览器模式：命令行跑 PaperForge.exe --browser（局域网共用时也用这个）
 
 东西存在哪
   data\   试卷、题目、标准答案、作答记录（要备份就拷这个文件夹）
@@ -108,11 +116,11 @@ $readme = Join-Path $appdir "使用说明.txt"
 
 隐私
   全程只在你这台电脑上运行，不联网、不上传、无账号、无广告。
-  代码开源：GitHub 搜 paper-forge（磐卷 PaperForge），MIT 协议。
+  代码开源：GitHub 搜 panjuan（磐卷 PaperForge），MIT 协议。
 
 常见问题
-  · 浏览器没自动打开 → 自己访问 http://127.0.0.1:8000/
-  · 提示"端口被占用/已在跑" → 说明已经有一个磐卷在运行，直接用那个窗口
+  · 双击没反应/报错缺 WebView2 → 装一次微软「Edge WebView2 运行时」
+    （https://developer.microsoft.com/microsoft-edge/webview2/ ），Win11 自带无需装
   · Windows 已保护你的电脑 / SmartScreen → 点「更多信息」→「仍要运行」；
     这是未做付费代码签名的正常现象，不是病毒（签名是可选增强，见仓库 docs）
   · 换电脑 → 把整个文件夹拷过去即可，data\ 里的卷子会跟着走
