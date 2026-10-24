@@ -7,6 +7,10 @@
 
 Turn the PDFs, photos and Word files your kid's teacher dumps into the group chat into **one standard A4 exam paper PDF** — ready to print, or to be answered on screen, auto-graded, and sent back to the teacher as a PDF with the score on it.
 
+**Watch it work — a phone photo of homework in, a clean A4 paper out (runs 100% locally):**
+
+![PaperForge demo: drop a homework photo, proofread, get a clean A4 paper](docs/img/demo.gif)
+
 ![A phone photo of homework → a clean A4 paper produced by PaperForge](docs/img/compare-photo-to-a4.png)
 
 ## Why
