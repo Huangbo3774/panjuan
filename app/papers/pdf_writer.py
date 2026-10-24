@@ -157,7 +157,7 @@ def _draw_footer(c: rl_canvas.Canvas, opt: LayoutOptions, no: int, total: int,
     # 只留项目名 + "开源免费"，家长搜得到、也不构成无法去除的广告。
     if getattr(opt, "branding", True):
         c.drawRightString(x0 + w - opt.margin_right, opt.margin_bottom - 12,
-                          "磐卷 PaperForge · 开源免费")
+                          "磐远试卷打印助手 · 开源免费")
     c.setFillColor(black)
 
 
@@ -193,8 +193,8 @@ def render_pdf(model: dict[str, Any], opt: LayoutOptions, out_path: str,
     # （验收 F05/F06 实测报 IncompleteRead: 0 bytes read, 510465 more expected）
     tmp = out_path + ".tmp.pdf"
     c = rl_canvas.Canvas(tmp, pagesize=(opt.page_w, opt.page_h))
-    c.setTitle(title or opt.title or "磐卷试卷")
-    c.setAuthor("磐卷 PaperForge")
+    c.setTitle(title or opt.title or "磐远试卷")
+    c.setAuthor("磐远试卷打印助手")
     total = len(model["pages"])
     # 对开时"页"和"物理纸"不是一回事：一张 A3 上是第1、2页。
     # 页码要按 A4 面数，否则家长对折装订后看到"第1页/共3页"却缺第2页。

@@ -1,4 +1,4 @@
-﻿# 磐卷 PaperForge · 一键安装并启动
+﻿# 磐远试卷打印助手 · 一键安装并启动
 # 用法：右键"用 PowerShell 运行"，或在 PowerShell 里执行  .\scripts\setup.ps1
 #
 # 为什么需要这个脚本：本机可能同时装着多个 Python，且默认 `python` 可能是 3.6
@@ -63,7 +63,7 @@ Head "4/4  启动"
 $port = if ($env:PORT) { $env:PORT } else { 8000 }
 $url = "http://127.0.0.1:$port/"
 Write-Host ""
-Write-Host "  磐卷已就绪 → $url" -ForegroundColor Green
+Write-Host "  磐远已就绪 → $url" -ForegroundColor Green
 Write-Host "  局域网内手机/平板也能打开做题页（把 127.0.0.1 换成本机 IP）"
 Write-Host "  Ctrl+C 停止服务" -ForegroundColor DarkGray
 Write-Host ""

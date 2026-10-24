@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """发布名闸门：README 里承诺的下载文件名，GitHub 必须真能给出来。
 
-为什么需要：2026-10-19 发 v1.1.0 时，README 写的是「磐卷-Windows-免安装.zip」，
+为什么需要：2026-10-19 发 v1.1.0 时，README 写的是「磐远-Windows-免安装.zip」，
 `gh release create` 上传后附件被 GitHub 折成 `-Windows-.zip`——
 **Release 的资产名（进 URL 的那个）不吃非 ASCII 字符**，中文只能放在 label 里。
 README 承诺的名字和用户点开的链接不是同一个东西，属于"文档骗人"那一类。

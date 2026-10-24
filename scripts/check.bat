@@ -1,5 +1,5 @@
 @echo off
-REM PanJuan PaperForge - one-shot self check
+REM PanJuan PanJuan Paper Printer - one-shot self check
 REM Switch console to UTF-8 first: our Python tools print Chinese on purpose
 REM (sys.stdout.reconfigure(encoding="utf-8")), and cmd's default GBK codepage
 REM would render that as mojibake.

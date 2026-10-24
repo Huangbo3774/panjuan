@@ -131,7 +131,7 @@ def relayout(t, work: str | None = None) -> None:
         pages = [pg for parsed in t.parsed for pg in parsed["pages"]]
         model = build_layout(pages, opt, title=title)
         t.stage = "生成 PDF"
-        out = os.path.join(work, "export", f"{title}_磐卷A4.pdf")
+        out = os.path.join(work, "export", f"{title}_磐远A4.pdf")
         os.makedirs(os.path.dirname(out), exist_ok=True)
         r = render_pdf(model, opt, out, title=title,
                        image_cache_dir=os.path.join(work, "_jpg"))

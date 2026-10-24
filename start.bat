@@ -1,5 +1,5 @@
 @echo off
-REM PanJuan PaperForge - one-click start (double-click me).
+REM PanJuan PanJuan Paper Printer - one-click start (double-click me).
 REM Starts the local server in the background if it is not running, waits until
 REM /api/health really answers, then opens your browser.
 REM If the server is already up, it just opens the page (no second process).

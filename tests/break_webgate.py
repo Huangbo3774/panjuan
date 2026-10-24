@@ -90,7 +90,7 @@ CASES = [
      "tests/test_subqs_js.py"),
     (".ps1 丢了 BOM", "scripts/install_startup.ps1", None, "STRIP_BOM",
      "tests/check_script_encoding.py"),    (".vbs 混进中文", "scripts/start_hidden.vbs",
-     "PaperForge - windowless", "磐卷 PaperForge windowless",
+     "磐远试卷打印助手 - windowless", "磐远试卷打印助手 windowless",
      "tests/check_script_encoding.py"),
     # 真实事故：跨 shell 写 check.bat 时 `tests\break...` 里的 \b 被坐实成退格符 0x08，
     # 文件仍是"纯 ASCII"，只有这条控制字符检查能看见它。

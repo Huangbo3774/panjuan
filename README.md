@@ -1,17 +1,21 @@
-# 磐卷 PaperForge
+# 磐远试卷打印助手
 
 [English](README.md) · **[中文](README.zh-CN.md)**
 
+<p align="center">
+  <img src="docs/img/brand-lockup.png" alt="磐远试卷打印助手 · 品牌" width="100%">
+</p>
+
 > **Whatever the teacher sends, print it as one clean A4.**
-> 老师发什么，磐卷印什么——一张干净 A4。
+> 老师发什么，磐远印什么——一张干净 A4。
 
 Turn the PDFs, photos and Word files your kid's teacher dumps into the group chat into **one standard A4 exam paper PDF** — ready to print, or to be answered on screen, auto-graded, and sent back to the teacher as a PDF with the score on it.
 
 **Watch it work — a phone photo of homework in, a clean A4 paper out (runs 100% locally):**
 
-![PaperForge demo: drop a homework photo, proofread, get a clean A4 paper](docs/img/demo.gif)
+![磐远试卷打印助手 demo: drop a homework photo, proofread, get a clean A4 paper](docs/img/demo.gif)
 
-![A phone photo of homework → a clean A4 paper produced by PaperForge](docs/img/compare-photo-to-a4.png)
+![A phone photo of homework → a clean A4 paper produced by 磐远试卷打印助手](docs/img/compare-photo-to-a4.png)
 
 ## Why
 
@@ -58,22 +62,23 @@ did not move" cannot come back through browser caching.
 
 ## Quick start
 
-### Easiest: no-install build (no Python needed)
+### Easiest: no-install desktop build (no Python needed)
 
-Grab **`panjuan-v1.3.0-windows.zip`** from [Releases](../../releases) (the asset is
-labelled 磐卷 桌面窗口版 — GitHub keeps only ASCII in download URLs), **extract it**
-(do not run from inside the zip), double-click `PaperForge.exe`. A **native app window**
-opens — no browser tab, no console — and you pick the homework files with the
-file button. Python and every dependency (including the OCR models) are inside the
-folder — still fully local, no network, no account. Closing the window quits the app;
+Grab **`panjuan-v1.4.0-windows.zip`** from [Releases](../../releases) (GitHub keeps only
+ASCII in download URLs, so the file is English-named; the label says 磐远 桌面版),
+**extract it** (do not run from inside the zip), double-click `磐远试卷打印助手.exe`.
+A **native app window** opens — no browser tab, no console — and you drag homework files
+straight into the window (or hit the pick button). Python, a bundled Chromium, and every
+dependency (including the OCR models) are inside the folder — still fully local, no
+network, no account, **no WebView2 runtime needed**. Closing the window quits the app;
 your papers live in `data\` next to the exe. Want the old browser behaviour (e.g. to
-share the server over LAN)? Run `PaperForge.exe --browser`. Windows may warn
+share the server over LAN)? Run `磐远试卷打印助手.exe --browser`. Windows may warn
 "protected your PC" on first run — choose *More info → Run anyway* (the build is
 unsigned; see [docs](docs/打包与发布.md)).
 
-> Window-mode caveat: dragging files from Explorer into the window does not work
-> (WebView2 gives the page no file objects) — use the pick button. The browser
-> build (`--browser`) keeps full drag & drop.
+> The window build ships its own Chromium, so it's a large zip (~337 MB) but runs on a
+> clean Windows machine with nothing installed. Older/slower first launch while the OCR
+> models load — a splash screen shows progress.
 
 ### From source
 
@@ -114,7 +119,7 @@ The physical limit worth stating: **a web page is not allowed to launch a local 
 sandbox, no website can do it. The button therefore hands off to a Windows custom protocol
 (`panjuan://`), registered under your own `HKCU\Software\Classes\panjuan` (no admin rights needed)
 the first time you double-click `start.bat`. Your browser will ask once whether it may open
-PaperForge; tick "always allow" and it never asks again.
+磐远试卷打印助手; tick "always allow" and it never asks again.
 
 ```powershell
 .\scripts\install_startup.ps1            # just the registration (start.bat already does it)

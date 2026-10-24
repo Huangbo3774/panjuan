@@ -1,4 +1,4 @@
-/* 磐卷 PaperForge · 服务门闸（四个页面共用）
+/* 磐远试卷打印助手 · 服务门闸（四个页面共用）
  *
  * 背景：网页在浏览器沙箱里【不能】自己启动本地进程 —— 这是所有浏览器的硬规则，
  * 不是本项目的限制。所以"点一下就起服务"必须借 Windows 自定义协议 panjuan://
@@ -153,7 +153,7 @@
       tip.appendChild(mk('b', null, '想让那个按钮重新有效'));
       tip.appendChild(mk('span', 'pj-gate__sub',
         '看浏览器地址栏右侧有没有一个带红叉的小图标，点它选「允许」；' +
-        '或者在地址栏打开 chrome://settings/content/handlers，把里面关于 磐卷/PaperForge 的记录删掉，' +
+        '或者在地址栏打开 chrome://settings/content/handlers，把里面关于 磐远试卷打印助手/panjuan 的记录删掉，' +
         '再回这个页面点一次（这次要在弹窗里勾「总是允许」）。'));
       el.appendChild(tip);
       var back = btn('pj-back', '返回', true);

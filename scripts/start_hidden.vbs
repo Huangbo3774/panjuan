@@ -1,4 +1,4 @@
-' PaperForge - windowless launcher for the panjuan:// protocol handler
+' PanJuan Paper Printer - windowless launcher for the panjuan:// protocol handler
 '
 ' Why this file exists: if the registry handler points straight at powershell.exe,
 ' every click flashes a blue console window and it looks like a virus. wscript.exe

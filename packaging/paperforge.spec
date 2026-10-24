@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""磐卷 PaperForge · PyInstaller 打包配置（onedir）
+"""磐远试卷打印助手 · PyInstaller 打包配置（onedir）
 
 为什么 onedir 不用 onefile：onefile 每次启动都要把整个归档解到 %TEMP%（我们这套
 含 OpenCV + onnxruntime + OCR 模型，解压要几十秒，而且解出来的目录会被杀软盯上），
@@ -20,7 +20,8 @@ from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
 # SPECPATH 由 PyInstaller 注入 = 本文件所在目录（packaging/）
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 
-datas = [(os.path.join(ROOT, "web"), "web")]
+datas = [(os.path.join(ROOT, "web"), "web"),
+         (os.path.join(ROOT, "packaging", "assets"), os.path.join("packaging", "assets"))]
 binaries = []
 hiddenimports = [
     # uvicorn 内部按字符串挑实现，静态分析看不见
@@ -36,6 +37,12 @@ hiddenimports = [
     "fastapi", "starlette", "multipart", "python_multipart",
     "sqlite3", "numpy", "cv2", "PIL", "onnxruntime",
     "anyio", "anyio._backends._asyncio", "h11", "sniffio", "idna",
+    # V1.4 Qt 桌面壳：entry 里是运行期 sys.path 动态 import，静态分析根本看不见；
+    # QtWebEngine 各模块必须由 PySide6 钩子处理（QtWebEngineProcess.exe/resources 漏了＝白屏）
+    "qt_shell",
+    "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets",
+    "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebChannel",
+    "PySide6.QtPdf", "PySide6.QtPdfWidgets",
 ]
 
 # OCR：模型与配置都在包里，必须整包收走（漏了不报错，只是扫描卷认不出题）
@@ -62,7 +69,7 @@ for pkg in ("pymupdf", "onnxruntime", "cv2"):
 
 a = Analysis(
     [os.path.join(ROOT, "packaging", "entry.py")],
-    pathex=[ROOT],
+    pathex=[ROOT, os.path.join(ROOT, "packaging")],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -70,7 +77,8 @@ a = Analysis(
     runtime_hooks=[],
     # 这台机的全局 Python 里躺着 1.8GB 无关包（polars/playwright/gradio/streamlit…），
     # 就算在干净 venv 里构建，也把这些显式排除，防止哪天被间接拽进来把包撑爆。
-    excludes=["tkinter", "matplotlib", "PyQt5", "PySide2", "PySide6", "IPython",
+    # ⚠️ PySide6 从排除名单里放出来了（V1.4 桌面壳要用），Qt 系只留 PyQt5/PySide2 排除。
+    excludes=["tkinter", "matplotlib", "PyQt5", "PySide2", "IPython",
               "notebook", "streamlit", "gradio", "pandas", "scipy", "sklearn",
               "playwright", "pytest"],
     noarchive=False,
@@ -83,14 +91,13 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,          # onedir：DLL 与数据放 _internal，不塞进 exe
-    name="PaperForge",
+    name="磐远试卷打印助手",
     debug=False,
     strip=False,
     upx=False,                      # UPX 压过的 exe 是杀软误报的头号来源，公开下载别用
     console=False,                  # V1.3 桌面窗口版：双击=开原生窗口，不再有黑色控制台
-    # 关窗即退出（entry.run_window 里 os._exit），服务线程是 daemon 跟着走。
-    # 老浏览器版行为仍可用：PaperForge.exe --browser（但无控制台，横幅看不见，仅自用调试）。
-    # icon=os.path.join(ROOT, "packaging", "paperforge.ico"),
+    # 磐远品牌图标（素材包 ico/app_icon.ico，见方法论§〇；缺文件时 PyInstaller 会报错，构建即验证）
+    icon=os.path.join(ROOT, "packaging", "assets", "app_icon.ico"),
 )
 
 coll = COLLECT(
@@ -99,5 +106,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="PaperForge",
+    name="磐远试卷打印助手",
 )

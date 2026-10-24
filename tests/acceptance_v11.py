@@ -359,7 +359,7 @@ def main() -> int:
             assert "满分" in fc["text"], "缺得分汇总"
             assert fc["ink"] > 500, f"C 版几乎没有墨：{fc['ink']}"
             assert fc["colored"] == 0, f"C 版有 {fc['colored']} 个彩色像素，黑白打印会丢信息"
-            assert "磐卷 PaperForge" in fc["text"], "缺出处署名"
+            assert "磐远试卷打印助手" in fc["text"], "缺出处署名"
             assert fc["pages"] >= fb["pages"] >= 1
             # 发布时选了 A3 对开 → 导出的批改版必须是 A3 横版（1191×842）
             assert fc["sizes"] == {(1191, 842)}, \
@@ -521,7 +521,7 @@ def main() -> int:
             #     （批改符号是矢量画的线，不在文本层里，所以不能拿 ✓/✗/△ 当判据）
             import pymupdf
             st, q2 = req("GET", f"/api/papers/{pid}/questions")
-            probe = "磐卷验收专用串QZ7"           # 只出现在作答里，不会出现在题干/选项
+            probe = "磐远验收专用串QZ7"           # 只出现在作答里，不会出现在题干/选项
             ans = answers_by_uid(q2["questions"], KID)
             tgt = next((x for x in q2["questions"] if x["qtype"] == "essay"), q2["questions"][0])
             ans[tgt["uid"]] = probe

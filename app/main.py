@@ -1,4 +1,4 @@
-"""磐卷 PaperForge · FastAPI 入口（PRD §7.4）
+"""磐远试卷打印助手 · FastAPI 入口（PRD §7.4）
 
 本机/局域网单用户工具，不做鉴权（PRD §6 安全项已注明风险）。
 """
@@ -33,7 +33,7 @@ MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_TOTAL_BYTES = 200 * 1024 * 1024
 ALLOWED = {".pdf", ".docx", ".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
-app = FastAPI(title="磐卷 PaperForge", version="1.3.0")
+app = FastAPI(title="磐远试卷打印助手", version="1.4.0")
 app.include_router(papers_router)
 
 

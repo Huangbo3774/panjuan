@@ -1,4 +1,4 @@
-﻿# 磐卷 PaperForge · 注册「网页上一键启动服务」
+﻿# 磐远试卷打印助手 · 注册「网页上一键启动服务」
 #
 # 浏览器里的网页【不能】自己启动本地进程（安全沙箱，任何网站都做不到）。
 # 唯一合规的做法是注册一个 Windows 自定义协议（panjuan://），
@@ -32,7 +32,7 @@ $vbs     = Join-Path $root "scripts\start_hidden.vbs"
 $subkey  = "Software\Classes\panjuan"
 $cmdSub  = "$subkey\shell\open\command"
 $startupDir = [Environment]::GetFolderPath("Startup")
-$lnkPath = Join-Path $startupDir "磐卷PaperForge.lnk"
+$lnkPath = Join-Path $startupDir "磐远磐远试卷打印助手.lnk"
 
 function Say($m) { if (-not $Quiet) { Write-Host "  $m" } }
 
@@ -85,7 +85,7 @@ if (-not (Test-Path $vbs)) {
 $command = 'wscript.exe "{0}" "%1"' -f $vbs
 
 Say "注册 panjuan:// ..."
-Set-RegValue $subkey       $null        "URL:磐卷 PaperForge"
+Set-RegValue $subkey       $null        "URL:磐远试卷打印助手"
 Set-RegValue $subkey       "URL Protocol" ""
 Set-RegValue $cmdSub       $null        $command
 
@@ -109,7 +109,7 @@ if ($AutoStart) {
     $lnk.TargetPath       = "wscript.exe"
     $lnk.Arguments        = "`"$vbs`""
     $lnk.WorkingDirectory = $root
-    $lnk.Description      = "磐卷 PaperForge 本机服务"
+    $lnk.Description      = "磐远试卷打印助手 本机服务"
     $lnk.Save()
     if (Test-Path $lnkPath) { Say "已加入启动文件夹：$lnkPath" }
     else { Write-Host "✗ 启动项没创建成功" -ForegroundColor Red; exit 1 }

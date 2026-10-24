@@ -151,7 +151,7 @@ def graded_summary_and_score():
     assert f"{_res['score']}/{_res['total']}" in txt.replace(" ", "") or "得分 5.0/8.0" in txt, txt[:300]
     assert "待确认" in txt or _res["counts"]["pending"] == 0
     assert "第 1 页" in fc["text"], "缺页码"
-    assert "磐卷 PaperForge" in fc["text"], "缺出处署名（P3 口碑链路）"
+    assert "磐远试卷打印助手" in fc["text"], "缺出处署名（P3 口碑链路）"
     # B 版不该出现得分汇总
     assert "满分" not in fb["text"], "已作答版不该带批改汇总"
 t("C 版：得分汇总 + 页码 + 署名", graded_summary_and_score)

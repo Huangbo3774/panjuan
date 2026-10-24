@@ -324,10 +324,10 @@ def main():
             _, r = upload([("L2中期评估模拟卷.pdf", read(sp("L2中期评估模拟卷.pdf")))])
             s = wait(r["task_id"]); p, _ = download(s["task_id"], "on")
             txt_on = pymupdf.open(p)[0].get_text("text")
-            shown = "磐卷" in txt_on and "开源免费" in txt_on
+            shown = "磐远" in txt_on and "开源免费" in txt_on
             s1 = set_options(s["task_id"], {"branding": False}); p1, _ = download(s1["task_id"], "off")
             txt_off = pymupdf.open(p1)[0].get_text("text")
-            gone = "磐卷" not in txt_off
+            gone = "磐远" not in txt_off
             # 反例：关掉署名不能顺手把页码也弄没
             paged = "第 1 页" in txt_off
             return shown and gone and paged, f"开=有署名 {shown}，关=无 {gone}，页码仍在 {paged}"
@@ -359,7 +359,7 @@ def main():
                 # ⚠️ insert_text 默认 Helvetica，写不进中文（实测会变成 "·3· ········"）。
                 #    必须用 fontname="china-s"，并且下面先自证内容真的进了 PDF，
                 #    否则会拿一个坏夹具去测产品（本用例第一版就栽在这）。
-                pg.insert_text((60, 80), f"Page {i+1} 第{i+1}页 磐卷压力测试内容 12345",
+                pg.insert_text((60, 80), f"Page {i+1} 第{i+1}页 磐远压力测试内容 12345",
                                fontsize=12, fontname="china-s")
             d.save(big); d.close()
 

@@ -1,4 +1,4 @@
-# 磐卷 PaperForge · V1.0 依赖
+# 磐远试卷打印助手 · V1.0 依赖
 # 实测于 Python 3.11（本机默认 python 是 3.6.8，装不了这些，必须用 3.11）
 fastapi>=0.110
 uvicorn>=0.29
@@ -24,3 +24,7 @@ rapidocr-onnxruntime>=1.3
 
 # V1.3 桌面窗口版：把本机页面装进原生窗口（Windows 用系统自带 WebView2，不额外带浏览器内核）
 pywebview>=5.1
+
+# V1.4 Qt 桌面壳（正式形态）：Qt 窗口 + 自带 Chromium（真拖拽、不依赖系统 WebView2）。
+# 只装 Essentials+Addons 里的 WebEngine/Pdf 需要整个 PySide6 元包；构建包体 +≈200MB。
+PySide6>=6.6

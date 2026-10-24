@@ -105,7 +105,7 @@ def main(only: str | None):
             opt = LayoutOptions(title=parsed["title"])
             # build_layout 吃的是【页列表】，不是整个 parsed 字典 —— 传错会静默排出空页
             model = build_layout(parsed["pages"], opt, title=parsed["title"])
-            out = os.path.join(WORK, f"{os.path.splitext(name)[0]}_磐卷A4.pdf")
+            out = os.path.join(WORK, f"{os.path.splitext(name)[0]}_磐远A4.pdf")
             r = render_pdf(model, opt, out, title=parsed["title"])
             v = verify(out, parsed)
             ms = round((time.time() - t0) * 1000)

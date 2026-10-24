@@ -89,9 +89,21 @@ def start_server_thread(app, host: str, port: int):
     """后台线程里跑 uvicorn（桌面窗口模式用：主线程必须留给 GUI 消息循环）。
 
     返回 Server 对象：调用方想干净停服可以用 .should_exit=True，
-    但窗口模式下我们直接随进程退出（线程是 daemon），关窗 = 关程序。"""
+    但窗口模式下我们直接随进程退出（线程是 daemon），关窗 = 关程序。
+    ⚠️ 冻结无控制台态 log_config 必须关掉：uvicorn 默认格式器调 sys.stderr.isatty()，
+    而 console=False 的 exe 里 sys.stderr 可能是 None（v1.4 实测崩在服务线程里）。"""
     import uvicorn
-    cfg = uvicorn.Config(app, host=host, port=port, log_level="warning")
+    frozen = getattr(sys, "frozen", False)
+    if frozen:
+        for _n in ("stdout", "stderr"):
+            _s = getattr(sys, _n, None)
+            if _s is None or not hasattr(_s, "isatty"):
+                try:
+                    setattr(sys, _n, open(os.devnull, "w"))
+                except Exception:
+                    pass
+    kw = {"log_config": None} if frozen else {}
+    cfg = uvicorn.Config(app, host=host, port=port, log_level="warning", **kw)
     srv = uvicorn.Server(cfg)
     threading.Thread(target=srv.run, daemon=True).start()
     return srv
@@ -108,9 +120,9 @@ def run_window(port: int, host: str, url: str, own_server: bool = True) -> int:
     try:
         import webview
     except Exception as e:
-        alert("磐卷 PaperForge 打不开",
+        alert("磐远试卷打印助手 打不开",
               f"桌面窗口模式需要 pywebview，导入失败：{e!r}\n\n"
-              f"先用浏览器模式顶上：  PaperForge.exe --browser")
+              f"先用浏览器模式顶上：  磐远试卷打印助手.exe --browser")
         return 3
     try:
         webview.settings["ALLOW_DOWNLOADS"] = True   # 放行导出下载（见上）
@@ -121,10 +133,10 @@ def run_window(port: int, host: str, url: str, own_server: bool = True) -> int:
         from app.main import app
         start_server_thread(app, host, port)
     if not wait_health(port):
-        alert("磐卷 PaperForge 打不开", "服务超时没起来，窗口不开。重启电脑后再试一次。")
+        alert("磐远试卷打印助手 打不开", "服务超时没起来，窗口不开。重启电脑后再试一次。")
         return 1
     win = webview.create_window(
-        "磐卷 PaperForge · 老师发什么，磐卷印什么",
+        "磐远试卷打印助手 · 老师发什么，磐远印什么",
         url, width=1240, height=860, min_size=(920, 620), text_select=True)
     try:
         webview.start(gui="edgechromium", debug=False)   # 阻塞到窗口关闭
@@ -135,7 +147,7 @@ def run_window(port: int, host: str, url: str, own_server: bool = True) -> int:
     os._exit(0)   # 窗口关了就直接退：daemon 服务线程跟着走，不留孤儿进程占端口
 
 
-def banner(port: int, first_line: str = "磐卷 PaperForge 正在启动") -> None:
+def banner(port: int, first_line: str = "磐远试卷打印助手 正在启动") -> None:
     from app.paths import APP_HOME, DATA, FROZEN, HOME_NOTE, VAR
     print("")
     print("  " + "=" * 62)
@@ -147,21 +159,21 @@ def banner(port: int, first_line: str = "磐卷 PaperForge 正在启动") -> Non
     print(f"  临时文件   {VAR}       ← 每次启动清空，不含孩子的作业")
     print(f"  位置说明   {HOME_NOTE}")
     print("")
-    print("  这个窗口就是服务本身：【关掉它 = 停止磐卷】，不影响已经存好的试卷。")
+    print("  这个窗口就是服务本身：【关掉它 = 停止磐远】，不影响已经存好的试卷。")
     print("  全程只在本机运行，不连外网；代码开源在 GitHub，欢迎审查。")
     print("")
     sys.stdout.flush()
 
 
 def who_is_on(port: int) -> dict | None:
-    """端口上那个进程【自报】是不是磐卷；不是（或答不上来）返回 None。
+    """端口上那个进程【自报】是不是磐远；不是（或答不上来）返回 None。
 
     为什么必须问一句而不是只看端口通不通：家长机器上 8000 端口很可能被
-    打印机驱动、NAS 控制台、别的开发服务占着。只看"端口有人听"就说"磐卷已经在跑"
+    打印机驱动、NAS 控制台、别的开发服务占着。只看"端口有人听"就说"磐远已经在跑"
     并把浏览器开过去，用户看到的是别人的页面，只会以为我们的程序坏了。
     """
     try:
-        # 3 秒：本机健康检查正常是毫秒级，但别因为一次卡顿就把磐卷自己误判成"陌生程序"
+        # 3 秒：本机健康检查正常是毫秒级，但别因为一次卡顿就把磐远自己误判成"陌生程序"
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=3.0) as r:
             j = json.loads(r.read().decode("utf-8"))
         return j if j.get("service") == "paper-forge" else None
@@ -169,9 +181,30 @@ def who_is_on(port: int) -> dict | None:
         return None
 
 
+def run_desktop(port: int | None) -> int:
+    """桌面模式选型（V1.4）：Qt 壳（自带 Chromium、真拖拽）→ pywebview（v1.3 通道）→ 报错。
+
+    port=None：Qt 壳用随机端口 —— 用户视角没有"服务/端口"概念，也不存在端口冲突；
+    显式 --port（验收/调试）：透传给壳。"""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import qt_shell
+    except Exception:
+        qt_shell = None
+    if qt_shell is not None:
+        rc = qt_shell.run(port)
+        if rc != 3:
+            return rc
+        print("⚠ Qt 桌面壳不可用（缺 PySide6？），退回 v1.3 的 pywebview 窗口")
+    p = port or 8000
+    return run_window(p, "127.0.0.1", f"http://127.0.0.1:{p}/")
+
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="PaperForge", description="磐卷 PaperForge 本机服务")
-    ap.add_argument("--port", type=int, default=int(os.environ.get("PJ_PORT", 8000)))
+    ap = argparse.ArgumentParser(prog="磐远试卷打印助手", description="磐远试卷打印助手 本机服务")
+    ap.add_argument("--port", type=int,
+                    default=int(os.environ["PJ_PORT"]) if os.environ.get("PJ_PORT") else None,
+                    help="不传：桌面模式用随机端口，浏览器模式用 8000")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--no-browser", action="store_true", help="只起服务，不开浏览器")
     ap.add_argument("--window", action="store_true", help="桌面窗口模式（打包 exe 的默认行为）")
@@ -179,58 +212,66 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--status", action="store_true", help="只查在不在跑：RUNNING / STOPPED")
     a = ap.parse_args(argv)
 
-    if a.status:
-        h = who_is_on(a.port)
-        print(f"RUNNING pid={h.get('pid')} frozen={h.get('frozen')}" if h else "STOPPED")
-        return 0 if h else 2
-
     # 打包 exe 默认走原生窗口（双击=开程序，关窗=退出）；源码态默认浏览器，
     # 因为开发时大家就是想看浏览器里的真页面。--browser / --window 显式覆盖。
     use_window = (a.window or getattr(sys, "frozen", False)) and not a.browser
-    url = f"http://127.0.0.1:{a.port}/"
 
-    other = who_is_on(a.port) if port_busy(a.host, a.port) else None
+    # 桌面模式且没点名端口：随机端口 ⇒ 没有端口冲突问题，也没有"第二个实例"
+    if use_window and a.port is None:
+        return run_desktop(None)
+
+    port = a.port if a.port is not None else 8000
+    url = f"http://127.0.0.1:{port}/"
+
+    if a.status:
+        h = who_is_on(port)
+        print(f"RUNNING pid={h.get('pid')} frozen={h.get('frozen')}" if h else "STOPPED")
+        return 0 if h else 2
+
+    other = who_is_on(port) if port_busy(a.host, port) else None
     if other:
         # 幂等：再双击一次不该冒出第二个服务，也不该报错
         if use_window:
             # 已有服务在跑：开一个窗口直接指过去，不再起第二个
-            return run_window(a.port, a.host, url, own_server=False)
-        banner(a.port, "磐卷已经在跑了，不再起第二个")
+            return run_window(port, a.host, url, own_server=False)
+        banner(port, "磐远已经在跑了，不再起第二个")
         print(f"  正在跑的那个：pid={other.get('pid')} · "
               f"{'免安装版' if other.get('frozen') else '源码版'} · 数据目录 {other.get('home')}")
         print("  直接用它就行；要换成这一份，请先关掉另一个的窗口。")
         if not a.no_browser:
-            webbrowser.open(f"http://127.0.0.1:{a.port}/")
+            webbrowser.open(url)
         time.sleep(3.0)
         return 0
 
-    if port_busy(a.host, a.port):
-        msg = (f"端口 {a.port} 被【别的程序】占着（它不是磐卷）。\n\n"
-               f"换一个端口双击即可：  PaperForge.exe --port 8123\n"
-               f"或找出占端口的程序关掉：  netstat -ano | findstr :{a.port}")
+    if port_busy(a.host, port):
+        msg = (f"端口 {port} 被【别的程序】占着（它不是磐远）。\n\n"
+               f"换一个端口双击即可：  磐远试卷打印助手.exe --port 8123\n"
+               f"或找出占端口的程序关掉：  netstat -ano | findstr :{port}")
         if use_window:
-            alert("磐卷 PaperForge 打不开", msg)   # 窗口版没有黑框，print 没人看得见
+            alert("磐远试卷打印助手 打不开", msg)   # 窗口版没有黑框，print 没人看得见
             return 1
-        print(f"\n✗ 端口 {a.port} 被【别的程序】占着（它不是磐卷，我们没敢把浏览器开过去）。")
-        print("  换一个端口双击就行：  PaperForge.exe --port 8123")
+        print(f"\n✗ 端口 {port} 被【别的程序】占着（它不是磐远，我们没敢把浏览器开过去）。")
+        print("  换一个端口双击就行：  磐远试卷打印助手.exe --port 8123")
         print("  或者找出那个程序关掉它：netstat -ano | findstr :8000")
         sys.stdout.flush()
         time.sleep(12.0)          # 别一闪而过，得让人看清这行字
         return 1
 
     if use_window:
-        return run_window(a.port, a.host, url)
+        return run_desktop(port)
 
-    banner(a.port)
+    banner(port)
     from app.main import app                      # 放在横幅之后：导入要装字体、建库，慢半拍
     from app.paths import DATA
     import uvicorn
 
     if not a.no_browser:
-        threading.Thread(target=open_when_ready, args=(a.port,), daemon=True).start()
+        threading.Thread(target=open_when_ready, args=(port,), daemon=True).start()
     try:
         # 传对象而不是 "app.main:app" 字符串：冻结态没有可字符串导入的模块
-        uvicorn.run(app, host=a.host, port=a.port, log_level="warning")
+        # 冻结无控制台态关掉 uvicorn 日志装配（sys.stderr 可能为 None，见 start_server_thread）
+        _kw = {"log_config": None} if getattr(sys, "frozen", False) else {}
+        uvicorn.run(app, host=a.host, port=port, log_level="warning", **_kw)
     except KeyboardInterrupt:
         pass
     print(f"\n  已停止。数据都还在：{os.path.join(DATA, 'papers.db')}")

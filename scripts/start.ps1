@@ -1,4 +1,4 @@
-﻿# 磐卷 PaperForge · 一键启动（双击 start.bat 即可，不用手动开服务）
+﻿# 磐远试卷打印助手 · 一键启动（双击 start.bat 即可，不用手动开服务）
 #
 # 它做四件事：
 #   1) 先看 8000 端口有没有服务在跑 —— 有就直接开浏览器，不再起第二个
@@ -44,7 +44,7 @@ function Get-PortOwner([int]$p) {
 
 # ── 停止 ────────────────────────────────────────────────
 if ($Stop) {
-    Head "停止磐卷服务"
+    Head "停止磐远服务"
     $killed = @()
     $owner = Get-PortOwner $Port
     if ($owner) { Stop-Process -Id $owner -Force -ErrorAction SilentlyContinue; $killed += $owner }
@@ -156,7 +156,7 @@ if (-not $ready) {
 }
 
 Say "就绪，pid=$($ready.pid) · 字体 $($ready.font)"
-Write-Host "`n  磐卷已打开 → $url" -ForegroundColor Green
+Write-Host "`n  磐远已打开 → $url" -ForegroundColor Green
 Say "关掉这个窗口不影响服务；要停止请双击 stop.bat"
 if (-not $NoBrowser) { Start-Process $url }
 exit 0

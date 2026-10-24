@@ -83,18 +83,18 @@ def main():
     scan = os.path.join(pub, "扫描版试卷.pdf")
     shot = os.path.join(pub, "手机拍作业.jpg")
     if os.path.exists(shot) and os.path.exists(scan):
-        made.append(build(shot, scan, "手机拍的作业照片", "磐卷输出：标准 A4 试卷",
+        made.append(build(shot, scan, "手机拍的作业照片", "磐远输出：标准 A4 试卷",
                           "compare-photo-to-a4.png"))
     # 2) 扫描版 PDF → A4
     if os.path.exists(scan):
         made.append(build(scan if os.path.exists(scan) else shot, scan,
-                          "老师发的扫描版 PDF", "磐卷输出：统一页边距 + 表头 + 页码",
+                          "老师发的扫描版 PDF", "磐远输出：统一页边距 + 表头 + 页码",
                           "compare-scan-to-a4.png"))
     if "--include-private" in sys.argv:
         pv = os.path.join(ROOT, "samples", "private", "数学作业.jpeg")
-        gen = os.path.join(ROOT, "var", "e2e", "数学作业_磐卷A4.pdf")
+        gen = os.path.join(ROOT, "var", "e2e", "数学作业_磐远A4.pdf")
         if os.path.exists(pv) and os.path.exists(gen):
-            made.append(build(pv, gen, "原始照片（真实材料）", "磐卷输出",
+            made.append(build(pv, gen, "原始照片（真实材料）", "磐远输出",
                               "compare-private.png"))
             print("  ⚠️ 这张含真实学生作业，对外发布前请自己确认愿意公开")
     print(f"\n共 {len(made)} 张 → shots/")

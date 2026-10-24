@@ -274,8 +274,8 @@ def _paint(c: rl_canvas.Canvas, questions: list[dict], opt: LayoutOptions, title
     ensure_fonts()
     fs = opt.effective_font
     by_uid = {r["uid"]: r for r in (grade_result or {}).get("results", [])}
-    c.setTitle(title or "磐卷 PaperForge")
-    c.setAuthor("磐卷 PaperForge")
+    c.setTitle(title or "磐远试卷打印助手")
+    c.setAuthor("磐远试卷打印助手")
     fl = Flow(c, opt, total=total)
 
     if opt.show_header:

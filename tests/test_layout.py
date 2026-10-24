@@ -242,7 +242,7 @@ t("空文本不产生空行", no_empty_lines)
 
 print("\n[折行与选项]")
 def wrap_cjk():
-    lines = wrap_text("磐卷" * 60, 12, 200)
+    lines = wrap_text("磐远" * 60, 12, 200)
     assert len(lines) > 1 and all(len(x) > 0 for x in lines)
     from app.layout.engine import measure
     assert all(measure(x, 12) <= 200 + 12 for x in lines), "有行超出宽度"
